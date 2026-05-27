@@ -1,73 +1,171 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-Color3.fromRGB(51, 0, 112)
-Color3.fromRGB(116, 0, 143)
-Color3.fromHex("#0095a8")
-Color3.fromHex("#00ff15")
-Color3.fromRGB(255, 0, 0)
-local screenGui = Instance.new("ScreenGui", game.CoreGui)
+
+-- Tạo giao diện GUI (Lưu ý: Chỉ chạy được trong Exploit/Executor hoặc Test dưới quyền LocalScript)
+local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "GeminiOptimizerGui"
+-- Đảm bảo không bị lỗi phân quyền nếu chạy trong Studio thông thường
+pcall(function()
+    screenGui.Parent = game.CoreGui
+end)
+if not screenGui.Parent then
+    screenGui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Khung chính (Frame)
 local frame = Instance.new("Frame", screenGui)
-UDim2.new(0, 150, 0, 80)
-frame.Size = UDim2.new(0, 150, 0, 80)
-UDim2.new(0.5, -75, 0.2, 0)
-frame.Position = UDim2.new(0.5, -75, 0.2, 0)
-Color3.fromRGB(30, 30, 30)
+frame.Size = UDim2.new(0, 160, 0, 90)
+frame.Position = UDim2.new(0.5, -80, 0.2, 0)
 frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 frame.BorderSizePixel = 0
 frame.Active = true
+
+-- Bo góc cho mượt mà
+local uiCorner = Instance.new("UICorner", frame)
+uiCorner.CornerRadius = UDim.new(0, 8)
+
+-- Tiêu đề
 local textLabel = Instance.new("TextLabel", frame)
-UDim2.new(1, 0, 0, 25)
-textLabel.Size = UDim2.new(1, 0, 0, 25)
-Color3.fromRGB(45, 45, 45)
+textLabel.Size = UDim2.new(1, 0, 0, 30)
 textLabel.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-textLabel.Text = " TDS Optimizer"
-Color3.new(1, 1, 1)
-textLabel.TextColor3 = Color3.new(1, 1, 1)
+textLabel.Text = "  TDS Optimizer"
+textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 textLabel.TextXAlignment = Enum.TextXAlignment.Left
 textLabel.Font = Enum.Font.GothamBold
+textLabel.TextSize = 13
+
+local labelCorner = Instance.new("UICorner", textLabel)
+labelCorner.CornerRadius = UDim.new(0, 8)
+
+-- Nút Kích hoạt (Button)
 local textButton = Instance.new("TextButton", frame)
-UDim2.new(0.8, 0, 0, 35)
-textButton.Size = UDim2.new(0.8, 0, 0, 35)
-UDim2.new(0.1, 0, 0.45, 0)
-textButton.Position = UDim2.new(0.1, 0, 0.45, 0)
-Color3.fromRGB(51, 0, 112)
+textButton.Size = UDim2.new(0.85, 0, 0, 35)
+textButton.Position = UDim2.new(0.075, 0, 0.45, 0)
 textButton.BackgroundColor3 = Color3.fromRGB(51, 0, 112)
 textButton.Text = "ACTIVATE"
-Color3.new(1, 1, 1)
-textButton.TextColor3 = Color3.new(1, 1, 1)
+textButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 textButton.Font = Enum.Font.GothamSemibold
+textButton.TextSize = 12
 textButton.AutoButtonColor = true
-frame.InputBegan:Connect(function(...)x2bc26a0)
+
+local buttonCorner = Instance.new("UICorner", textButton)
+buttonCorner.CornerRadius = UDim.new(0, 6)
+
+-- SYSTEM: Logic Kéo Thả (Drag GUI) - Đã sửa lỗi hoàn toàn
+local dragging, dragInput, dragStart, startPos
+local function update(input)
+    local delta = input.Position - dragStart
+    frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 end
-UserInputService.InputChanged:Connect(function(...)x2bc5670)
+
+frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+frame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+
+-- SYSTEM: Logic Tối Ưu Hóa (Optimize / Restore)
+local isOptimized = false
+
+-- Hàm lưu thông số cũ và giảm chất lượng (Optimize)
+local function optimizeGame()
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") then
+            -- Lưu thuộc tính gốc vào Attribute
+            if not v:GetAttribute("OldMaterial") then v:SetAttribute("OldMaterial", v.Material.Name) end
+            if not v:GetAttribute("OldTransparency") then v:SetAttribute("OldTransparency", v.Transparency) end
+            if not v:GetAttribute("OldColor") then v:SetAttribute("OldColor", v.Color) end
+            
+            -- Thực hiện tối ưu (giảm lag)
+            v.Material = Enum.Material.SmoothPlastic
+            v.Transparency = 0.5 -- Bạn có thể tăng lên nếu muốn làm tàng hình bớt vật thể
+        elseif v:IsA("MeshPart") then
+            if not v:GetAttribute("OldTexture") then v:SetAttribute("OldTexture", v.TextureID) end
+            v.TextureID = "" -- Xóa texture của mesh để giảm bộ nhớ đồ họa
+        elseif v:IsA("Decal") or v:IsA("Texture") then
+            if not v:GetAttribute("OldParent") then
+                v:SetAttribute("OldParent", v.Parent.Name)
+                v.Parent = nil -- Ẩn decal đi
+            end
+        end
+    end
 end
-UserInputService.InputEnded:Connect(function(...)x2beefe0)
+
+-- Hàm khôi phục lại đồ họa cũ (Restore)
+local function restoreGame()
+    -- Khôi phục các Decal đã bị ẩn tạm thời
+    for _, v in ipairs(game:GetDescendants()) do
+        if v:IsA("Decal") or v:IsA("Texture") then
+            local oldParentName = v:GetAttribute("OldParent")
+            if oldParentName then
+                local realParent = workspace:FindFirstChild(oldParentName, true)
+                if realParent then
+                    v.Parent = realParent
+                end
+                v:SetAttribute("OldParent", nil)
+            end
+        end
+    end
+
+    -- Khôi phục các BasePart & MeshPart
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") then
+            local oldMat = v:GetAttribute("OldMaterial")
+            local oldTrans = v:GetAttribute("OldTransparency")
+            local oldColor = v:GetAttribute("OldColor")
+            
+            if oldMat then v.Material = Enum.Material[oldMat] end
+            if oldTrans then v.Transparency = oldTrans end
+            if oldColor then v.Color = oldColor end
+            
+            v:SetAttribute("OldMaterial", nil)
+            v:SetAttribute("OldTransparency", nil)
+            v:SetAttribute("OldColor", nil)
+        end
+        
+        if v:IsA("MeshPart") then
+            local oldTex = v:GetAttribute("OldTexture")
+            if oldTex then v.TextureID = oldTex end
+            v:SetAttribute("OldTexture", nil)
+        end
+    end
 end
-textButton.MouseButton1Click:Connect(function(...)x2c14fd0)
-    local getAttribute = game.Workspace:GetAttribute("OptimizedByGemini")
-    local descendants = game.Workspace:GetDescendants()
-    local getAttribute2 = v1:GetAttribute("GeminiOldParent")
-    local getAttribute22 = game.Workspace:FindFirstChild(getAttribute2, true)
-    v1.Parent = getAttribute22
-    local setAttribute = v1:SetAttribute("GeminiOldParent")
-    local getAttribute3 = v1:GetAttribute("OldMeshTexture")
-    local isA = v1:IsA("MeshPart")
-    v1.TextureID = getAttribute3
-    local setAttribute2 = v1:SetAttribute("OldMeshTexture")
-    local getAttribute4 = v1:GetAttribute("OldTransparency")
-    v1.Transparency = getAttribute4
-    local setAttribute3 = v1:SetAttribute("OldTransparency")
-    local getAttribute5 = v1:GetAttribute("OldColor")
-    v1.Color = getAttribute5
-    local setAttribute4 = v1:SetAttribute("OldColor")
-    local getAttribute6 = v1:GetAttribute("OldMaterial")
-    v1.Material = Enum.Material.getAttribute6
-    local setAttribute5 = v1:SetAttribute("OldMaterial")
-    local children = game.Workspace:GetChildren()
-    local setAttribute6 = game.Workspace:SetAttribute("OptimizedByGemini")
-    textButton.Text = "ACTIVATE"
-    Color3.fromRGB(51, 0, 112)
-    textButton.BackgroundColor3 = Color3.fromRGB(51, 0, 112)
-end
+
+-- Sự kiện nhấn nút kích hoạt
+textButton.MouseButton1Click:Connect(function()
+    isOptimized = not isOptimized
+    
+    if isOptimized then
+        -- Chuyển trạng thái sang Đã tối ưu
+        textButton.Text = "DEACTIVATE"
+        textButton.BackgroundColor3 = Color3.fromRGB(116, 0, 143) -- Màu tím đỏ
+        optimizeGame()
+    else
+        -- Trở lại bình thường
+        textButton.Text = "ACTIVATE"
+        textButton.BackgroundColor3 = Color3.fromRGB(51, 0, 112) -- Màu tím gốc
+        restoreGame()
+    end
+end)
