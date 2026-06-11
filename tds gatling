@@ -1,0 +1,176 @@
+_G.Config = {
+    gatlingcooldown = 0.01,
+    multiplytimes = 60,
+    norecoil = true,
+    enabled = true,
+    maxRange = 9999,
+    fps_enabled = true,
+    targetMode = "First"
+}
+
+local Network = game.ReplicatedStorage:WaitForChild("Network")
+local GatlingNetwork = Network:WaitForChild("GatlingGun")
+local ggchannel = require(game.ReplicatedStorage.Resources.Universal.NewNetwork).Channel("GatlingGun")
+local remoteFunc = game:GetService("ReplicatedStorage"):WaitForChild("RemoteFunction")
+local gganim = require(game:GetService("ReplicatedStorage").Content.Tower["Gatling Gun"].Animator)
+local reReload = GatlingNetwork:WaitForChild("RE:Reload")
+
+local bulletCounter = 0
+local npcs = workspace:WaitForChild("NPCs")
+
+local function setFPSMode(enabled)
+    local args = {
+        "Troops",
+        "Abilities",
+        "Activate",
+        {
+            Troop = workspace:WaitForChild("Towers"):WaitForChild("Default"),
+            Name = "FPS",
+            Data = {
+                enabled = enabled
+            }
+        }
+    }
+    pcall(function()
+        remoteFunc:InvokeServer(unpack(args))
+    end)
+end
+
+if _G.Config.fps_enabled then
+    task.spawn(function()
+        task.wait(1)
+        setFPSMode(true)
+    end)
+end
+
+local function getActualHitbox(model)
+    return model:FindFirstChild("Hitbox")
+        or model:FindFirstChild("HumanoidRootPart")
+        or model.PrimaryPart
+        or model:FindFirstChildWhichIsA("BasePart")
+end
+
+local function getTargetNPC(mode)
+    local enemiesList = {}
+    
+    for _, model in ipairs(npcs:GetChildren()) do
+        if model:IsA("Model") and not game.Players:GetPlayerFromCharacter(model) then
+            local rootPointer = model:FindFirstChild("RootPointer")
+            if rootPointer and rootPointer.Value then
+                local folder = rootPointer.Value
+                if folder:GetAttribute("FakeUnit") == false and folder:GetAttribute("Type") == "Enemies" then
+                    local hitboxPart = getActualHitbox(model)
+                    local hp = folder:GetAttribute("Health") or 0
+                    local maxHp = folder:GetAttribute("MaxHealth") or hp
+                    local distanceTraveled = folder:GetAttribute("Distance") or 0
+                    if hitboxPart and hp > 0 then
+                        table.insert(enemiesList, {
+                            model = model,
+                            hitbox = hitboxPart,
+                            hp = hp,
+                            maxHp = maxHp,
+                            distance = distanceTraveled
+                        })
+                    end
+                end
+            end
+        end
+    end
+    
+    if #enemiesList == 0 then return nil end
+    
+    if mode == "First" then
+        table.sort(enemiesList, function(a, b) return a.distance > b.distance end)
+        return enemiesList[1].hitbox
+    elseif mode == "Last" then
+        table.sort(enemiesList, function(a, b) return a.distance < b.distance end)
+        return enemiesList[1].hitbox
+    elseif mode == "Strongest" then
+        table.sort(enemiesList, function(a, b) return a.hp > b.hp end)
+        return enemiesList[1].hitbox
+    elseif mode == "Weakest" then
+        table.sort(enemiesList, function(a, b) return a.hp < b.hp end)
+        return enemiesList[1].hitbox
+    elseif mode == "Center" then
+        local bestTarget = nil
+        local minTotalDist = math.huge
+        for i, e1 in ipairs(enemiesList) do
+            local totalDist = 0
+            for j, e2 in ipairs(enemiesList) do
+                if i ~= j then
+                    totalDist = totalDist + (e1.hitbox.Position - e2.hitbox.Position).Magnitude
+                end
+            end
+            if totalDist < minTotalDist then
+                minTotalDist = totalDist
+                bestTarget = e1.hitbox
+            end
+        end
+        return bestTarget or enemiesList[1].hitbox
+    end
+    
+    return enemiesList[1].hitbox
+end
+
+gganim._fireGun = function(arg1)
+    if not _G.Config.enabled then return end
+    
+    local stores = require(game:GetService("ReplicatedStorage").Client.Interfaces.Stores)
+    local camcontroller = require(game:GetService("ReplicatedStorage").Content.Tower["Gatling Gun"].Animator.CameraController)
+    
+    local minigun = arg1.Replicator:Get("Minigun")
+    local canFire = arg1.Replicator:Get("CanFire")
+    
+    if minigun and canFire == false then
+        pcall(function()
+            reReload:FireServer()
+        end)
+        bulletCounter = 0
+        arg1:Wait(2.5)
+        return
+    end
+    
+    if bulletCounter >= 250 then
+        pcall(function()
+            reReload:FireServer()
+        end)
+        bulletCounter = 0
+        arg1:Wait(2.5)
+        return
+    end
+    
+    arg1:_fire(camcontroller.position)
+    
+    if not _G.Config.norecoil then
+        stores.CrosshairStore.store:dispatch({
+            ["type"] = "addSpread",
+            ["spread"] = arg1.Stats.Attributes.SpreadAdd or 10
+        })
+        camcontroller.recoil(arg1.Stats.Attributes.Recoil or 0.03)
+    end
+    
+    local targetHitbox = getTargetNPC(_G.Config.targetMode)
+    local castPosition = targetHitbox and targetHitbox.Position or (camcontroller.result and camcontroller.result.Position or camcontroller.position)
+    local sync = workspace:GetAttribute("Sync") or 0
+    
+    bulletCounter = bulletCounter + 1
+    
+    for i = 1, _G.Config.multiplytimes do
+        pcall(function()
+            ggchannel:fireServer("Fire", vector.create(castPosition.X, castPosition.Y, castPosition.Z), sync, workspace:GetServerTimeNow())
+        end)
+    end
+    
+    arg1:Wait(_G.Config.gatlingcooldown)
+end
+
+_G.UpdateGatling = function(newConfig)
+    for k, v in pairs(newConfig) do
+        if _G.Config[k] ~= nil then
+            _G.Config[k] = v
+        end
+    end
+    if newConfig.fps_enabled ~= nil then
+        setFPSMode(_G.Config.fps_enabled)
+    end
+end
