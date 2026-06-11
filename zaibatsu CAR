@@ -1,44 +1,149 @@
--- ========== UNIVERSAL VEHICLE TUNER (ORION LIB) - DÙNG TEXTBOX ==========
--- by palofsc
--- Điều chỉnh: Khối lượng, Độ bám (grip), Tốc độ nhân
--- Dùng được cho MỌI XE bạn đang lái
+-- ========== VEHICLE STANCE - SAFE MODE (KHÔNG BIẾN DẠNG) ==========
+-- by longtokai
+-- Giới hạn góc an toàn, tự động reset khi phát hiện xoay lạ.
 
--- ═══════════════════════════════════════════════════════════════
--- LOAD ORION LIBRARY
--- ═══════════════════════════════════════════════════════════════
 local OrionLib = loadstring(game:HttpGet('https://raw.githubusercontent.com/jensonhirst/Orion/main/source'))()
 local Window = OrionLib:MakeWindow({
-    Name = "Universal Vehicle Tuner",
+    Name = "Safe Stance Tuner",
     HidePremium = true,
     SaveConfig = true,
-    ConfigFolder = "VehicleTunerFull",
+    ConfigFolder = "SafeStance",
     IntroEnabled = false,
 })
 
--- ═══════════════════════════════════════════════════════════════
--- CẤU HÌNH
--- ═══════════════════════════════════════════════════════════════
-_G.VehicleConfig = {
-    MassMultiplier = 1.0,      -- Khối lượng (0.1 - 10)
-    Grip = 0.7,                -- Độ bám (0.01 - 2)
-    SpeedMultiplier = 1.0,     -- Tốc độ (0.5 - 10)
+_G.SafeConfig = {
+    MassMultiplier = 1.0,
+    Grip = 0.7,
+    SpeedMultiplier = 1.0,
+    Lowering = 0,               -- giới hạn -1.2 đến 0.2
+    Camber = 0,                 -- giới hạn -25 đến 25
+    Toe = 0,                    -- giới hạn -30 đến 30
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- CÁC HÀM ÁP DỤNG
+-- KHỞI TẠO & PHÁT HIỆN LỖI
 -- ═══════════════════════════════════════════════════════════════
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
+
 local currentVehicle = nil
 local speedConnection = nil
+local wheelWelds = {}
+local originalC0 = {}
+local primaryPart = nil
+local originalPrimaryPos = nil
+local lastStableTime = tick()
 
+-- Hàm kiểm tra xe có bị xoay quá mức không (phát hiện biến dạng)
+local function isVehicleDistorted()
+    if not primaryPart then return false end
+    local _, _, _, _, _, _, rz = primaryPart.CFrame:ToOrientation()
+    local rzDeg = math.deg(rz)
+    -- Nếu xe xoay quanh trục Z hơn 20 độ (lăn) hoặc bị nghiêng quá mức
+    return math.abs(rzDeg) > 20
+end
+
+-- Hàm reset stance tức thì (trả về giá trị 0)
+local function emergencyReset()
+    if not currentVehicle then return end
+    print("[Safe] Emergency reset - vehicle distorted!")
+    _G.SafeConfig.Camber = 0
+    _G.SafeConfig.Toe = 0
+    _G.SafeConfig.Lowering = 0
+    for weld, orig in pairs(originalC0) do
+        if weld and weld.Parent then
+            pcall(function() weld.C0 = orig end)
+        end
+    end
+    if primaryPart and originalPrimaryPos then
+        pcall(function() primaryPart.Position = originalPrimaryPos end)
+    end
+    -- Cập nhật UI (nếu cần, nhưng OrionLib không hỗ trợ set giá trị, chỉ thông báo)
+    OrionLib:MakeNotification({
+        Name = "⚠️ Emergency Reset",
+        Content = "Vehicle was distorted. Stance reset to zero.",
+        Time = 3,
+    })
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- TÌM WELD BÁNH XE (CHỈ LẤY BÁNH SAU, TRÁNH BÁNH LÁI)
+-- ═══════════════════════════════════════════════════════════════
+local function findSafeWheelWelds(vehicle)
+    local welds = {}
+    for _, part in ipairs(vehicle:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local name = part.Name
+            -- Chỉ lấy bánh sau (RL, RR) và bánh trước không có hinge lái (nếu tìm thấy)
+            -- Ưu tiên bánh sau để tránh ảnh hưởng steering
+            if name == "RL" or name == "RR" or name:lower():find("rear") then
+                for _, weld in ipairs(part:GetChildren()) do
+                    if weld:IsA("Weld") or weld:IsA("Motor6D") then
+                        if weld.Part0 == part or weld.Part1 == part then
+                            table.insert(welds, {weld = weld, wheelPart = part})
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- Nếu không tìm thấy bánh sau, lấy tất cả bánh (có thể gây lỗi nhẹ nhưng ít hơn)
+    if #welds == 0 then
+        for _, part in ipairs(vehicle:GetDescendants()) do
+            if part:IsA("BasePart") and (part.Name == "FL" or part.Name == "FR" or part.Name == "RL" or part.Name == "RR" or part.Name:lower():find("wheel")) then
+                for _, weld in ipairs(part:GetChildren()) do
+                    if weld:IsA("Weld") or weld:IsA("Motor6D") then
+                        table.insert(welds, {weld = weld, wheelPart = part})
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return welds
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- ÁP DỤNG GÓC AN TOÀN (CLAMP TRƯỚC KHI SET)
+-- ═══════════════════════════════════════════════════════════════
+local function applyCamberToe()
+    local camber = math.clamp(_G.SafeConfig.Camber, -25, 25)
+    local toe = math.clamp(_G.SafeConfig.Toe, -30, 30)
+    local camberRad = math.rad(camber)
+    local toeRad = math.rad(toe)
+    for _, data in ipairs(wheelWelds) do
+        local weld = data.weld
+        local orig = originalC0[weld]
+        if orig then
+            -- Giới hạn góc xoay trong CFrame để tránh weld bị đảo
+            local newC0 = orig * CFrame.Angles(camberRad, toeRad, 0)
+            pcall(function() weld.C0 = newC0 end)
+        end
+    end
+end
+
+-- Hạ gầm an toàn (chỉ cho phép thay đổi nhỏ)
+local function applyLowering()
+    if not primaryPart then return end
+    local lowering = math.clamp(_G.SafeConfig.Lowering, -1.2, 0.2)
+    if originalPrimaryPos == nil then
+        originalPrimaryPos = primaryPart.Position
+    end
+    local newY = originalPrimaryPos.Y + lowering
+    primaryPart.Position = Vector3.new(primaryPart.Position.X, newY, primaryPart.Position.Z)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- CÁC HÀM CƠ BẢN (GIỮ NGUYÊN)
+-- ═══════════════════════════════════════════════════════════════
 local function getCurrentVehicle()
     local char = LocalPlayer.Character
     if not char then return nil end
-    local humanoid = char:FindFirstChild("Humanoid")
-    if not humanoid then return nil end
-    local seat = humanoid.SeatPart
+    local hum = char:FindFirstChild("Humanoid")
+    if not hum then return nil end
+    local seat = hum.SeatPart
     if not seat or not seat:IsA("VehicleSeat") then return nil end
     local vehicle = seat.Parent
     while vehicle and not vehicle:IsA("Model") do vehicle = vehicle.Parent end
@@ -47,23 +152,22 @@ end
 
 local function applyMassAndGrip(vehicle)
     if not vehicle then return end
-    local massMult = _G.VehicleConfig.MassMultiplier
-    local friction = _G.VehicleConfig.Grip
+    local massMult = _G.SafeConfig.MassMultiplier
+    local friction = _G.SafeConfig.Grip
     for _, part in ipairs(vehicle:GetDescendants()) do
         if part:IsA("BasePart") then
             local cur = part.CustomPhysicalProperties
             local newDensity = (cur and cur.Density or 1) * massMult
-            local newFriction = math.max(friction, 0.0001)
+            local newFriction = math.max(friction, 0.05)
             local newProps = PhysicalProperties.new(newDensity, newFriction, cur and cur.Elasticity or 0.5)
             pcall(function() part.CustomPhysicalProperties = newProps end)
         end
     end
-    print("[Tuner] Mass=", massMult, " Grip=", friction)
 end
 
 local function applySpeedMultiplier(vehicle)
     if speedConnection then speedConnection:Disconnect() end
-    local mult = _G.VehicleConfig.SpeedMultiplier
+    local mult = _G.SafeConfig.SpeedMultiplier
     if not vehicle or mult == 1 then return end
     local primary = vehicle.PrimaryPart or vehicle:FindFirstChildOfClass("VehicleSeat")
     if not primary then return end
@@ -76,80 +180,139 @@ local function applySpeedMultiplier(vehicle)
     end)
 end
 
+-- ═══════════════════════════════════════════════════════════════
+-- KHỞI TẠO XE MỚI (CHỈ MỘT LẦN)
+-- ═══════════════════════════════════════════════════════════════
+local function setupVehicle(vehicle)
+    wheelWelds = {}
+    originalC0 = {}
+    primaryPart = vehicle.PrimaryPart or vehicle:FindFirstChildOfClass("VehicleSeat")
+    originalPrimaryPos = primaryPart and primaryPart.Position or nil
+    
+    local welds = findSafeWheelWelds(vehicle)
+    if #welds > 0 then
+        wheelWelds = welds
+        for _, data in ipairs(wheelWelds) do
+            local weld = data.weld
+            if weld:IsA("Weld") or weld:IsA("Motor6D") then
+                originalC0[weld] = weld.C0
+            end
+        end
+        applyCamberToe()
+        print("[Safe] Found", #wheelWelds, "safe wheel welds")
+    else
+        warn("[Safe] No safe weld found, camber/toe disabled")
+    end
+    
+    applyLowering()
+    applyMassAndGrip(vehicle)
+    applySpeedMultiplier(vehicle)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- GIÁM SÁT XE MỖI FRAME (PHÁT HIỆN BIẾN DẠNG)
+-- ═══════════════════════════════════════════════════════════════
+local function monitorDistortion()
+    if not currentVehicle then return end
+    if isVehicleDistorted() then
+        if tick() - lastStableTime > 1 then
+            emergencyReset()
+            lastStableTime = tick()
+        end
+    else
+        lastStableTime = tick()
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- LUỒNG CHÍNH
+-- ═══════════════════════════════════════════════════════════════
 local function updateVehicle()
     local vehicle = getCurrentVehicle()
     if vehicle and vehicle ~= currentVehicle then
         currentVehicle = vehicle
-        applyMassAndGrip(currentVehicle)
-        applySpeedMultiplier(currentVehicle)
+        setupVehicle(currentVehicle)
         OrionLib:MakeNotification({Name="Xe mới", Content=vehicle.Name, Time=2})
     elseif vehicle and vehicle == currentVehicle then
         applyMassAndGrip(currentVehicle)
         applySpeedMultiplier(currentVehicle)
+        applyCamberToe()
+        applyLowering()
     elseif not vehicle and currentVehicle then
         if speedConnection then speedConnection:Disconnect(); speedConnection=nil end
         currentVehicle = nil
+        wheelWelds = {}
+        originalC0 = {}
     end
 end
 
--- Theo dõi lên/xuống xe
-local function onCharAdded()
+local function onCharacterAdded()
     local char = LocalPlayer.Character
     if not char then return end
     local hum = char:WaitForChild("Humanoid")
     hum:GetPropertyChangedSignal("SeatPart"):Connect(updateVehicle)
     updateVehicle()
 end
-if LocalPlayer.Character then onCharAdded() else LocalPlayer.CharacterAdded:Connect(onCharAdded) end
+
+if LocalPlayer.Character then onCharacterAdded() else LocalPlayer.CharacterAdded:Connect(onCharacterAdded) end
+
+-- Kiểm tra biến dạng định kỳ
+RunService.Heartbeat:Connect(monitorDistortion)
 
 -- ═══════════════════════════════════════════════════════════════
--- GIAO DIỆN ORION – 3 TEXTBOX
+-- GIAO DIỆN ORION
 -- ═══════════════════════════════════════════════════════════════
-local MainTab = Window:MakeTab({Name = "Vehicle Tuner", Icon = "rbxassetid://4483345998"})
+local MainTab = Window:MakeTab({Name = "Safe Stance", Icon = "rbxassetid://4483345998"})
 
--- Helper để tạo TextBox và hiển thị giá trị hiện tại trong tên
-local function addTextBox(title, key, minVal, maxVal, suffix)
-    local current = _G.VehicleConfig[key]
+local function addSafeBox(title, key, minv, maxv, suffix)
+    local cur = _G.SafeConfig[key]
     MainTab:AddTextbox({
-        Name = title .. " (hiện: " .. string.format("%.3f", current) .. " " .. suffix .. ")",
-        Default = tostring(current),
+        Name = title .. " (an toàn: " .. minv .. "→" .. maxv .. ", hiện: " .. string.format("%.2f", cur) .. suffix .. ")",
+        Default = tostring(cur),
         TextDisappear = true,
-        Callback = function(Value)
-            local num = tonumber(Value)
+        Callback = function(v)
+            local num = tonumber(v)
             if num then
-                num = math.clamp(num, minVal, maxVal)
-                _G.VehicleConfig[key] = num
+                num = math.clamp(num, minv, maxv)
+                _G.SafeConfig[key] = num
                 if currentVehicle then
                     if key == "MassMultiplier" or key == "Grip" then
                         applyMassAndGrip(currentVehicle)
                     elseif key == "SpeedMultiplier" then
                         applySpeedMultiplier(currentVehicle)
+                    elseif key == "Camber" or key == "Toe" then
+                        applyCamberToe()
+                    elseif key == "Lowering" then
+                        applyLowering()
                     end
                 end
-                -- Thông báo cập nhật (có thể tắt)
-                OrionLib:MakeNotification({Name="Đã cập nhật", Content=title.." = "..num..suffix, Time=1})
+                OrionLib:MakeNotification({Name="OK", Content=title.." = "..num..suffix, Time=1})
             end
         end
     })
 end
 
-addTextBox("Khối lượng (nặng/nhẹ)", "MassMultiplier", 0.1, 10, "x")
-addTextBox("Độ bám (càng nhỏ càng trơn)", "Grip", 0.01, 2, "")
-addTextBox("Tốc độ tối đa (nhân)", "SpeedMultiplier", 0.5, 10, "x")
+addSafeBox("Khối lượng", "MassMultiplier", 0.3, 3, "x")
+addSafeBox("Độ bám (grip)", "Grip", 0.1, 1.5, "")
+addSafeBox("Tốc độ x", "SpeedMultiplier", 0.5, 8, "x")
+addSafeBox("Hạ gầm (studs)", "Lowering", -1.2, 0.2, " studs")
+addSafeBox("Camber (độ)", "Camber", -25, 25, "°")
+addSafeBox("Toe (độ)", "Toe", -30, 30, "°")
 
--- Nút reset
 MainTab:AddButton({
-    Name = "Reset về mặc định (1, 0.7, 1)",
+    Name = "Reset về 0 (an toàn)",
     Callback = function()
-        _G.VehicleConfig.MassMultiplier = 1
-        _G.VehicleConfig.Grip = 0.7
-        _G.VehicleConfig.SpeedMultiplier = 1
+        _G.SafeConfig.Camber = 0
+        _G.SafeConfig.Toe = 0
+        _G.SafeConfig.Lowering = 0
+        _G.SafeConfig.MassMultiplier = 1
+        _G.SafeConfig.Grip = 0.7
+        _G.SafeConfig.SpeedMultiplier = 1
         if currentVehicle then
-            applyMassAndGrip(currentVehicle)
-            applySpeedMultiplier(currentVehicle)
+            setupVehicle(currentVehicle)  -- reload toàn bộ
         end
-        OrionLib:MakeNotification({Name="Reset", Content="Đã về mặc định", Time=2})
+        OrionLib:MakeNotification({Name="Reset", Content="All values set to safe defaults", Time=2})
     end
 })
 
-OrionLib:MakeNotification({Name="Ready", Content="Lên bất kỳ xe nào và nhập số (0.1-10, 0.01-2, 0.5-10)", Time=3})
+OrionLib:MakeNotification({Name="Safe Stance", Content="Limits applied to prevent deformation.", Time=3})
