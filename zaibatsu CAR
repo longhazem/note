@@ -1,0 +1,155 @@
+-- ========== UNIVERSAL VEHICLE TUNER (ORION LIB) - DÙNG TEXTBOX ==========
+-- by palofsc
+-- Điều chỉnh: Khối lượng, Độ bám (grip), Tốc độ nhân
+-- Dùng được cho MỌI XE bạn đang lái
+
+-- ═══════════════════════════════════════════════════════════════
+-- LOAD ORION LIBRARY
+-- ═══════════════════════════════════════════════════════════════
+local OrionLib = loadstring(game:HttpGet('https://raw.githubusercontent.com/jensonhirst/Orion/main/source'))()
+local Window = OrionLib:MakeWindow({
+    Name = "Universal Vehicle Tuner",
+    HidePremium = true,
+    SaveConfig = true,
+    ConfigFolder = "VehicleTunerFull",
+    IntroEnabled = false,
+})
+
+-- ═══════════════════════════════════════════════════════════════
+-- CẤU HÌNH
+-- ═══════════════════════════════════════════════════════════════
+_G.VehicleConfig = {
+    MassMultiplier = 1.0,      -- Khối lượng (0.1 - 10)
+    Grip = 0.7,                -- Độ bám (0.01 - 2)
+    SpeedMultiplier = 1.0,     -- Tốc độ (0.5 - 10)
+}
+
+-- ═══════════════════════════════════════════════════════════════
+-- CÁC HÀM ÁP DỤNG
+-- ═══════════════════════════════════════════════════════════════
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local currentVehicle = nil
+local speedConnection = nil
+
+local function getCurrentVehicle()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local humanoid = char:FindFirstChild("Humanoid")
+    if not humanoid then return nil end
+    local seat = humanoid.SeatPart
+    if not seat or not seat:IsA("VehicleSeat") then return nil end
+    local vehicle = seat.Parent
+    while vehicle and not vehicle:IsA("Model") do vehicle = vehicle.Parent end
+    return vehicle
+end
+
+local function applyMassAndGrip(vehicle)
+    if not vehicle then return end
+    local massMult = _G.VehicleConfig.MassMultiplier
+    local friction = _G.VehicleConfig.Grip
+    for _, part in ipairs(vehicle:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local cur = part.CustomPhysicalProperties
+            local newDensity = (cur and cur.Density or 1) * massMult
+            local newFriction = math.max(friction, 0.0001)
+            local newProps = PhysicalProperties.new(newDensity, newFriction, cur and cur.Elasticity or 0.5)
+            pcall(function() part.CustomPhysicalProperties = newProps end)
+        end
+    end
+    print("[Tuner] Mass=", massMult, " Grip=", friction)
+end
+
+local function applySpeedMultiplier(vehicle)
+    if speedConnection then speedConnection:Disconnect() end
+    local mult = _G.VehicleConfig.SpeedMultiplier
+    if not vehicle or mult == 1 then return end
+    local primary = vehicle.PrimaryPart or vehicle:FindFirstChildOfClass("VehicleSeat")
+    if not primary then return end
+    speedConnection = RunService.Heartbeat:Connect(function()
+        if not primary.Parent then speedConnection:Disconnect(); speedConnection=nil; return end
+        local vel = primary.AssemblyLinearVelocity
+        if vel.Magnitude > 0.1 then
+            primary.AssemblyLinearVelocity = vel * mult
+        end
+    end)
+end
+
+local function updateVehicle()
+    local vehicle = getCurrentVehicle()
+    if vehicle and vehicle ~= currentVehicle then
+        currentVehicle = vehicle
+        applyMassAndGrip(currentVehicle)
+        applySpeedMultiplier(currentVehicle)
+        OrionLib:MakeNotification({Name="Xe mới", Content=vehicle.Name, Time=2})
+    elseif vehicle and vehicle == currentVehicle then
+        applyMassAndGrip(currentVehicle)
+        applySpeedMultiplier(currentVehicle)
+    elseif not vehicle and currentVehicle then
+        if speedConnection then speedConnection:Disconnect(); speedConnection=nil end
+        currentVehicle = nil
+    end
+end
+
+-- Theo dõi lên/xuống xe
+local function onCharAdded()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:WaitForChild("Humanoid")
+    hum:GetPropertyChangedSignal("SeatPart"):Connect(updateVehicle)
+    updateVehicle()
+end
+if LocalPlayer.Character then onCharAdded() else LocalPlayer.CharacterAdded:Connect(onCharAdded) end
+
+-- ═══════════════════════════════════════════════════════════════
+-- GIAO DIỆN ORION – 3 TEXTBOX
+-- ═══════════════════════════════════════════════════════════════
+local MainTab = Window:MakeTab({Name = "Vehicle Tuner", Icon = "rbxassetid://4483345998"})
+
+-- Helper để tạo TextBox và hiển thị giá trị hiện tại trong tên
+local function addTextBox(title, key, minVal, maxVal, suffix)
+    local current = _G.VehicleConfig[key]
+    MainTab:AddTextbox({
+        Name = title .. " (hiện: " .. string.format("%.3f", current) .. " " .. suffix .. ")",
+        Default = tostring(current),
+        TextDisappear = true,
+        Callback = function(Value)
+            local num = tonumber(Value)
+            if num then
+                num = math.clamp(num, minVal, maxVal)
+                _G.VehicleConfig[key] = num
+                if currentVehicle then
+                    if key == "MassMultiplier" or key == "Grip" then
+                        applyMassAndGrip(currentVehicle)
+                    elseif key == "SpeedMultiplier" then
+                        applySpeedMultiplier(currentVehicle)
+                    end
+                end
+                -- Thông báo cập nhật (có thể tắt)
+                OrionLib:MakeNotification({Name="Đã cập nhật", Content=title.." = "..num..suffix, Time=1})
+            end
+        end
+    })
+end
+
+addTextBox("Khối lượng (nặng/nhẹ)", "MassMultiplier", 0.1, 10, "x")
+addTextBox("Độ bám (càng nhỏ càng trơn)", "Grip", 0.01, 2, "")
+addTextBox("Tốc độ tối đa (nhân)", "SpeedMultiplier", 0.5, 10, "x")
+
+-- Nút reset
+MainTab:AddButton({
+    Name = "Reset về mặc định (1, 0.7, 1)",
+    Callback = function()
+        _G.VehicleConfig.MassMultiplier = 1
+        _G.VehicleConfig.Grip = 0.7
+        _G.VehicleConfig.SpeedMultiplier = 1
+        if currentVehicle then
+            applyMassAndGrip(currentVehicle)
+            applySpeedMultiplier(currentVehicle)
+        end
+        OrionLib:MakeNotification({Name="Reset", Content="Đã về mặc định", Time=2})
+    end
+})
+
+OrionLib:MakeNotification({Name="Ready", Content="Lên bất kỳ xe nào và nhập số (0.1-10, 0.01-2, 0.5-10)", Time=3})
