@@ -1,0 +1,517 @@
+--[[
+========================================================================
+TDS STRATEGY RECORDER V5 (ULTIMATE HYBRID EDITION)
+========================================================================
+ĐIỂM ĐỘT PHÁ V5:
+1. Tích hợp giải mã JSON tự động lấy danh sách 5 tháp trong túi đồ thực tế.
+2. Lắng nghe trực tiếp Workspace.Towers (Bỏ qua Hook, tăng độ ổn định 100%).
+3. Tự động nhận diện Modifiers (Hệ số sửa đổi phòng chơi).
+4. Thêm tính năng START/STOP chủ động kiểm soát trình ghi chiến thuật.
+5. Giao diện thiết kế lại phong cách Carbon Sleek, có nút co giãn (Resize) mượt mà.
+========================================================================
+]]
+
+-- [[ Khởi tạo trạng thái ban đầu ]]
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
+-- Trạng thái ghi nhận
+_G.record_strat = false
+local file_name = "TDS_Recorded_Strat.lua"
+local recordedLines = {}
+local spawned_towers = {}
+local tower_count = 0
+
+-- Danh sách chế độ dự phòng và chế độ đang chọn
+local availableModes = {
+    "Easy", "Normal", "Molten", "Fallen", "Hardcore",
+    "Pizza Party", "Badlands", "Frost", "Polluted Wasteland"
+}
+local currentModeIndex = 3
+local selectedMode = "Molten"
+
+-- [[ Tạo và thiết kế giao diện GUI hiện đại ]]
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "TDSRecorderV5"
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+ScreenGui.ResetOnSpawn = false
+
+-- Khung giao diện chính (Carbon Theme)
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+MainFrame.BorderSizePixel = 0
+MainFrame.Position = UDim2.new(0.05, 0, 0.2, 0)
+MainFrame.Size = UDim2.new(0, 360, 0, 480)
+MainFrame.Active = true
+MainFrame.Draggable = true
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = MainFrame
+
+-- Tiêu đề chính
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Parent = MainFrame
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0, 15, 0, 8)
+Title.Size = UDim2.new(0, 260, 0, 30)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "TDS RECORDER V5"
+Title.TextColor3 = Color3.fromRGB(240, 240, 245)
+Title.TextSize = 15
+Title.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Nút thu nhỏ
+local MinimizeBtn = Instance.new("TextButton")
+MinimizeBtn.Name = "MinimizeBtn"
+MinimizeBtn.Parent = MainFrame
+MinimizeBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+MinimizeBtn.Position = UDim2.new(1, -38, 0, 10)
+MinimizeBtn.Size = UDim2.new(0, 24, 0, 24)
+MinimizeBtn.Font = Enum.Font.GothamBold
+MinimizeBtn.Text = "-"
+MinimizeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+MinimizeBtn.TextSize = 14
+local MinCorner = Instance.new("UICorner")
+MinCorner.CornerRadius = UDim.new(0, 6)
+MinCorner.Parent = MinimizeBtn
+
+-- [[ Cấu hình Scrollable Log Box ]]
+local LogContainer = Instance.new("ScrollingFrame")
+LogContainer.Name = "LogContainer"
+LogContainer.Parent = MainFrame
+LogContainer.Active = true
+LogContainer.BackgroundColor3 = Color3.fromRGB(10, 10, 12)
+LogContainer.BorderSizePixel = 0
+LogContainer.Position = UDim2.new(0, 15, 0, 45)
+LogContainer.Size = UDim2.new(1, -30, 0, 230)
+LogContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+LogContainer.ScrollBarThickness = 5
+LogContainer.ScrollBarImageColor3 = Color3.fromRGB(60, 60, 70)
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Parent = LogContainer
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 4)
+
+local LogPadding = Instance.new("UIPadding")
+LogPadding.PaddingLeft = UDim.new(0, 8)
+LogPadding.PaddingTop = UDim.new(0, 6)
+LogPadding.Parent = LogContainer
+
+-- [[ Tạo Handle kéo thả co giãn giao diện ]]
+local ResizeHandle = Instance.new("Frame")
+ResizeHandle.Name = "ResizeHandle"
+ResizeHandle.Parent = MainFrame
+ResizeHandle.Size = UDim2.new(0, 16, 0, 16)
+ResizeHandle.Position = UDim2.new(1, -16, 1, -16)
+ResizeHandle.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
+ResizeHandle.BackgroundTransparency = 0.6
+local ResizeCorner = Instance.new("UICorner")
+ResizeCorner.CornerRadius = UDim.new(1, 0)
+ResizeCorner.Parent = ResizeHandle
+
+-- Logic co giãn giao diện bằng chuột/cảm ứng
+local isResizing = false
+ResizeHandle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        isResizing = true
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if isResizing and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local mousePos = input.Position
+        local framePos = MainFrame.AbsolutePosition
+        local newWidth = math.clamp(mousePos.X - framePos.X, 280, 600)
+        local newHeight = math.clamp(mousePos.Y - framePos.Y, 200, 700)
+        MainFrame.Size = UDim2.new(0, newWidth, 0, newHeight)
+        
+        -- Điều chỉnh linh hoạt kích thước vùng log theo khung mới
+        LogContainer.Size = UDim2.new(1, -30, 0, newHeight - 250)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        isResizing = false
+    end
+end)
+
+-- [[ Tạo các nút điều khiển chức năng ]]
+local ButtonContainer = Instance.new("Frame")
+ButtonContainer.Name = "ButtonContainer"
+ButtonContainer.Parent = MainFrame
+ButtonContainer.BackgroundTransparency = 1
+ButtonContainer.Position = UDim2.new(0, 15, 1, -195)
+ButtonContainer.Size = UDim2.new(1, -30, 0, 185)
+
+local function createButton(name, text, color, xPos, yPos, width, height)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Parent = ButtonContainer
+    btn.BackgroundColor3 = color
+    btn.Position = UDim2.new(0, xPos, 0, yPos)
+    btn.Size = UDim2.new(0, width, 0, height)
+    btn.Font = Enum.Font.GothamBold
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 12
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 5)
+    corner.Parent = btn
+
+    return btn
+end
+
+local StartBtn = createButton("StartBtn", "START RECORDING 🟢", Color3.fromRGB(46, 204, 113), 0, 5, 160, 32)
+local StopBtn = createButton("StopBtn", "STOP & SAVE 🔴", Color3.fromRGB(231, 76, 60), 170, 5, 160, 32)
+local ModeBtn = createButton("ModeBtn", "CHẾ ĐỘ: MOLTEN 🔄", Color3.fromRGB(155, 89, 182), 0, 42, 330, 32)
+local CopyBtn = createButton("CopyBtn", "SAO CHÉP CODE (COPY CLIPBOARD)", Color3.fromRGB(41, 128, 185), 0, 79, 330, 32)
+local SaveBtn = createButton("SaveBtn", "LƯU VÀO WORKSPACE", Color3.fromRGB(44, 62, 80), 0, 116, 200, 30)
+local ClearBtn = createButton("ClearBtn", "XÓA LÀM LẠI", Color3.fromRGB(149, 165, 166), 210, 116, 120, 30)
+
+-- Căn chỉnh tự động vị trí vùng nút khi khung cha co giãn
+MainFrame:GetPropertyChangedSignal("Size"):Connect(function()
+    ButtonContainer.Position = UDim2.new(0, 15, 1, -195)
+end)
+
+-- [[ Hàm phụ trợ hiển thị log trên UI ]]
+local function addLogUI(text, isAction)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -10, 0, 20)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.Code
+    label.Text = text
+    label.TextColor3 = isAction and Color3.fromRGB(120, 255, 120) or Color3.fromRGB(180, 180, 200)
+    label.TextSize = 11
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = LogContainer
+
+    LogContainer.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 20)
+    LogContainer.CanvasPosition = Vector2.new(0, LogContainer.CanvasSize.Y.Offset)
+end
+
+local function logAction(line)
+    if not _G.record_strat then return end
+    table.insert(recordedLines, line)
+    addLogUI(line, true)
+
+    -- Ghi trực tiếp nếu được hỗ trợ để tránh mất dữ liệu giữa chừng
+    if appendfile then
+        pcall(function()
+            appendfile(file_name, line .. "\n")
+        end)
+    end
+end
+
+-- [[ Lấy môi trường Game và giải mã Replicators ]]
+local function fetchGameEnvironment()
+    local detected_mode = "Molten"
+    local detected_map = "Unknown Map"
+
+    -- Lấy thông tin bản đồ và chế độ từ hệ thống ReplicatedStorage
+    local state_folder = ReplicatedStorage:FindFirstChild("State")
+    if state_folder then
+        if state_folder:FindFirstChild("Difficulty") then
+            detected_mode = state_folder.Difficulty.Value
+        elseif state_folder:FindFirstChild("Mode") then
+            detected_mode = state_folder.Mode.Value
+        end
+        
+        if state_folder:FindFirstChild("Map") then
+            detected_map = state_folder.Map.Value
+        end
+    end
+
+    -- Lấy danh sách 5 tháp trong túi đồ thực tế bằng JSON Parser
+    local t1, t2, t3, t4, t5 = "Scout", "None", "None", "None", "None"
+    local state_replicators = ReplicatedStorage:FindFirstChild("StateReplicators")
+    if state_replicators then
+        for _, folder in ipairs(state_replicators:GetChildren()) do
+            if folder.Name == "PlayerReplicator" and folder:GetAttribute("UserId") == LocalPlayer.UserId then
+                local equipped = folder:GetAttribute("EquippedTowers")
+                if type(equipped) == "string" then
+                    local cleaned_json = equipped:match("%[.*%]")
+                    local success, tower_table = pcall(function()
+                        return HttpService:JSONDecode(cleaned_json)
+                    end)
+                    if success and type(tower_table) == "table" then
+                        t1 = tower_table[1] or "None"
+                        t2 = tower_table[2] or "None"
+                        t3 = tower_table[3] or "None"
+                        t4 = tower_table[4] or "None"
+                        t5 = tower_table[5] or "None"
+                    end
+                end
+            end
+        end
+    end
+
+    -- Lấy Modifiers bình chọn
+    local current_modifiers = ""
+    if state_replicators then
+        local mod_replicator = state_replicators:FindFirstChild("ModifierReplicator")
+        if mod_replicator then
+            local raw_votes = mod_replicator:GetAttribute("Votes")
+            if type(raw_votes) == "string" then
+                local cleaned_json = raw_votes:match("{.*}")
+                local success, mod_table = pcall(function()
+                    return HttpService:JSONDecode(cleaned_json)
+                end)
+                if success and type(mod_table) == "table" then
+                    local mods = {}
+                    for mod_name, _ in pairs(mod_table) do
+                        table.insert(mods, mod_name .. " = true")
+                    end
+                    current_modifiers = table.concat(mods, ", ")
+                end
+            end
+        end
+    end
+
+    return t1, t2, t3, t4, t5, detected_mode, detected_map, current_modifiers
+end
+
+-- [[ Khởi dựng văn bản code hoàn chỉnh ]]
+local function getFullScriptText()
+    local t1, t2, t3, t4, t5, detected_mode, detected_map, current_modifiers = fetchGameEnvironment()
+
+    -- Ưu tiên chế độ được chọn thủ công trên UI nếu người chơi bấm đổi
+    local finalMode = selectedMode or detected_mode
+
+    local header = "--[[ CHIẾN THUẬT TỰ ĐỘNG ĐƯỢC TẠO BỞI RECORDER V5 ]]\n"
+    header = header .. "_G.AutoStrat = true\n"
+    header = header .. "_G.AutoSkip = true\n"
+    header = header .. "_G.AutoPickups = true\n\n"
+    header = header .. "local TDS = loadstring(game:HttpGet(\"https://raw.githubusercontent.com/DuxiiT/auto-strat/refs/heads/main/Library.lua\"))()\n\n"
+    header = header .. string.format('TDS:Loadout("%s", "%s", "%s", "%s", "%s")\n', t1, t2, t3, t4, t5)
+    header = header .. string.format('TDS:Mode("%s")\n', finalMode)
+    header = header .. string.format('TDS:GameInfo("%s", {%s})\n\n', detected_map, current_modifiers)
+    header = header .. "TDS:UnlockTimeScale()\n"
+    header = header .. "TDS:TimeScale(2)\n\n"
+
+    return header .. table.concat(recordedLines, "\n")
+end
+
+-- [[ Lắng nghe thư mục Workspace.Towers ]]
+local towers_folder = workspace:WaitForChild("Towers", 15)
+
+if towers_folder then
+    -- Theo dõi khi tháp được ĐẶT xuống
+    towers_folder.ChildAdded:Connect(function(tower)
+        if not _G.record_strat then return end
+
+        local replicator = tower:WaitForChild("TowerReplicator", 6)
+        if not replicator then return end
+        
+        -- Xác thực quyền sở hữu tháp (Chỉ ghi tháp của bạn)
+        local owner_id = replicator:GetAttribute("OwnerId")
+        if owner_id and owner_id ~= LocalPlayer.UserId then return end
+        
+        tower_count = tower_count + 1
+        local my_index = tower_count
+        spawned_towers[tower] = my_index
+        
+        local tower_name = replicator:GetAttribute("Name") or tower.Name
+        local raw_pos = replicator:GetAttribute("Position")
+        
+        local pos_x, pos_y, pos_z
+        if typeof(raw_pos) == "Vector3" then
+            pos_x, pos_y, pos_z = raw_pos.X, raw_pos.Y, raw_pos.Z
+        else
+            local pivot_pos = tower:GetPivot().Position
+            pos_x, pos_y, pos_z = pivot_pos.X, pivot_pos.Y, pivot_pos.Z
+        end
+        
+        local command = string.format('TDS:Place("%s", %.3f, %.3f, %.3f) -- %d', tower_name, pos_x, pos_y, pos_z, my_index)
+        logAction(command)
+        
+        -- Theo dõi nâng cấp (Upgrade) của tháp này thông qua thay đổi Thuộc tính
+        replicator:GetAttributeChangedSignal("Upgrade"):Connect(function()
+            if not _G.record_strat then return end
+            -- Lấy cấp nâng cấp mới nhất
+            local upgrade_level = replicator:GetAttribute("Upgrade") or 1
+            local command_up = string.format('TDS:Upgrade(%d) -- Lvl %s', my_index, tostring(upgrade_level))
+            logAction(command_up)
+        end)
+    end)
+
+    -- Theo dõi khi tháp bị BÁN (bị xóa khỏi workspace)
+    towers_folder.ChildRemoved:Connect(function(tower)
+        if not _G.record_strat then return end
+        
+        local my_index = spawned_towers[tower]
+        if my_index then
+            local command = string.format('TDS:Sell(%d)', my_index)
+            logAction(command)
+            spawned_towers[tower] = nil
+        end
+    end)
+else
+    addLogUI("⚠️ Cảnh báo: Không tìm thấy thư mục Towers trong Workspace!", false)
+end
+
+-- [[ Hook an toàn hỗ trợ các kỹ năng (Abilities) ]]
+local ReplicatedStorageRF = ReplicatedStorage:WaitForChild("RF", 5)
+if ReplicatedStorageRF then
+    local oldInvokeServer
+    oldInvokeServer = hookfunction(Instance.new("RemoteFunction").InvokeServer, function(self, ...)
+        local args = { ... }
+        if self == ReplicatedStorageRF and _G.record_strat then
+            local action = args[1]
+            if action == "Ability" then
+                local towerInstance = args[2]
+                local abilityName = args[3]
+                local my_id = spawned_towers[towerInstance]
+                if my_id then
+                    local line = string.format('TDS:Ability(%d, "%s")', my_id, abilityName)
+                    logAction(line)
+                end
+            end
+        end
+        return oldInvokeServer(self, unpack(args))
+    end)
+end
+
+-- [[ Gắn trình nghe sự kiện cho nút bấm GUI ]]
+
+-- Nút START
+StartBtn.MouseButton1Click:Connect(function()
+    if _G.record_strat then return end
+
+    -- Làm sạch lịch sử cũ
+    recordedLines = {}
+    spawned_towers = {}
+    tower_count = 0
+
+    for _, child in ipairs(LogContainer:GetChildren()) do
+        if child:IsA("TextLabel") then child:Destroy() end
+    end
+
+    _G.record_strat = true
+
+    local t1, t2, t3, t4, t5, d_mode, d_map, d_mods = fetchGameEnvironment()
+
+    -- Tự động đồng bộ Mode được nhận diện lên nút thủ công ban đầu
+    selectedMode = d_mode
+    ModeBtn.Text = "CHẾ ĐỘ: " .. selectedMode:upper() .. " 🔄"
+    for i, m in ipairs(availableModes) do
+        if m:lower() == selectedMode:lower() then
+            currentModeIndex = i
+            break
+        end
+    end
+
+    addLogUI("🗺️ Map: " .. d_map, false)
+    addLogUI("🎖️ Mode: " .. selectedMode, false)
+    addLogUI(string.format("🎒 Loadout: %s, %s, %s, %s, %s", t1, t2, t3, t4, t5), false)
+    if d_mods ~= "" then
+        addLogUI("⚙️ Modifiers: " .. d_mods, false)
+    end
+    addLogUI("⚡ --- BẮT ĐẦU GHI CHIẾN THUẬT --- ⚡", false)
+
+    -- Ghi tiêu đề vào file trong Workspace
+    if writefile then
+        writefile(file_name, getFullScriptText())
+    end
+end)
+
+-- Nút STOP
+StopBtn.MouseButton1Click:Connect(function()
+    if not _G.record_strat then return end
+    _G.record_strat = false
+
+    local finalCode = getFullScriptText()
+    if writefile then
+        writefile(file_name, finalCode)
+        addLogUI("💾 Đã lưu chiến thuật vào file '" .. file_name .. "'", false)
+    else
+        addLogUI("⚠️ Executor không hỗ trợ lưu file. Hãy sử dụng COPY!", false)
+    end
+    addLogUI("🛑 --- ĐÃ DỪNG GHI CHIẾN THUẬT --- 🛑", false)
+end)
+
+-- Nút CHỌN CHẾ ĐỘ THỦ CÔNG
+ModeBtn.MouseButton1Click:Connect(function()
+    currentModeIndex = currentModeIndex + 1
+    if currentModeIndex > #availableModes then
+        currentModeIndex = 1
+    end
+    selectedMode = availableModes[currentModeIndex]
+    ModeBtn.Text = "CHẾ ĐỘ: " .. selectedMode:upper() .. " 🔄"
+    addLogUI("⚙️ Đã cập nhật chế độ đầu ra: " .. selectedMode, false)
+end)
+
+-- Nút COPY CODE
+CopyBtn.MouseButton1Click:Connect(function()
+    local fullCode = getFullScriptText()
+    if setclipboard then
+        setclipboard(fullCode)
+        CopyBtn.Text = "ĐÃ SAO CHÉP THÀNH CÔNG! ✅"
+        task.wait(1.5)
+        CopyBtn.Text = "SAO CHÉP CODE (COPY CLIPBOARD)"
+    else
+        CopyBtn.Text = "Trình chạy không hỗ trợ Sao chép!"
+    end
+end)
+
+-- Nút SAVE FILE
+SaveBtn.MouseButton1Click:Connect(function()
+    local fullCode = getFullScriptText()
+    if writefile then
+        pcall(function()
+            writefile(file_name, fullCode)
+        end)
+        SaveBtn.Text = "GHI THÀNH CÔNG! 💾"
+        task.wait(1.5)
+        SaveBtn.Text = "LƯU VÀO WORKSPACE"
+    else
+        SaveBtn.Text = "Không hỗ trợ ghi file!"
+    end
+end)
+
+-- Nút CLEAR
+ClearBtn.MouseButton1Click:Connect(function()
+    recordedLines = {}
+    spawned_towers = {}
+    tower_count = 0
+    for _, child in ipairs(LogContainer:GetChildren()) do
+        if child:IsA("TextLabel") then child:Destroy() end
+    end
+    addLogUI("-- LỊCH SỬ GHI ĐÃ ĐƯỢC XÓA SẠCH --", false)
+end)
+
+-- Nút MINIMIZE
+local minimized = false
+MinimizeBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    if minimized then
+        LogContainer.Visible = false
+        ButtonContainer.Visible = false
+        ResizeHandle.Visible = false
+        MainFrame.Size = UDim2.new(0, 360, 0, 40)
+        MinimizeBtn.Text = "+"
+    else
+        LogContainer.Visible = true
+        ButtonContainer.Visible = true
+        ResizeHandle.Visible = true
+        MainFrame.Size = UDim2.new(0, 360, 0, 480)
+        MinimizeBtn.Text = "-"
+    end
+end)
+
+-- Khởi động hệ thống
+addLogUI("🚀 TDS RECORDER V5 ĐÃ SẴN SÀNG!", false)
+addLogUI("💡 Hướng dẫn: Đợi vào hẳn trận đấu -> Bấm START RECORDING để bắt đầu ghi.", false)
