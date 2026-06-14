@@ -1,196 +1,73 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
-local Camera = Workspace.CurrentCamera
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local localPlayer = Players.LocalPlayer
-local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+local remoteEvent = ReplicatedStorage:WaitForChild("RemoteEvent")
 
--- 1. KHỞI TẠO THƯ MỤC ESP
-local ESPFolder = CoreGui:FindFirstChild("ESPHolder")
-if ESPFolder then ESPFolder:Destroy() end
-ESPFolder = Instance.new("Folder")
-ESPFolder.Name = "ESPHolder"
-ESPFolder.Parent = CoreGui
-
-local function ApplyHighlight(target, color)
-    if not target or not target:IsA("Model") then return end
-    local highlight = ESPFolder:FindFirstChild(target.Name .. "_" .. tostring(target:GetDebugId()))
-    if not highlight then
-        highlight = Instance.new("Highlight")
-        highlight.Name = target.Name .. "_" .. tostring(target:GetDebugId())
-        highlight.Parent = ESPFolder
-        highlight.Adornee = target
-        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        highlight.FillTransparency = 0.5
-        highlight.OutlineTransparency = 0
-    end
-    highlight.FillColor = color
-    highlight.OutlineColor = color
+-- Các hàm Remote đã tích hợp
+local function EquipKnife()
+    local args = { { { "\n", "Knife_Equip", {speed = 1.5, priority = Enum.AnimationPriority.Action2}, "Equip", true } } }
+    remoteEvent:FireServer(unpack(args))
 end
 
--- 2. VÒNG TRÒN FOV 60 CHO AIMBOT
-local fovCircle = Drawing.new("Circle")
-fovCircle.Visible = true
-fovCircle.Thickness = 1.5
-fovCircle.Color = Color3.fromRGB(255, 255, 255)
-fovCircle.Filled = false
-fovCircle.Radius = 60
-
--- 3. HÀM LỌC NPC THỰC SỰ
-local function getRealNPC(obj)
-    if obj:IsA("Model") and obj.Name == "Insurgent" then
-        local humanoid = obj:FindFirstChildOfClass("Humanoid")
-        local head = obj:FindFirstChild("Head")
-        if humanoid and head and obj:FindFirstChild("HumanoidRootPart") and humanoid.Health > 0 then
-            if obj.Parent and obj.Parent.Name ~= "WeaponRig" then
-                return obj
-            end
-        end
-    end
-    return nil
+local function DealDamage(targetPart)
+    local args = { { { " ", targetPart, {Time = 0.23, CFrame = targetPart.CFrame, Debug = true, Size = Vector3.new(1.5, 1.5, 2.5)} }, { " ", Instance.new("Part", nil), {Time = 0.23, CFrame = targetPart.CFrame, Debug = true, Size = Vector3.new(1.5, 1.5, 2.5)} } } }
+    remoteEvent:FireServer(unpack(args))
 end
 
--- HÀM TÌM NPC GẦN NHẤT
-local function getTargetNPC()
-    local closest = nil
-    local maxDistance = math.huge
-    local char = localPlayer.Character
-    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
-    local pRoot = char.HumanoidRootPart
-
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        local realNPC = getRealNPC(obj)
-        if realNPC then
-            local tRoot = realNPC.HumanoidRootPart
-            local distance = (pRoot.Position - tRoot.Position).Magnitude
-            if distance < maxDistance then
-                maxDistance = distance
-                closest = realNPC
-            end
-        end
-    end
-    return closest
+local function TriggerSwing()
+    local args = { { {"\v", "Knife_Slice1"}, {"\n", "Knife_Slice2", {priority = Enum.AnimationPriority.Action2, looped = false}}, {"\023", "Move1", false}, {"\023", "Swing", false} } }
+    remoteEvent:FireServer(unpack(args))
 end
 
--- 4. PHÓNG TO HITBOX ĐẦU NPC (Giúp đứng xa vẫn chém trúng đầu)
-local function ExpandHitbox()
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        local realNPC = getRealNPC(obj)
-        if realNPC then
-            local head = realNPC.Head
-            head.Size = Vector3.new(12, 12, 12) -- Tăng lên 12 để đứng xa 6 studs chém vẫn dính
-            head.Transparency = 0.6
-            head.CanCollide = false
-            if not head.Massless then head.Massless = true end
-        end
-    end
-end
-
--- 5. HÀM TỰ ĐỘNG TRANG BỊ CẬN CHIẾN FIX LỖI
-local function equipMeleeWeapon(pHumanoid)
-    local char = localPlayer.Character
-    if not char then return end
-    
-    -- Nếu trên tay đang cầm sẵn vũ khí rồi thì không tự đổi nữa để tránh lỗi kẹt
-    if char:FindFirstChildOfClass("Tool") then return end
-
-    local backpack = localPlayer:FindFirstChild("Backpack")
-    if not backpack then return end
-    
-    -- Ưu tiên tìm vũ khí cận chiến (ví dụ: Fire Axe hoặc món không có thuộc tính súng)
-    for _, tool in pairs(backpack:GetChildren()) do
-        if tool:IsA("Tool") then
-            if not tool:FindFirstChild("WeaponStats") and not tool.Name:find("Strike") and not tool.Name:find("Truck") then
-                pHumanoid:EquipTool(tool)
-                break
-            end
-        end
-    end
-end
-
--- 6. VÒNG LẶP RENDER STEPPED (ESP & AIMBOT)
-RunService.RenderStepped:Connect(function()
-    for _, p in pairs(Players:GetPlayers()) do
-        if p.Character then ApplyHighlight(p.Character, Color3.fromRGB(0, 0, 255)) end
-    end
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        local realNPC = getRealNPC(obj)
-        if realNPC then ApplyHighlight(realNPC, Color3.fromRGB(255, 0, 0)) end
-    end
-    for _, hl in pairs(ESPFolder:GetChildren()) do
-        if hl:IsA("Highlight") and (not hl.Adornee or not hl.Adornee.Parent) then hl:Destroy() end
-    end
-
-    local viewportSize = Camera.ViewportSize
-    fovCircle.Position = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
-    local target = getTargetNPC()
-    if target then
-        local aimPart = target:FindFirstChild("Head")
-        if aimPart then
-            local screenPoint, onScreen = Camera:WorldToViewportPoint(aimPart.Position)
-            if onScreen and (Vector2.new(screenPoint.X, screenPoint.Y) - fovCircle.Position).Magnitude <= fovCircle.Radius then
-                Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
-                fovCircle.Color = Color3.fromRGB(255, 0, 0)
-            end
-        end
-    else
-        fovCircle.Color = Color3.fromRGB(255, 255, 255)
-    end
-end)
-
--- 7. TÍNH NĂNG CẤP CAO: TELEPORT SAU LƯNG DƯỚI ĐẤT + SPIN + PRONE + KILL AURA
+-- VÒNG LẶP AUTO FARM CHÍNH
 local spinAngle = 0
-local AURA_RANGE = 25 -- Tăng tầm Aura lên một chút vì mình đứng xa ra
+local lastEquip = 0
 
 RunService.Heartbeat:Connect(function()
     local char = localPlayer.Character
-    if not char then return end
-    local pRoot = char:FindFirstChild("HumanoidRootPart")
-    local pHumanoid = char:FindFirstChildOfClass("Humanoid")
-    if not pRoot or not pHumanoid or pHumanoid.Health <= 0 then return end
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local pRoot = char.HumanoidRootPart
 
-    -- Lấy cận chiến lên tay
-    equipMeleeWeapon(pHumanoid)
+    -- 1. TỰ ĐỘNG EQUIP DAO
+    if tick() - lastEquip > 5 then
+        EquipKnife()
+        lastEquip = tick()
+    end
 
-    local currentTool = char:FindFirstChildOfClass("Tool")
-    
-    -- Kill Aura vung dao liên tục vào các mục tiêu xung quanh
+    -- 2. TÌM NPC GẦN NHẤT ĐỂ FARM
+    local closestNPC = nil
+    local maxDist = 30
     for _, obj in pairs(Workspace:GetDescendants()) do
-        local realNPC = getRealNPC(obj)
-        if realNPC then
-            local npcRoot = realNPC.HumanoidRootPart
-            local distance = (pRoot.Position - npcRoot.Position).Magnitude
-            if distance <= AURA_RANGE and currentTool then
-                currentTool:Activate()
+        if obj:IsA("Model") and obj.Name == "Insurgent" and obj.Parent and obj.Parent.Name ~= "WeaponRig" then
+            local npcRoot = obj:FindFirstChild("HumanoidRootPart")
+            if npcRoot and obj:FindFirstChild("Humanoid") and obj.Humanoid.Health > 0 then
+                local dist = (pRoot.Position - npcRoot.Position).Magnitude
+                if dist < maxDist then
+                    maxDist = dist
+                    closestNPC = obj
+                end
             end
         end
     end
 
-    -- TELEPORT FIX: Đứng dưới đất, sau lưng NPC cách 6 studs
-    local targetNPC = getTargetNPC()
-    if targetNPC then
-        local npcRoot = targetNPC:FindFirstChild("HumanoidRootPart")
-        if npcRoot then
-            spinAngle = (spinAngle + 45) % 360
-            
-            -- Tính toán vị trí phía sau lưng NPC: Lấy vị trí gốc trừ đi hướng nhìn LookVector của NPC
-            -- Giữ nguyên cao độ trục Y của NPC (để sát mặt đất) chứ không bay lên trời nữa
-            local backPosition = npcRoot.Position - (npcRoot.CFrame.LookVector * 6)
-            
-            -- Đưa nhân vật về vị trí đó + Áp dụng hiệu ứng Nằm ngang (-90) + Xoay (spinAngle)
-            pRoot.CFrame = CFrame.new(backPosition) 
-                           * CFrame.Angles(math.rad(-90), math.rad(spinAngle), 0)
-            
-            pRoot.Velocity = Vector3.new(0, 0, 0)
-        end
-    end
-end)
+    -- 3. HÀNH ĐỘNG AUTO FARM (TELEPORT + KILL)
+    if closestNPC then
+        local npcRoot = closestNPC.HumanoidRootPart
+        local npcHead = closestNPC:FindFirstChild("Head")
 
--- Vòng lặp quét làm to Hitbox đầu
-task.spawn(function()
-    while task.wait(0.3) do
-        ExpandHitbox()
+        -- Teleport sau lưng dưới đất + Nằm + Xoay
+        spinAngle = (spinAngle + 45) % 360
+        local backPosition = npcRoot.Position - (npcRoot.CFrame.LookVector * 6)
+        pRoot.CFrame = CFrame.new(backPosition) * CFrame.Angles(math.rad(-90), math.rad(spinAngle), 0)
+        pRoot.Velocity = Vector3.new(0, 0, 0)
+
+        -- Kill Aura (Chém vào đầu)
+        if npcHead then
+            DealDamage(npcHead)
+            TriggerSwing()
+        end
     end
 end)
