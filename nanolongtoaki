@@ -1,135 +1,56 @@
--- Khởi tạo các biến dịch vụ cần thiết
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
 
--- Tùy chỉnh màu sắc
-local PLAYER_COLOR = Color3.fromRGB(0, 0, 255) -- Xanh nước biển
-local NPC_COLOR = Color3.fromRGB(255, 0, 0)    -- Đỏ
+local ESPFolder = CoreGui:FindFirstChild("ESPHolder")
+if ESPFolder then 
+    ESPFolder:Destroy() 
+end
 
--- Danh sách tên các NPC cần highlight (Dựa vào hình ảnh, có vẻ là "Insurgent")
-local TARGET_NPC_NAMES = {
-    ["Insurgent"] = true,
-}
+ESPFolder = Instance.new("Folder")
+ESPFolder.Name = "ESPHolder"
+ESPFolder.Parent = CoreGui
 
-local NPC_LOCATION = Workspace
-
--- Hàm cốt lõi để thêm/cập nhật Highlight cho một đối tượng (Model)
-local function CreateHighlight(targetModel, color, isPlayer)
-    if not targetModel then return end
-
-    -- Kiểm tra xem Model có PrimaryPart hoặc Humanoid không để đảm bảo nó là một character hợp lệ
-    local humanoid = targetModel:FindFirstChildOfClass("Humanoid")
-    local humanoidRootPart = targetModel:FindFirstChild("HumanoidRootPart")
-
-    if not humanoid or not humanoidRootPart then return end
-
-    -- Tìm xem đã có Highlight cũ chưa
-    local highlight = targetModel:FindFirstChild("ESPHighlight")
-
+local function ApplyHighlight(target, color)
+    if not target or not target:IsA("Model") then return end
+    
+    local highlight = ESPFolder:FindFirstChild(target.Name .. "_" .. tostring(target:GetDebugId()))
+    
     if not highlight then
-        -- Nếu chưa có, tạo mới
         highlight = Instance.new("Highlight")
-        highlight.Name = "ESPHighlight"
-        highlight.Parent = targetModel
-        
-        -- Cấu hình hiển thị xuyên tường
+        highlight.Name = target.Name .. "_" .. tostring(target:GetDebugId())
+        highlight.Parent = ESPFolder
+        highlight.Adornee = target
         highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        
-        -- Cấu hình độ trong suốt
-        highlight.FillTransparency = 0.5 -- Độ mờ của phần tô màu bên trong (0 = đặc, 1 = trong suốt)
-        highlight.OutlineTransparency = 0 -- Độ mờ của viền
+        highlight.FillTransparency = 0.5
+        highlight.OutlineTransparency = 0
     end
-
-    -- Cập nhật màu sắc
+    
     highlight.FillColor = color
     highlight.OutlineColor = color
 end
 
--- Hàm để xóa Highlight (hữu ích khi người chơi/NPC chết hoặc rời đi)
-local function RemoveHighlight(targetModel)
-    if not targetModel then return end
-    local highlight = targetModel:FindFirstChild("ESPHighlight")
-    if highlight then
-        highlight:Destroy()
+local function UpdateESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player.Character then
+            ApplyHighlight(player.Character, Color3.fromRGB(0, 0, 255))
+        end
+    end
+
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name == "Insurgent" then
+            if not Players:GetPlayerFromCharacter(obj) then
+                ApplyHighlight(obj, Color3.fromRGB(255, 0, 0))
+            end
+        end
+    end
+    
+    for _, highlight in pairs(ESPFolder:GetChildren()) do
+        if highlight:IsA("Highlight") and (not highlight.Adornee or not highlight.Adornee.Parent) then
+            highlight:Destroy()
+        end
     end
 end
 
--- ==========================================
--- XỬ LÝ ESP CHO NGƯỜI CHƠI (PLAYERS)
--- ==========================================
-
--- Xử lý một Character của Player
-local function HandlePlayerCharacter(character)
-    CreateHighlight(character, PLAYER_COLOR, true)
-end
-
--- Xử lý một Player cụ thể
-local function HandlePlayer(player)
-    -- Khi Player đã có Character
-    if player.Character then
-        HandlePlayerCharacter(player.Character)
-    end
-
-    -- Lắng nghe mỗi khi Player spawn/respawn lại Character
-    player.CharacterAdded:Connect(function(character)
-        -- Đợi một chút để character load đầy đủ
-        task.wait(0.5) 
-        HandlePlayerCharacter(character)
-    end)
-end
-
--- Áp dụng cho tất cả người chơi đang có trong server
-for _, player in ipairs(Players:GetPlayers()) do
-    HandlePlayer(player)
-end
-
--- Lắng nghe khi có người chơi mới tham gia
-Players.PlayerAdded:Connect(HandlePlayer)
-
--- ==========================================
--- XỬ LÝ ESP CHO NPC (INSURGENT)
--- ==========================================
-
--- Hàm kiểm tra xem một object có phải là NPC mục tiêu không
-local function IsTargetNPC(object)
-    -- Phải là Model
-    if not object:IsA("Model") then return false end
-
-    -- Phải có Humanoid
-    if not object:FindFirstChildOfClass("Humanoid") then return false end
-
-    -- Không được là Character của bất kỳ Player nào
-    if Players:GetPlayerFromCharacter(object) then return false end
-
-    -- Chỉ highlight nếu tên khớp với bảng TARGET_NPC_NAMES
-    if TARGET_NPC_NAMES[object.Name] then
-        return true
-    end
-
-    return false
-end
-
--- Xử lý một Object trong Workspace
-local function HandleWorkspaceObject(object)
-    if IsTargetNPC(object) then
-        CreateHighlight(object, NPC_COLOR, false)
-    end
-end
-
--- Quét toàn bộ Workspace lúc ban đầu để tìm NPC hiện có
-for _, object in ipairs(NPC_LOCATION:GetDescendants()) do
-    HandleWorkspaceObject(object)
-end
-
--- Lắng nghe liên tục khi có vật thể mới được thêm vào Workspace
-NPC_LOCATION.DescendantAdded:Connect(function(object)
-    -- Đợi một chút (để game khởi tạo xong model và humanoid bên trong)
-    task.delay(0.5, function()
-        HandleWorkspaceObject(object)
-    end)
-end)
-
-print("ESP Highlight Script đã được kích hoạt!")
-print("- Người chơi: Xanh nước biển")
-print("- NPC (Insurgent): Đỏ")
-```
+RunService.RenderStepped:Connect(UpdateESP)
