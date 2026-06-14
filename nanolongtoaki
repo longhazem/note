@@ -4,9 +4,12 @@ local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
+local localPlayer = Players.LocalPlayer
+local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+
+-- 1. KHỞI TẠO THƯ MỤC ESP
 local ESPFolder = CoreGui:FindFirstChild("ESPHolder")
 if ESPFolder then ESPFolder:Destroy() end
-
 ESPFolder = Instance.new("Folder")
 ESPFolder.Name = "ESPHolder"
 ESPFolder.Parent = CoreGui
@@ -27,6 +30,7 @@ local function ApplyHighlight(target, color)
     highlight.OutlineColor = color
 end
 
+-- 2. VÒNG TRÒN FOV 60 CHO AIMBOT
 local fovCircle = Drawing.new("Circle")
 fovCircle.Visible = true
 fovCircle.Thickness = 1.5
@@ -34,33 +38,31 @@ fovCircle.Color = Color3.fromRGB(255, 255, 255)
 fovCircle.Filled = false
 fovCircle.Radius = 60
 
-local function GetClosestTargetInFOV()
-    local closestTarget = nil
-    local shortestDistance = math.huge
-    local viewportSize = Camera.ViewportSize
-    local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
-    fovCircle.Position = screenCenter
+-- 3. HÀM TÌM NPC GẦN NHẤT
+local function getTargetNPC()
+    local closest = nil
+    local maxDistance = math.huge
+    local char = localPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
+    local pRoot = char.HumanoidRootPart
 
     for _, obj in pairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj.Name == "Insurgent" then
-            local aimPart = obj:FindFirstChild("Head") or obj:FindFirstChild("HumanoidRootPart")
-            local humanoid = obj:FindFirstChildOfClass("Humanoid")
-            if aimPart and humanoid and humanoid.Health > 0 then
-                local screenPoint, onScreen = Camera:WorldToViewportPoint(aimPart.Position)
-                if onScreen then
-                    local targetPos2D = Vector2.new(screenPoint.X, screenPoint.Y)
-                    local distanceToCenter = (targetPos2D - screenCenter).Magnitude
-                    if distanceToCenter <= fovCircle.Radius and distanceToCenter < shortestDistance then
-                        shortestDistance = distanceToCenter
-                        closestTarget = aimPart
-                    end
+            local tRoot = obj:FindFirstChild("HumanoidRootPart")
+            local tHumanoid = obj:FindFirstChildOfClass("Humanoid")
+            if tRoot and tHumanoid and tHumanoid.Health > 0 then
+                local distance = (pRoot.Position - tRoot.Position).Magnitude
+                if distance < maxDistance then
+                    maxDistance = distance
+                    closest = obj
                 end
             end
         end
     end
-    return closestTarget
+    return closest
 end
 
+-- 4. PHÓNG TO HITBOX ĐẦU NPC
 local function ExpandHitbox()
     for _, obj in pairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj.Name == "Insurgent" then
@@ -70,48 +72,96 @@ local function ExpandHitbox()
                 head.Size = Vector3.new(8, 8, 8)
                 head.Transparency = 0.6
                 head.CanCollide = false
-                if not head.Massless then
-                    head.Massless = true
-                end
+                if not head.Massless then head.Massless = true end
             end
         end
     end
 end
 
+-- 5. VÒNG LẶP RENDER STEPPED (ESP & AIMBOT)
 RunService.RenderStepped:Connect(function()
-    for _, player in pairs(Players:GetPlayers()) do
-        if player.Character then
-            ApplyHighlight(player.Character, Color3.fromRGB(0, 0, 255))
+    for _, p in pairs(Players:GetPlayers()) do
+        if p.Character then ApplyHighlight(p.Character, Color3.fromRGB(0, 0, 255)) end
+    end
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name == "Insurgent" and not Players:GetPlayerFromCharacter(obj) then
+            ApplyHighlight(obj, Color3.fromRGB(255, 0, 0))
         end
     end
+    for _, hl in pairs(ESPFolder:GetChildren()) do
+        if hl:IsA("Highlight") and (not hl.Adornee or not hl.Adornee.Parent) then hl:Destroy() end
+    end
 
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj.Name == "Insurgent" then
-            if not Players:GetPlayerFromCharacter(obj) then
-                ApplyHighlight(obj, Color3.fromRGB(255, 0, 0))
+    local viewportSize = Camera.ViewportSize
+    fovCircle.Position = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
+    local target = getTargetNPC()
+    if target then
+        local aimPart = target:FindFirstChild("Head") or target:FindFirstChild("HumanoidRootPart")
+        if aimPart then
+            local screenPoint, onScreen = Camera:WorldToViewportPoint(aimPart.Position)
+            if onScreen and (Vector2.new(screenPoint.X, screenPoint.Y) - fovCircle.Position).Magnitude <= fovCircle.Radius then
+                Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
+                fovCircle.Color = Color3.fromRGB(255, 0, 0)
             end
         end
-    end
-
-    for _, highlight in pairs(ESPFolder:GetChildren()) do
-        if highlight:IsA("Highlight") and (not highlight.Adornee or not highlight.Adornee.Parent) then
-            highlight:Destroy()
-        end
-    end
-
-    local target = GetClosestTargetInFOV()
-    if target then
-        local currentCameraCFrame = Camera.CFrame
-        local targetCFrame = CFrame.new(currentCameraCFrame.Position, target.Position)
-        Camera.CFrame = currentCameraCFrame:Lerp(targetCFrame, 0.5)
-        fovCircle.Color = Color3.fromRGB(255, 0, 0)
     else
         fovCircle.Color = Color3.fromRGB(255, 255, 255)
     end
 end)
 
+-- 6. KHU VỰC CẤP CAO: TELEPORT + SPIN + PRONE + KILL AURA DIỆN RỘNG
+local spinAngle = 0
+local AURA_RANGE = 20 -- Bán kính vòng quét sát thương Kill Aura
+
+RunService.Heartbeat:Connect(function()
+    local char = localPlayer.Character
+    if not char then return end
+    local pRoot = char:FindFirstChild("HumanoidRootPart")
+    local pHumanoid = char:FindFirstChildOfClass("Humanoid")
+    if not pRoot or not pHumanoid or pHumanoid.Health <= 0 then return end
+
+    -- Tự động kiểm tra và trang bị vũ khí cận chiến
+    local backpack = localPlayer:FindFirstChild("Backpack")
+    if backpack then
+        local tool = backpack:FindFirstChildOfClass("Tool")
+        if tool then pHumanoid:EquipTool(tool) end
+    end
+
+    local currentTool = char:FindFirstChildOfClass("Tool")
+    
+    -- TÍNH NĂNG KILL AURA: Quét và gây sát thương diện rộng lên toàn bộ NPC trong tầm
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name == "Insurgent" then
+            local npcRoot = obj:FindFirstChild("HumanoidRootPart")
+            local npcHumanoid = obj:FindFirstChildOfClass("Humanoid")
+            
+            if npcRoot and npcHumanoid and npcHumanoid.Health > 0 then
+                local distance = (pRoot.Position - npcRoot.Position).Magnitude
+                -- Nếu NPC nằm trong vùng Aura, kích hoạt đòn đánh liên tục
+                if distance <= AURA_RANGE and currentTool then
+                    currentTool:Activate()
+                end
+            end
+        end
+    end
+
+    -- ĐIỀU KHIỂN CHUYỂN ĐỘNG AUTO FARM (TELEPORT + SPIN BOT + NẰM)
+    local targetNPC = getTargetNPC()
+    if targetNPC then
+        local npcRoot = targetNPC:FindFirstChild("HumanoidRootPart")
+        if npcRoot then
+            spinAngle = (spinAngle + 45) % 360
+            -- Dịch chuyển lên đầu NPC, xoay vòng tròn góc nằm ngang để tránh đạn
+            pRoot.CFrame = CFrame.new(npcRoot.Position + Vector3.new(0, 1.5, 0)) 
+                           * CFrame.Angles(math.rad(-90), math.rad(spinAngle), 0)
+            pRoot.Velocity = Vector3.new(0, 0, 0)
+        end
+    end
+end)
+
+-- Vòng lặp quét làm to Hitbox liên tục
 task.spawn(function()
-    while task.wait(0.5) do
+    while task.wait(0.3) do
         ExpandHitbox()
     end
 end)
