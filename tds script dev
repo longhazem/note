@@ -1148,6 +1148,7 @@ task.spawn(function()
 end)
 
 -- // ui
+
 -- ═══════════════════════════════════════════════════════
 -- TOKAIHUB UI LIBRARY (nhúng trực tiếp)
 -- ═══════════════════════════════════════════════════════
@@ -2967,23 +2968,726 @@ end
 -- ═══════════════════════════════════════════
 
 -- ═══════════════════════════════════════════════════════
--- KHỞI TẠO HUB
+-- KHỞI TẠO + GIỮ NGUYÊN TOÀN BỘ TABS GỐC CỦA TOKAIHUB
 -- ═══════════════════════════════════════════════════════
-local lib = Library
-local win = lib:CreateWindow()
+local win = Library:CreateWindow()
 
--- Notify nhẹ thay cho group check
-if not LocalPlayer:IsInGroup(4914494) then
-    ShowToast("Hãy join Paradoxum Group để chiến thuật hoạt động tốt nhất!", "⚠️")
+local homeTab = win:CreateTab("Home", "IMG:tabHome")
+homeTab:AddDashboard()
+homeTab:AddCreation()
+
+-- ════ SECRET BUTTON ════
+local secretPlaying = false
+homeTab:AddButton("???", function()
+    if secretPlaying then return end
+
+    local Players  = game:GetService("Players")
+    local lp       = Players.LocalPlayer
+    local CoreGui  = game:GetService("CoreGui")
+    local Pink     = Color3.fromRGB(235,110,140)
+
+    -- ══ PASSWORD UI — dùng GetGuiParent + IgnoreGuiInset như overlay gốc ══
+    local pGui = Instance.new("ScreenGui")
+    pGui.Name = "SecretPass"; pGui.DisplayOrder = 999
+    pGui.ResetOnSpawn = false; pGui.IgnoreGuiInset = true
+    pGui.Parent = GetGuiParent()
+
+    local pbg = Instance.new("Frame", pGui)
+    pbg.Size = UDim2.new(1,0,1,0); pbg.BackgroundColor3 = Color3.new(0,0,0)
+    pbg.BackgroundTransparency = 0.45; pbg.ZIndex = 1
+
+    local box = Instance.new("Frame", pGui)
+    box.Size = UDim2.new(0,280,0,150); box.Position = UDim2.new(0.5,-140,0.5,-75)
+    box.BackgroundColor3 = Color3.fromRGB(18,6,14); box.BackgroundTransparency = 0; box.ZIndex = 2
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0,14)
+    local bst = Instance.new("UIStroke", box); bst.Color = Pink; bst.Thickness = 1.8
+
+    local title = Instance.new("TextLabel", box)
+    title.Size = UDim2.new(1,0,0,38); title.BackgroundTransparency = 1
+    title.Text = "⚠️  Enter Password"; title.Font = Enum.Font.GothamBold
+    title.TextSize = 13; title.TextColor3 = Pink; title.ZIndex = 3
+
+    local inputBox = Instance.new("TextBox", box)
+    inputBox.Size = UDim2.new(1,-20,0,36); inputBox.Position = UDim2.new(0,10,0,42)
+    inputBox.BackgroundColor3 = Color3.fromRGB(45,14,28); inputBox.BackgroundTransparency = 0
+    inputBox.Font = Enum.Font.Gotham; inputBox.TextSize = 12
+    inputBox.TextColor3 = Color3.new(1,1,1); inputBox.PlaceholderText = "Enter password..."
+    inputBox.PlaceholderColor3 = Color3.fromRGB(130,80,100)
+    inputBox.Text = ""; inputBox.ClearTextOnFocus = true; inputBox.ZIndex = 3
+    Instance.new("UICorner", inputBox).CornerRadius = UDim.new(0,8)
+
+    local confirmBtn = Instance.new("TextButton", box)
+    confirmBtn.Size = UDim2.new(0,118,0,30); confirmBtn.Position = UDim2.new(0,10,0,92)
+    confirmBtn.BackgroundColor3 = Pink; confirmBtn.BackgroundTransparency = 0.1
+    confirmBtn.Text = "Confirm"; confirmBtn.Font = Enum.Font.GothamBold
+    confirmBtn.TextSize = 12; confirmBtn.TextColor3 = Color3.new(1,1,1); confirmBtn.ZIndex = 3
+    Instance.new("UICorner", confirmBtn).CornerRadius = UDim.new(0,8)
+
+    local cancelBtn = Instance.new("TextButton", box)
+    cancelBtn.Size = UDim2.new(0,118,0,30); cancelBtn.Position = UDim2.new(1,-128,0,92)
+    cancelBtn.BackgroundColor3 = Color3.fromRGB(70,25,40); cancelBtn.BackgroundTransparency = 0.1
+    cancelBtn.Text = "Cancel"; cancelBtn.Font = Enum.Font.GothamBold
+    cancelBtn.TextSize = 12; cancelBtn.TextColor3 = Color3.new(1,1,1); cancelBtn.ZIndex = 3
+    Instance.new("UICorner", cancelBtn).CornerRadius = UDim.new(0,8)
+
+    cancelBtn.MouseButton1Click:Connect(function()
+        pGui:Destroy()
+    end)
+
+    confirmBtn.MouseButton1Click:Connect(function()
+        if inputBox.Text ~= "longtokaiaishiteru" then
+            title.Text = "❌  Wrong Password"
+            title.TextColor3 = Color3.fromRGB(255,70,70)
+            inputBox.Text = ""
+            task.delay(1.5, function()
+                if title and title.Parent then
+                    title.Text = "⚠️  Enter Password"
+                    title.TextColor3 = Pink
+                end
+            end)
+            return
+        end
+
+        -- Xóa password UI ngay lập tức
+        pGui:Destroy()
+        secretPlaying = true
+
+        -- ══ DARK OVERLAY — y chang overlay gốc nhưng đen hoàn toàn ══
+        local darkGui = Instance.new("ScreenGui")
+        darkGui.Name = "SecretDark"; darkGui.DisplayOrder = 998
+        darkGui.ResetOnSpawn = false; darkGui.IgnoreGuiInset = true
+        darkGui.Parent = GetGuiParent()
+
+        local dark = Instance.new("Frame", darkGui)
+        dark.Size = UDim2.new(1,0,1,0)
+        dark.BackgroundColor3 = Color3.fromRGB(0,0,0)
+        dark.BackgroundTransparency = 1; dark.ZIndex = 1
+        -- Fade đen hoàn toàn
+        TweenService:Create(dark, TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            {BackgroundTransparency=0}):Play()
+
+        -- Logo góc phải dưới — xoay chậm
+        local logoImg = Instance.new("ImageLabel", darkGui)
+        logoImg.Size = UDim2.new(0,64,0,64)
+        logoImg.Position = UDim2.new(1,-76,1,-76)
+        logoImg.AnchorPoint = Vector2.new(0.5,0.5)
+        logoImg.BackgroundTransparency = 1
+        logoImg.ScaleType = Enum.ScaleType.Fit
+        logoImg.ImageTransparency = 0.3
+        logoImg.ZIndex = 2
+        logoImg.Image = GetAsset("homeIcon","")
+        task.spawn(function()
+            for _ = 1,60 do
+                local img = GetAsset("homeIcon","")
+                if img ~= "" then logoImg.Image = img; break end
+                task.wait(0.5)
+            end
+        end)
+        task.spawn(function()
+            local rot = 0
+            while logoImg and logoImg.Parent do
+                rot = (rot + 2.3) % 360
+                logoImg.Rotation = rot
+                RunService.Heartbeat:Wait()
+            end
+        end)
+
+        -- Label chữ
+        local msgLbl = Instance.new("TextLabel", darkGui)
+        msgLbl.Size = UDim2.new(0.85,0,0,70)
+        msgLbl.Position = UDim2.new(0.075,0,0.42,0)
+        msgLbl.AnchorPoint = Vector2.new(0,0)
+        msgLbl.BackgroundTransparency = 1
+        msgLbl.TextColor3 = Pink
+        msgLbl.Font = Enum.Font.GothamBold
+        msgLbl.TextSize = 22
+        msgLbl.TextWrapped = true
+        msgLbl.TextTransparency = 1
+        msgLbl.Text = ""; msgLbl.ZIndex = 2
+
+        -- Phát nhạc
+        local sound = Instance.new("Sound", workspace)
+        sound.Volume = 1
+
+        task.spawn(function()
+            -- Load asset
+            local s = GetAsset("secretSound","")
+            for _ = 1,60 do
+                if s ~= "" then break end
+                task.wait(0.5)
+                s = GetAsset("secretSound","")
+            end
+            sound.SoundId = s
+            -- Phat chuong truoc
+            local bell2=Instance.new("Sound",workspace); bell2.Volume=1
+            local bs=GetAsset("bellSound","")
+            for _=1,60 do if bs~="" then break end; task.wait(0.5); bs=GetAsset("bellSound","") end
+            bell2.SoundId=bs; bell2:Play(); bell2.Ended:Wait()
+            game:GetService("Debris"):AddItem(bell2,1)
+            sound:Play()
+
+            -- Đợi load xong để biết TimeLength
+            task.wait(1)
+            local totalLen = math.max(sound.TimeLength, 30)
+            local loopUntil = totalLen - 14
+
+            -- Chuỗi loop
+            local msgs = {
+                {t="Good job.",                                        s=22, dur=3},
+                {t="Don't move.",                                      s=22, dur=3.5},
+                {t="Please stand still and don't move anything.",      s=16, dur=4.5},
+                {t="Don't move.",                                      s=22, dur=3.5},
+                {t="If you move, it will get worse. Don't move.",      s=16, dur=4.5},
+                {t="Don't move.",                                      s=22, dur=3.5},
+                {t="LongTokai is coming.",                             s=20, dur=4},
+                {t="Don't move.",                                      s=22, dur=3.5},
+            }
+
+            local startTick = tick()
+            local idx = 1
+
+            while sound.IsPlaying and (tick()-startTick) < loopUntil do
+                local m = msgs[idx]
+                if msgLbl and msgLbl.Parent then
+                    msgLbl.TextSize = m.s
+                    msgLbl.Text = m.t
+                    msgLbl.TextTransparency = 1
+                    TweenService:Create(msgLbl, TweenInfo.new(0.5,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
+                        {TextTransparency=0}):Play()
+                    task.wait(m.dur - 0.6)
+                    TweenService:Create(msgLbl, TweenInfo.new(0.5,Enum.EasingStyle.Quad,Enum.EasingDirection.In),
+                        {TextTransparency=1}):Play()
+                    task.wait(0.6)
+                else break end
+                idx = (idx % #msgs) + 1
+            end
+
+            -- Ending
+            if msgLbl and msgLbl.Parent then
+                msgLbl.TextSize = 20
+                msgLbl.Text = "You will depart in peace."
+                msgLbl.TextTransparency = 1
+                TweenService:Create(msgLbl, TweenInfo.new(1), {TextTransparency=0}):Play()
+                task.wait(5)
+                TweenService:Create(msgLbl, TweenInfo.new(0.5), {TextTransparency=1}):Play()
+                task.wait(1)
+                msgLbl.TextSize = 22
+                msgLbl.Text = "Don't move."
+                msgLbl.TextTransparency = 1
+                TweenService:Create(msgLbl, TweenInfo.new(0.6), {TextTransparency=0}):Play()
+                task.wait(3)
+            end
+
+            -- Kick ngay
+            lp:Kick("??? | LongTokai got U")
+        end)
+    end)
+end, nil, nil)
+
+
+-- ════ TAB MAIN — Minesweeper Logic ════
+-- Core variables cho minesweeper
+local ms_isScanning    = false
+local ms_isFastTPing   = false
+local ms_isAntiLagOn   = false
+local ms_isESPOn       = false
+local ms_isFPSOn       = false
+local ms_cachedParts   = {}
+local ms_neighborMap   = {}
+local ms_numberTiles   = {}
+local ms_knownMines    = {}
+local ms_knownSafe     = {}
+local ms_currentBestGuess = nil
+local ms_connections   = {}
+local ms_pendingReset  = false
+local ms_fpsConnection = nil
+local ms_espConnections = {}
+
+local PlayerService2 = game:GetService("Players")
+local RunService2    = game:GetService("RunService")
+local player2        = PlayerService2.LocalPlayer
+
+-- Helper functions (minesweeper)
+local function ms_isColorMatch(c1, r, g, b)
+    return math.abs(c1.R - r) < 0.05 and math.abs(c1.G - g) < 0.05 and math.abs(c1.B - b) < 0.05
+end
+local function ms_isExcluded(part)
+    return ms_isColorMatch(part.Color, 1.000, 1.000, 0.490)
+end
+local function ms_isUnrevealed(part)
+    if part.Name ~= "Part" or ms_isExcluded(part) then return false end
+    local green1 = ms_isColorMatch(part.Color, 0.459, 0.804, 0.392)
+    local green2 = ms_isColorMatch(part.Color, 0.404, 0.706, 0.345)
+    local red1   = ms_isColorMatch(part.Color, 0.804, 0.392, 0.392)
+    local red2   = ms_isColorMatch(part.Color, 0.706, 0.345, 0.345)
+    local blue1  = ms_isColorMatch(part.Color, 0.392, 0.741, 0.804)
+    local blue2  = ms_isColorMatch(part.Color, 0.345, 0.651, 0.706)
+    return green1 or green2 or red1 or red2 or blue1 or blue2
+end
+local function ms_getNumber(part)
+    if part.Name ~= "Part" or ms_isExcluded(part) then return nil end
+    for _, desc in ipairs(part:GetDescendants()) do
+        if desc:IsA("TextLabel") and desc.Visible then
+            local num = tonumber(desc.Text:match("%d+"))
+            if num and num >= 1 and num <= 8 then return num end
+        end
+    end
+    return nil
+end
+-- Folder chứa các Part border, không bị streaming ảnh hưởng
+local ms_highlightFolder = Instance.new("Folder")
+ms_highlightFolder.Name = "MS_Highlights"
+ms_highlightFolder.Parent = workspace
+
+-- Bảng: part → {top, bottom, left, right} border parts
+local ms_highlightInstances = {}
+
+local function ms_newBorderPart(color)
+    local p = Instance.new("Part")
+    p.Anchored       = true
+    p.CanCollide     = false
+    p.CanQuery       = false
+    p.CanTouch       = false
+    p.CastShadow     = false
+    p.Transparency   = 0
+    p.Material       = Enum.Material.Neon
+    p.Color          = color
+    p.Size           = Vector3.new(1, 1, 1)
+    p.Parent         = ms_highlightFolder
+    return p
 end
 
--- Helper: ShowToast thay Window:Notify
+local function ms_updateBorderPositions(part, borders)
+    local sz  = part.Size
+    local th  = 0.08
+    local ins = 0.05
+    local hx  = sz.X/2 - ins
+    local hz  = sz.Z/2 - ins
+    local yoff = sz.Y/2 + 0.01
+    borders.top.Size    = Vector3.new(sz.X - ins*2, th, th)
+    borders.bottom.Size = Vector3.new(sz.X - ins*2, th, th)
+    borders.left.Size   = Vector3.new(th, th, sz.Z - ins*2)
+    borders.right.Size  = Vector3.new(th, th, sz.Z - ins*2)
+    borders.top.CFrame    = part.CFrame * CFrame.new(0,  yoff, -hz)
+    borders.bottom.CFrame = part.CFrame * CFrame.new(0,  yoff,  hz)
+    borders.left.CFrame   = part.CFrame * CFrame.new(-hx, yoff, 0)
+    borders.right.CFrame  = part.CFrame * CFrame.new( hx, yoff, 0)
+end
+
+local function ms_clearVisuals(part)
+    if not part then return end
+    if ms_highlightInstances[part] then
+        for _, b in pairs(ms_highlightInstances[part]) do b:Destroy() end
+        ms_highlightInstances[part] = nil
+    end
+end
+
+local function ms_createHighlight(part, color, name)
+    if ms_highlightInstances[part] then
+        for _, b in pairs(ms_highlightInstances[part]) do b:Destroy() end
+        ms_highlightInstances[part] = nil
+    end
+    if name == "Guess_Highlight" then
+        if ms_knownSafe[part] or ms_knownMines[part] then return end
+    end
+    local borders = {
+        top    = ms_newBorderPart(color),
+        bottom = ms_newBorderPart(color),
+        left   = ms_newBorderPart(color),
+        right  = ms_newBorderPart(color),
+    }
+    ms_updateBorderPositions(part, borders)
+    ms_highlightInstances[part] = borders
+end
+local function ms_cacheNeighbors(centerPart, forceRefresh)
+    if not forceRefresh and ms_neighborMap[centerPart] then return end
+    local neighbors = {}
+    local boxSize = centerPart.Size * 2.5
+    local partsInBox = workspace:GetPartBoundsInBox(centerPart.CFrame, boxSize)
+    for _, p in ipairs(partsInBox) do
+        if p ~= centerPart and p.Name == "Part" then
+            if math.abs(p.Position.Y - centerPart.Position.Y) < 1 then
+                local dist = (p.Position - centerPart.Position).Magnitude
+                if dist < (centerPart.Size.X * 1.8) then
+                    table.insert(neighbors, p)
+                end
+            end
+        end
+    end
+    ms_neighborMap[centerPart] = neighbors
+end
+local function ms_requestReset()
+    if ms_pendingReset then return end
+    ms_pendingReset = true
+    task.delay(0.2, function()
+        ms_pendingReset = false
+        if not ms_isScanning then return end
+        for p in pairs(ms_knownSafe)  do ms_clearVisuals(p) end
+        for p in pairs(ms_knownMines) do ms_clearVisuals(p) end
+        if ms_currentBestGuess then ms_clearVisuals(ms_currentBestGuess) end
+        ms_knownSafe = {}; ms_knownMines = {}; ms_currentBestGuess = nil
+    end)
+end
+local function ms_solveBoard()
+    if ms_pendingReset then return end
+    local activeNumbers = {}
+    local probabilityMap = {}
+    -- PASS 1: Basic Logic
+    for centerPart, targetNum in pairs(ms_numberTiles) do
+        if not centerPart:IsDescendantOf(workspace) then
+            ms_numberTiles[centerPart] = nil; continue
+        end
+        local neighbors = ms_neighborMap[centerPart]
+        if not neighbors then continue end
+        local unrevealed = {}; local mineCount = 0
+        for _, n in ipairs(neighbors) do
+            if ms_knownMines[n] then
+                mineCount = mineCount + 1
+            elseif ms_isUnrevealed(n) and not ms_knownSafe[n] then
+                table.insert(unrevealed, n)
+            end
+        end
+        local remainingMines = targetNum - mineCount
+        if remainingMines == #unrevealed and #unrevealed > 0 then
+            for _, p in ipairs(unrevealed) do
+                if not ms_knownMines[p] then
+                    ms_knownMines[p] = true; ms_clearVisuals(p)
+                    ms_createHighlight(p, Color3.new(1,0,0), "Mine_Highlight")
+                end
+            end
+        elseif remainingMines == 0 and #unrevealed > 0 then
+            for _, p in ipairs(unrevealed) do
+                if not ms_knownSafe[p] then
+                    ms_knownSafe[p] = true; ms_clearVisuals(p)
+                    ms_createHighlight(p, Color3.new(0,1,0), "Safe_Highlight")
+                end
+            end
+        else
+            if #unrevealed > 0 then
+                local prob = remainingMines / #unrevealed
+                for _, p in ipairs(unrevealed) do
+                    if not probabilityMap[p] or prob > probabilityMap[p] then
+                        probabilityMap[p] = prob
+                    end
+                end
+            end
+        end
+        if #unrevealed > 0 then
+            table.insert(activeNumbers, {part=centerPart, unrevealed=unrevealed, needed=remainingMines})
+        end
+    end
+    -- PASS 2: Advanced Set Difference
+    for i = 1, #activeNumbers do
+        for j = 1, #activeNumbers do
+            if i == j then continue end
+            local A = activeNumbers[i]; local B = activeNumbers[j]
+            if (A.part.Position - B.part.Position).Magnitude > (A.part.Size.X * 3) then continue end
+            local isSubset = true
+            for _, uA in ipairs(A.unrevealed) do
+                local found = false
+                for _, uB in ipairs(B.unrevealed) do if uA == uB then found=true; break end end
+                if not found then isSubset=false; break end
+            end
+            if isSubset then
+                local diffMines = B.needed - A.needed; local diffSet = {}
+                for _, uB in ipairs(B.unrevealed) do
+                    local inA = false
+                    for _, uA in ipairs(A.unrevealed) do if uB == uA then inA=true; break end end
+                    if not inA then table.insert(diffSet, uB) end
+                end
+                if #diffSet > 0 then
+                    if diffMines == 0 then
+                        for _, p in ipairs(diffSet) do
+                            if not ms_knownSafe[p] then ms_knownSafe[p]=true; ms_clearVisuals(p); ms_createHighlight(p,Color3.new(0,1,0),"Safe_Highlight") end
+                        end
+                    elseif diffMines == #diffSet then
+                        for _, p in ipairs(diffSet) do
+                            if not ms_knownMines[p] then ms_knownMines[p]=true; ms_clearVisuals(p); ms_createHighlight(p,Color3.new(1,0,0),"Mine_Highlight") end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- PASS 3: Best Guess
+    local hasSafeMoves = false
+    for _ in pairs(ms_knownSafe) do hasSafeMoves=true; break end
+    if ms_currentBestGuess and (not ms_currentBestGuess:IsDescendantOf(workspace) or ms_knownSafe[ms_currentBestGuess] or ms_knownMines[ms_currentBestGuess] or hasSafeMoves) then
+        if ms_currentBestGuess:IsDescendantOf(workspace) and ms_currentBestGuess:FindFirstChild("Guess_Highlight") then
+            ms_currentBestGuess.Guess_Highlight:Destroy()
+        end
+        ms_currentBestGuess = nil
+    end
+    if not hasSafeMoves then
+        local bestPart=nil; local lowestProb=1.1
+        for part, prob in pairs(probabilityMap) do
+            if not ms_knownMines[part] and not ms_knownSafe[part] then
+                if prob < lowestProb then lowestProb=prob; bestPart=part end
+            end
+        end
+        if bestPart and bestPart ~= ms_currentBestGuess then
+            if ms_currentBestGuess and ms_currentBestGuess:IsDescendantOf(workspace) and ms_currentBestGuess:FindFirstChild("Guess_Highlight") then
+                ms_currentBestGuess.Guess_Highlight:Destroy()
+            end
+            ms_currentBestGuess = bestPart
+            ms_createHighlight(bestPart, Color3.fromRGB(255,255,0), "Guess_Highlight")
+        end
+    end
+end
+local function ms_startSolverLoop()
+    task.spawn(function()
+        while ms_isScanning do
+            local validParts = {}
+            local charPos = nil
+            if player2.Character and player2.Character:FindFirstChild("HumanoidRootPart") then
+                charPos = player2.Character.HumanoidRootPart.Position
+            end
+            for _, part in ipairs(ms_cachedParts) do
+                if part:IsDescendantOf(workspace) then
+                    table.insert(validParts, part)
+                    if ms_isAntiLagOn and charPos then
+                        local dist = (part.Position - charPos).Magnitude
+                        if dist > 60 then
+                            ms_clearVisuals(part); ms_numberTiles[part]=nil; ms_knownSafe[part]=nil; ms_knownMines[part]=nil
+                            continue
+                        end
+                    end
+                    if not ms_neighborMap[part] then ms_cacheNeighbors(part, false) end
+                    if ms_isExcluded(part) then
+                        if ms_numberTiles[part] or ms_knownSafe[part] or ms_knownMines[part] then
+                            ms_numberTiles[part]=nil; ms_knownSafe[part]=nil; ms_knownMines[part]=nil; ms_clearVisuals(part)
+                        end
+                    elseif not ms_isUnrevealed(part) then
+                        local num = ms_getNumber(part)
+                        if num and not ms_numberTiles[part] then
+                            ms_numberTiles[part]=num; ms_knownSafe[part]=nil; ms_knownMines[part]=nil; ms_clearVisuals(part)
+                        end
+                    end
+                else
+                    ms_neighborMap[part]=nil; ms_numberTiles[part]=nil; ms_knownMines[part]=nil; ms_knownSafe[part]=nil
+                end
+            end
+            ms_cachedParts = validParts
+            ms_solveBoard()
+            task.wait(0.1)
+        end
+    end)
+end
+local function ms_onDescendantAdded(descendant)
+    if ms_isScanning and descendant:IsA("BasePart") and descendant.Name == "Part" then
+        table.insert(ms_cachedParts, descendant)
+        task.delay(0.1, function()
+            if descendant:IsDescendantOf(workspace) then
+                ms_cacheNeighbors(descendant, true)
+                for _, neighbor in ipairs(ms_neighborMap[descendant] or {}) do
+                    ms_cacheNeighbors(neighbor, true)
+                end
+                ms_requestReset()
+            end
+        end)
+    end
+end
+
+-- ════ START TAB MAIN ════
+local mainTab = win:CreateTab("Main", "IMG:tabMain")
+mainTab:AddSection("💣 Minesweeper Scanner")
+
+-- Toggle: Minesweeper Scan (START/STOP)
+mainTab:AddToggle("Minesweeper Scan", "msScanning", function(val)
+    ms_isScanning = val
+    if ms_isScanning then
+        ms_cachedParts = {}; ms_neighborMap = {}
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and obj.Name == "Part" then
+                table.insert(ms_cachedParts, obj)
+                ms_cacheNeighbors(obj, false)
+            end
+        end
+        table.insert(ms_connections, workspace.DescendantAdded:Connect(ms_onDescendantAdded))
+        ms_startSolverLoop()
+    else
+        ms_isFastTPing = false
+        ms_pendingReset = false
+        for _, conn in pairs(ms_connections) do conn:Disconnect() end
+        ms_connections = {}
+        -- Xóa toàn bộ highlight trong folder
+        ms_highlightFolder:ClearAllChildren()
+        ms_highlightInstances = {}
+        ms_cachedParts={}; ms_neighborMap={}; ms_numberTiles={}; ms_knownMines={}; ms_knownSafe={}; ms_currentBestGuess=nil
+    end
+end)
+
+-- Toggle: Fast TP (TPFAST)
+mainTab:AddToggle("Fast TP", "msFastTP", function(val)
+    if not ms_isScanning then return end
+    ms_isFastTPing = val
+    if ms_isFastTPing then
+        task.spawn(function()
+            while ms_isFastTPing and ms_isScanning do
+                if not ms_pendingReset then
+                    local char = player2.Character
+                    local root = char and char:FindFirstChild("HumanoidRootPart")
+                    if root then
+                        local safeParts = {}
+                        for part in pairs(ms_knownSafe) do
+                            if part and part:IsDescendantOf(workspace) and ms_isUnrevealed(part) then
+                                table.insert(safeParts, part)
+                            end
+                        end
+                        if #safeParts > 0 then
+                            for _, part in ipairs(safeParts) do
+                                if not ms_isFastTPing or not ms_isScanning or ms_pendingReset then break end
+                                if part:IsDescendantOf(workspace) and ms_isUnrevealed(part) then
+                                    local topOffset = (part.Size.Y / 2) + 3
+                                    root.CFrame = part.CFrame + Vector3.new(0, topOffset, 0)
+                                    task.wait(0.05)
+                                end
+                            end
+                        else
+                            task.wait(0.1)
+                        end
+                    else
+                        task.wait(0.1)
+                    end
+                else
+                    task.wait(0.1)
+                end
+            end
+            ms_isFastTPing = false
+        end)
+    end
+end)
+
+-- Toggle: ESP (highlight toàn bộ người chơi khác)
+mainTab:AddToggle("ESP Players", "msESP", function(val)
+    ms_isESPOn = val
+    -- Xóa ESP cũ
+    for _, conn in pairs(ms_espConnections) do conn:Disconnect() end
+    ms_espConnections = {}
+    -- Xóa highlight cũ trên tất cả nhân vật
+    for _, plr in pairs(game:GetService("Players"):GetPlayers()) do
+        if plr ~= player2 and plr.Character then
+            for _, part in pairs(plr.Character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    local h = part:FindFirstChildOfClass("Highlight")
+                    if h and h.Name == "ESP_Highlight" then h:Destroy() end
+                end
+            end
+        end
+    end
+    if ms_isESPOn then
+        local Players3 = game:GetService("Players")
+        local function addESP(plr)
+            if plr == player2 then return end
+            local function applyHighlight(char)
+                if not char then return end
+                local existing = char:FindFirstChild("ESP_Highlight")
+                if existing then existing:Destroy() end
+                local h = Instance.new("Highlight")
+                h.Name = "ESP_Highlight"
+                h.Adornee = char
+                h.FillColor = Color3.fromRGB(255, 50, 50)
+                h.OutlineColor = Color3.fromRGB(255, 255, 255)
+                h.FillTransparency = 0.5
+                h.OutlineTransparency = 0
+                h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                h.Parent = char
+            end
+            local function applyHighlightWhenReady(char)
+                if not char then return end
+                -- Đợi HumanoidRootPart load xong mới gắn highlight
+                -- tránh bị mất khi character chưa fully loaded
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if not hrp then
+                    char.ChildAdded:Wait()
+                end
+                -- Retry loop: nếu highlight bị mất thì gắn lại ngay
+                task.spawn(function()
+                    while ms_isESPOn and char:IsDescendantOf(game) do
+                        if not char:FindFirstChild("ESP_Highlight") then
+                            applyHighlight(char)
+                        end
+                        task.wait(0.5)
+                    end
+                end)
+            end
+            applyHighlightWhenReady(plr.Character)
+            local c = plr.CharacterAdded:Connect(function(char)
+                applyHighlightWhenReady(char)
+            end)
+            table.insert(ms_espConnections, c)
+        end
+        for _, plr in pairs(Players3:GetPlayers()) do addESP(plr) end
+        local c2 = Players3.PlayerAdded:Connect(addESP)
+        table.insert(ms_espConnections, c2)
+    end
+end)
+
+-- Toggle: FPS Unlocker (tăng FPS cap)
+mainTab:AddToggle("FPS Unlocker", "msFPS", function(val)
+    ms_isFPSOn = val
+    if ms_fpsConnection then
+        ms_fpsConnection:Disconnect()
+        ms_fpsConnection = nil
+    end
+    if ms_isFPSOn then
+        -- Unlock FPS bằng cách set MaxFramerate
+        local ok = pcall(function()
+            local settings = UserSettings():GetService("UserGameSettings")
+            settings.SavedQualityLevel = Enum.SavedQualitySetting.Automatic
+        end)
+        -- RenderStepped loop để giữ framerate cao
+        ms_fpsConnection = RunService2.RenderStepped:Connect(function()
+            -- Dùng shared() nếu có, không thì bỏ qua
+        end)
+        -- Thử setfpscap nếu executor hỗ trợ
+        pcall(function()
+            if setfpscap then setfpscap(0) end  -- 0 = uncapped
+        end)
+    else
+        -- Reset về 60fps mặc định
+        pcall(function()
+            if setfpscap then setfpscap(60) end
+        end)
+    end
+end)
+
+-- ════ TAB TEST — nội dung cũ của Main ════
+local testTab = win:CreateTab("Test", "IMG:tabDisplay")
+testTab:AddSection("🔘 Toggle Test")
+testTab:AddToggle("Toggle A", "testToggleA", function(val) print("[Toggle A]", val) end)
+testTab:AddToggle("Toggle B", "testToggleB", function(val) print("[Toggle B]", val) end)
+testTab:AddSection("🎚️ Slider Test")
+testTab:AddSlider("Slider 1 → 10", 1, 10, "testSlider1", "", function(val) print("[Slider 1]", val) end)
+testTab:AddSlider("Slider 0 → 100%", 0, 100, "testSlider2", "%", function(val) print("[Slider 2]", val) end)
+testTab:AddSection("📋 Dropdown Test")
+testTab:AddDropdown("Chọn bộ phận", {"Head","Root","Torso","LeftArm","RightArm"}, "testDrop1", function(val) print("[Dropdown 1]", val) end)
+testTab:AddDropdown("Chọn tùy chọn", {"Option A","Option B","Option C"}, "testDrop2", function(val) print("[Dropdown 2]", val) end)
+testTab:AddSection("🎨 Color Picker")
+testTab:AddColorPicker("Chon mau", "testColor", function(col) end)
+testTab:AddSection("🎮 Button Test")
+testTab:AddButton("▶ Chạy Test", function() print("[Button] Đã nhấn!") end, "Test thành công!", "✅")
+
+local uselessTab = win:CreateTab("Useless", "7743875630")
+uselessTab:AddSectionWithIcon("Random Scripts", "gunIcon")
+uselessTab:AddUserButton("wklbox", function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/TOKAIHUB/refs/heads/main/Test"))()
+end, "Đang chạy script: wklbox")
+uselessTab:AddUserButton("dolboeb228_negr", function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/TOKAIHUB/refs/heads/main/Audio"))()
+end, "Đang chạy script: dolboeb228_negr")
+
+-- ════ SETTINGS TAB ════
+local settingsTab = win:CreateTab("Settings", "IMG:tabSettings")
+settingsTab:AddSection("ℹ️ Info")
+
+-- Helper toast thay Window:Notify
 local function Notify(msg, icon)
     ShowToast(msg, icon or "✨")
 end
 
 -- ═══════════════════════════════════════════════════════
--- TAB 1: AUTOMATION
+-- TAB TDS: AUTOMATION
 -- ═══════════════════════════════════════════════════════
 local autoTab = win:CreateTab("Auto", "IMG:tabHome")
 autoTab:AddSection("⚔️ Match Progression")
@@ -3026,25 +3730,22 @@ autoTab:AddToggle("Auto Mercenary Base", "autoMerc", function(v)
     SetSetting("AutoMercenary", v)
 end)
 
+MercenarySlider = nil
 autoTab:AddSlider("Merc Path Distance", 0, 300, "mercPath", "", function(val)
     SetSetting("MercenaryPath", val)
-    if MercenarySlider and MercenarySlider.SetValue then
-        MercenarySlider:SetValue(val)
-    end
+    Globals.MercenaryPath = val
 end)
 
 autoTab:AddToggle("Auto Military Base", "autoMil", function(v)
     SetSetting("AutoMilitary", v)
 end)
 
+MilitarySlider = nil
 autoTab:AddSlider("Mil Path Distance", 0, 300, "milPath", "", function(val)
     SetSetting("MilitaryPath", val)
-    if MilitarySlider and MilitarySlider.SetValue then
-        MilitarySlider:SetValue(val)
-    end
+    Globals.MilitaryPath = val
 end)
 
--- Tinh path length
 task.spawn(function()
     while true do
         if CalcLength() then break end
@@ -3085,7 +3786,7 @@ autoTab:AddToggle("Auto Collect Pickups", "autoPickups", function(v)
     SetSetting("AutoPickups", v)
 end)
 
-autoTab:AddDropdown("Pickup Method", {"Pathfinding", "Instant"}, "pickupMethod", function(val)
+autoTab:AddDropdown("Pickup Method", {"Pathfinding","Instant"}, "pickupMethod", function(val)
     local selected = type(val) == "table" and val[1] or val
     SetSetting("PickupMethod", selected or "Pathfinding")
 end)
@@ -3094,12 +3795,8 @@ autoTab:AddToggle("Claim Rewards", "claimRewards", function(v)
     SetSetting("ClaimRewards", v)
 end)
 
-autoTab:AddToggle("Auto Gatling Gun", "autoGun", function(v)
-    SetSetting("AutoGatling", v)
-end)
-
 -- ═══════════════════════════════════════════════════════
--- TAB 2: TIMESCALE
+-- TAB TDS: TIMESCALE
 -- ═══════════════════════════════════════════════════════
 local tsTab = win:CreateTab("Speed", "IMG:tabMain")
 tsTab:AddSection("⚡ TimeScale")
@@ -3109,16 +3806,13 @@ tsTab:AddToggle("Enable TimeScale", "tsEnabled", function(v)
     if v then StartTimeScale() end
 end)
 
-tsTab:AddDropdown("TimeScale Speed", {"0.5", "1", "1.5", "2"}, "tsSpeed", function(val)
+tsTab:AddDropdown("TimeScale Speed", {"0.5","1","1.5","2"}, "tsSpeed", function(val)
     local selected = type(val) == "table" and val[1] or val
     local value = CoerceTimeScaleValue(selected, 2)
     SetSetting("TimeScaleValue", value)
-    if Globals.TimeScaleEnabled then
-        ApplyTimeScaleOnce()
-    end
+    if Globals.TimeScaleEnabled then ApplyTimeScaleOnce() end
 end)
 
-tsTab:AddSection("ℹ️ Trạng thái")
 tsTab:AddButton("Kiểm tra Ticket", function()
     local tickets = LocalPlayer:FindFirstChild("TimescaleTickets")
     local count = tickets and tickets.Value or LocalPlayer:GetAttribute("TimescaleTickets") or 0
@@ -3126,225 +3820,155 @@ tsTab:AddButton("Kiểm tra Ticket", function()
 end, "Đã kiểm tra!", "🎟️")
 
 -- ═══════════════════════════════════════════════════════
--- TAB 3: CHIẾN THUẬT (STRAT RECORDER)
+-- TAB TDS: CHIẾN THUẬT + RECORDER
 -- ═══════════════════════════════════════════════════════
 local stratTab = win:CreateTab("Strat", "IMG:tabDisplay")
 stratTab:AddSection("📋 Ghi Chiến Thuật")
 
--- Bien recorder
 local strat_recording = false
-local strat_towers = {}
-local strat_count = 0
-local strat_file = "Strat.txt"
-local strat_log_lines = {}
-
-local function strat_log(msg)
-    table.insert(strat_log_lines, msg)
-    -- Hien thi 5 dong cuoi
-    ShowToast(msg, "📝")
-end
+local strat_towers    = {}
+local strat_count     = 0
+local strat_file      = "Strat.txt"
+local strat_actions   = 0
 
 local function strat_record(cmd)
     if not strat_recording then return end
-    if appendfile then
-        appendfile(strat_file, cmd .. "\n")
-    end
+    if appendfile then appendfile(strat_file, cmd .. "\n") end
+    strat_actions = strat_actions + 1
 end
 
--- Nut START recording
 stratTab:AddButton("▶ Bắt đầu ghi", function()
-    if strat_recording then
-        Notify("Đang ghi rồi!", "⚠️")
-        return
-    end
+    if strat_recording then Notify("Đang ghi rồi!", "⚠️") return end
 
-    local current_mode = "Unknown"
-    local current_map = "Unknown"
-    local state_folder = ReplicatedStorage:FindFirstChild("State")
-    if state_folder then
-        current_mode = state_folder.Difficulty.Value
-        current_map = state_folder.Map.Value
-    end
+    local mode, map = "Unknown", "Unknown"
+    local sf = ReplicatedStorage:FindFirstChild("State")
+    if sf then mode = sf.Difficulty.Value; map = sf.Map.Value end
 
     local t1,t2,t3,t4,t5 = "None","None","None","None","None"
-    local current_mods = ""
-    local state_reps = ReplicatedStorage:FindFirstChild("StateReplicators")
-    if state_reps then
-        for _, folder in ipairs(state_reps:GetChildren()) do
-            if folder.Name == "PlayerReplicator" and folder:GetAttribute("UserId") == LocalPlayer.UserId then
-                local eq = folder:GetAttribute("EquippedTowers")
+    local mods = ""
+    local sr = ReplicatedStorage:FindFirstChild("StateReplicators")
+    if sr then
+        for _, f in ipairs(sr:GetChildren()) do
+            if f.Name == "PlayerReplicator" and f:GetAttribute("UserId") == LocalPlayer.UserId then
+                local eq = f:GetAttribute("EquippedTowers")
                 if type(eq) == "string" then
-                    local ok, tbl = pcall(function()
-                        return HttpService:JSONDecode(eq:match("%[.*%]") or "[]")
-                    end)
-                    if ok and type(tbl) == "table" then
-                        t1=tbl[1] or "None"; t2=tbl[2] or "None"; t3=tbl[3] or "None"
-                        t4=tbl[4] or "None"; t5=tbl[5] or "None"
-                    end
+                    local ok, tbl = pcall(function() return HttpService:JSONDecode(eq:match("%[.*%]") or "[]") end)
+                    if ok and tbl then t1=tbl[1] or "None";t2=tbl[2] or "None";t3=tbl[3] or "None";t4=tbl[4] or "None";t5=tbl[5] or "None" end
                 end
             end
-            if folder.Name == "ModifierReplicator" then
-                local raw = folder:GetAttribute("Votes")
+            if f.Name == "ModifierReplicator" then
+                local raw = f:GetAttribute("Votes")
                 if type(raw) == "string" then
-                    local ok, mt = pcall(function()
-                        return HttpService:JSONDecode(raw:match("{.*}") or "{}")
-                    end)
-                    if ok and type(mt) == "table" then
-                        local mods = {}
-                        for k in pairs(mt) do table.insert(mods, k .. " = true") end
-                        current_mods = table.concat(mods, ", ")
+                    local ok, mt = pcall(function() return HttpService:JSONDecode(raw:match("{.*}") or "{}") end)
+                    if ok and mt then
+                        local ml={}; for k in pairs(mt) do table.insert(ml, k.." = true") end
+                        mods = table.concat(ml, ", ")
                     end
                 end
             end
         end
     end
 
-    strat_recording = true
-    strat_count = 0
-    strat_towers = {}
-    strat_log_lines = {}
+    strat_recording = true; strat_count = 0; strat_towers = {}; strat_actions = 0
 
     if writefile then
         writefile(strat_file, string.format(
-            'local TDS = loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/ui-library-/main/Library.lua"))()'
-            .."\n\nTDS:Loadout(\"%s\", \"%s\", \"%s\", \"%s\", \"%s\")\n"
-            .."TDS:Mode(\"%s\")\nTDS:GameInfo(\"%s\", {%s})\n\n",
-            t1,t2,t3,t4,t5, current_mode, current_map, current_mods
+            'local TDS = loadstring(game:HttpGet("https://raw.githubusercontent.com/DuxiiT/auto-strat/refs/heads/main/Library.lua"))()'
+            .."\n\nTDS:Loadout(\"%s\",\"%s\",\"%s\",\"%s\",\"%s\")\nTDS:Mode(\"%s\")\nTDS:GameInfo(\"%s\",{%s})\n\n",
+            t1,t2,t3,t4,t5, mode, map, mods
         ))
     end
 
-    Notify("Bắt đầu ghi! Map: " .. current_map, "🔴")
+    Notify("Đang ghi! Map: " .. map, "🔴")
 
-    -- Hook tower spawn
-    local towers_folder = workspace:WaitForChild("Towers", 10)
-    if towers_folder then
-        towers_folder.ChildAdded:Connect(function(tower)
-            if not strat_recording then return end
-            local rep = tower:WaitForChild("TowerReplicator", 5)
-            if not rep then return end
-            if rep:GetAttribute("OwnerId") ~= LocalPlayer.UserId then return end
+    local tf = workspace:WaitForChild("Towers", 10)
+    if not tf then return end
 
-            strat_count = strat_count + 1
-            local idx = strat_count
-            strat_towers[tower] = idx
-
-            local name = rep:GetAttribute("Name") or tower.Name
-            local raw_pos = rep:GetAttribute("Position")
-            local px, py, pz
-            if typeof(raw_pos) == "Vector3" then
-                px, py, pz = raw_pos.X, raw_pos.Y, raw_pos.Z
-            else
-                local p = tower:GetPivot().Position
-                px, py, pz = p.X, p.Y, p.Z
-            end
-
-            local cmd = string.format('TDS:Place("%s", %.3f, %.3f, %.3f)', name, px, py, pz)
-            strat_record(cmd)
-            strat_log("Đặt " .. name .. " (#" .. idx .. ")")
-
-            rep:GetAttributeChangedSignal("Upgrade"):Connect(function()
-                if not strat_recording then return end
-                strat_record(string.format('TDS:Upgrade(%d)', idx))
-                strat_log("Nâng cấp tower #" .. idx)
-            end)
+    tf.ChildAdded:Connect(function(tower)
+        if not strat_recording then return end
+        local rep = tower:WaitForChild("TowerReplicator", 5)
+        if not rep or rep:GetAttribute("OwnerId") ~= LocalPlayer.UserId then return end
+        strat_count += 1
+        local idx = strat_count
+        strat_towers[tower] = idx
+        local tname = rep:GetAttribute("Name") or tower.Name
+        local rp = rep:GetAttribute("Position")
+        local px,py,pz
+        if typeof(rp) == "Vector3" then px,py,pz=rp.X,rp.Y,rp.Z
+        else local p=tower:GetPivot().Position; px,py,pz=p.X,p.Y,p.Z end
+        strat_record(string.format('TDS:Place("%s",%.3f,%.3f,%.3f)',tname,px,py,pz))
+        rep:GetAttributeChangedSignal("Upgrade"):Connect(function()
+            if strat_recording then strat_record(string.format('TDS:Upgrade(%d)',idx)) end
         end)
+    end)
 
-        towers_folder.ChildRemoved:Connect(function(tower)
-            if not strat_recording then return end
-            local idx = strat_towers[tower]
-            if idx then
-                strat_record(string.format('TDS:Sell(%d)', idx))
-                strat_log("Bán tower #" .. idx)
-                strat_towers[tower] = nil
-            end
-        end)
-    end
+    tf.ChildRemoved:Connect(function(tower)
+        if not strat_recording then return end
+        local idx = strat_towers[tower]
+        if idx then strat_record(string.format('TDS:Sell(%d)',idx)); strat_towers[tower]=nil end
+    end)
 end, "Đang ghi chiến thuật!", "🔴")
 
--- Nut STOP recording
 stratTab:AddButton("⏹ Dừng ghi", function()
-    if not strat_recording then
-        Notify("Chưa bắt đầu ghi!", "⚠️")
-        return
-    end
+    if not strat_recording then Notify("Chưa bắt đầu ghi!", "⚠️") return end
     strat_recording = false
-    strat_count = 0
-    strat_towers = {}
-    Notify("Đã lưu vào Strat.txt! (" .. #strat_log_lines .. " hành động)", "✅")
+    Notify("Đã lưu Strat.txt! (" .. strat_actions .. " hành động)", "✅")
 end, "Đã dừng ghi!", "⏹")
 
--- Nut reset file
-stratTab:AddButton("🗑 Xóa file Strat.txt", function()
-    if writefile then
-        writefile(strat_file, "")
-        Notify("Đã xóa Strat.txt!", "🗑")
-    end
+stratTab:AddButton("🗑 Xóa Strat.txt", function()
+    if writefile then writefile(strat_file, ""); Notify("Đã xóa!", "🗑") end
 end, "Đã xóa!", "🗑")
 
 stratTab:AddSection("▶️ Chạy Chiến Thuật")
 
 stratTab:AddButton("Chạy Strat.txt", function()
-    if not isfile or not isfile(strat_file) then
-        Notify("Không tìm thấy Strat.txt!", "❌")
-        return
-    end
+    if not isfile or not isfile(strat_file) then Notify("Không tìm thấy Strat.txt!", "❌") return end
     task.spawn(function()
         local ok, content = pcall(readfile, strat_file)
         if ok and content and content ~= "" then
             local fn, err = loadstring(content)
-            if fn then
-                pcall(fn)
-                Notify("Đang chạy Strat.txt!", "▶️")
-            else
-                Notify("Lỗi: " .. tostring(err), "❌")
-            end
-        else
-            Notify("File Strat.txt trống hoặc lỗi!", "❌")
-        end
+            if fn then pcall(fn); Notify("Đang chạy!", "▶️")
+            else Notify("Lỗi: "..tostring(err), "❌") end
+        else Notify("File trống hoặc lỗi!", "❌") end
     end)
 end, "Đang chạy chiến thuật!", "▶️")
 
 stratTab:AddSection("⚙️ Easy Mode")
 stratTab:AddToggle("Easy Mode (Summer Castle)", "easyMode", function(v)
-    Globals.Easy = v
-    SetSetting("Easy", v)
+    Globals.Easy = v; SetSetting("Easy", v)
     if v then StartEasyMode() end
 end)
 
 -- ═══════════════════════════════════════════════════════
--- TAB 4: SETTINGS
+-- TAB TDS: SETTINGS
 -- ═══════════════════════════════════════════════════════
-local setTab = win:CreateTab("Settings", "IMG:tabSettings")
-setTab:AddSection("🔧 Cài đặt")
+local tdsSetTab = win:CreateTab("TDS Set", "IMG:tabSettings")
+tdsSetTab:AddSection("🔧 Cài đặt")
 
-setTab:AddButton("Lưu Settings", function()
-    SaveSettings()
-    Notify("Đã lưu settings!", "💾")
+tdsSetTab:AddButton("💾 Lưu Settings", function()
+    SaveSettings(); Notify("Đã lưu settings!", "💾")
 end, "Đã lưu!", "💾")
 
-setTab:AddButton("Load Settings", function()
-    LoadSettings()
-    Notify("Đã load settings!", "📂")
+tdsSetTab:AddButton("📂 Load Settings", function()
+    LoadSettings(); Notify("Đã load settings!", "📂")
 end, "Đã load!", "📂")
 
-setTab:AddSection("🔒 Privacy")
+tdsSetTab:AddSection("🔒 Privacy")
 
-setTab:AddToggle("Hide Username", "hideUser", function(v)
-    SetSetting("HideUsername", v)
-    UpdatePrivacyState()
+tdsSetTab:AddToggle("Hide Username", "hideUser", function(v)
+    SetSetting("HideUsername", v); UpdatePrivacyState()
 end)
 
-setTab:AddToggle("Streamer Mode", "streamerMode", function(v)
-    SetSetting("StreamerMode", v)
-    UpdatePrivacyState()
+tdsSetTab:AddToggle("Streamer Mode", "streamerMode", function(v)
+    SetSetting("StreamerMode", v); UpdatePrivacyState()
 end)
 
-setTab:AddSection("🏷️ Nametag")
+tdsSetTab:AddSection("🏷️ Nametag")
 do
     local tagOptions = collectTagOptions()
     local tagValue = Globals.tagName or "None"
     if not table.find(tagOptions, tagValue) then tagValue = "None" end
-    setTab:AddDropdown("Tag Changer", tagOptions, "tagChanger", function(choice)
+    tdsSetTab:AddDropdown("Tag Changer", tagOptions, "tagChanger", function(choice)
         local selected = type(choice) == "table" and choice[1] or choice
         if not selected or selected == "" then selected = "None" end
         SetSetting("tagName", selected)
@@ -3352,43 +3976,22 @@ do
     end)
 end
 
-setTab:AddSection("⚡ Performance")
-
-setTab:AddToggle("Anti-Lag", "antiLag", function(v)
-    SetSetting("AntiLag", v)
+tdsSetTab:AddSection("⚡ Performance")
+tdsSetTab:AddToggle("Anti-Lag", "antiLag", function(v) SetSetting("AntiLag", v) end)
+tdsSetTab:AddToggle("Disable 3D Rendering", "disable3d", function(v)
+    SetSetting("Disable3DRendering", v); Apply3dRendering()
 end)
-
-setTab:AddToggle("Disable 3D Rendering", "disable3d", function(v)
-    SetSetting("Disable3DRendering", v)
-    Apply3dRendering()
-end)
-
-setTab:AddSection("🏠 Lobby")
-
-if not IsMobile then
-    setTab:AddButton("Nhập Private Server Code", function()
-        -- Hien thi toast huong dan
-        Notify("Nhập code vào Settings → Private Code", "🔑")
-    end, "", "🔑")
-end
-
-setTab:AddSection("ℹ️ Thông tin")
-setTab:AddCreation()
 
 -- ═══════════════════════════════════════════════════════
--- APPLY SAVED SETTINGS khi khoi dong
+-- APPLY SAVED SETTINGS
 -- ═══════════════════════════════════════════════════════
 if Globals.ClaimRewards and not AutoClaimRewards then
     StartClaimRewards()
 end
-
 MissionsUIFix()
 
--- Logger don gian qua ShowToast
 local Logger = {}
-function Logger:Log(msg)
-    print("[TokaiHub]", msg)
-end
+function Logger:Log(msg) print("[TokaiHub-TDS]", msg) end
 shared.Logger = Logger
 
 return TDS
