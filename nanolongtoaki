@@ -2,11 +2,10 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
+local Camera = Workspace.CurrentCamera
 
 local ESPFolder = CoreGui:FindFirstChild("ESPHolder")
-if ESPFolder then 
-    ESPFolder:Destroy() 
-end
+if ESPFolder then ESPFolder:Destroy() end
 
 ESPFolder = Instance.new("Folder")
 ESPFolder.Name = "ESPHolder"
@@ -14,9 +13,7 @@ ESPFolder.Parent = CoreGui
 
 local function ApplyHighlight(target, color)
     if not target or not target:IsA("Model") then return end
-    
     local highlight = ESPFolder:FindFirstChild(target.Name .. "_" .. tostring(target:GetDebugId()))
-    
     if not highlight then
         highlight = Instance.new("Highlight")
         highlight.Name = target.Name .. "_" .. tostring(target:GetDebugId())
@@ -26,12 +23,62 @@ local function ApplyHighlight(target, color)
         highlight.FillTransparency = 0.5
         highlight.OutlineTransparency = 0
     end
-    
     highlight.FillColor = color
     highlight.OutlineColor = color
 end
 
-local function UpdateESP()
+local fovCircle = Drawing.new("Circle")
+fovCircle.Visible = true
+fovCircle.Thickness = 1.5
+fovCircle.Color = Color3.fromRGB(255, 255, 255)
+fovCircle.Filled = false
+fovCircle.Radius = 60
+
+local function GetClosestTargetInFOV()
+    local closestTarget = nil
+    local shortestDistance = math.huge
+    local viewportSize = Camera.ViewportSize
+    local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
+    fovCircle.Position = screenCenter
+
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name == "Insurgent" then
+            local aimPart = obj:FindFirstChild("Head") or obj:FindFirstChild("HumanoidRootPart")
+            local humanoid = obj:FindFirstChildOfClass("Humanoid")
+            if aimPart and humanoid and humanoid.Health > 0 then
+                local screenPoint, onScreen = Camera:WorldToViewportPoint(aimPart.Position)
+                if onScreen then
+                    local targetPos2D = Vector2.new(screenPoint.X, screenPoint.Y)
+                    local distanceToCenter = (targetPos2D - screenCenter).Magnitude
+                    if distanceToCenter <= fovCircle.Radius and distanceToCenter < shortestDistance then
+                        shortestDistance = distanceToCenter
+                        closestTarget = aimPart
+                    end
+                end
+            end
+        end
+    end
+    return closestTarget
+end
+
+local function ExpandHitbox()
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name == "Insurgent" then
+            local head = obj:FindFirstChild("Head")
+            local humanoid = obj:FindFirstChildOfClass("Humanoid")
+            if head and humanoid and humanoid.Health > 0 then
+                head.Size = Vector3.new(8, 8, 8)
+                head.Transparency = 0.6
+                head.CanCollide = false
+                if not head.Massless then
+                    head.Massless = true
+                end
+            end
+        end
+    end
+end
+
+RunService.RenderStepped:Connect(function()
     for _, player in pairs(Players:GetPlayers()) do
         if player.Character then
             ApplyHighlight(player.Character, Color3.fromRGB(0, 0, 255))
@@ -45,12 +92,26 @@ local function UpdateESP()
             end
         end
     end
-    
+
     for _, highlight in pairs(ESPFolder:GetChildren()) do
         if highlight:IsA("Highlight") and (not highlight.Adornee or not highlight.Adornee.Parent) then
             highlight:Destroy()
         end
     end
-end
 
-RunService.RenderStepped:Connect(UpdateESP)
+    local target = GetClosestTargetInFOV()
+    if target then
+        local currentCameraCFrame = Camera.CFrame
+        local targetCFrame = CFrame.new(currentCameraCFrame.Position, target.Position)
+        Camera.CFrame = currentCameraCFrame:Lerp(targetCFrame, 0.5)
+        fovCircle.Color = Color3.fromRGB(255, 0, 0)
+    else
+        fovCircle.Color = Color3.fromRGB(255, 255, 255)
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.5) do
+        ExpandHitbox()
+    end
+end)
