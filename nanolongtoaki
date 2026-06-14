@@ -38,15 +38,12 @@ fovCircle.Color = Color3.fromRGB(255, 255, 255)
 fovCircle.Filled = false
 fovCircle.Radius = 60
 
--- 3. HÀM QUÉT TÌM THÂN NPC THỰC SỰ (Bỏ qua các folder vũ khí/rig ảo)
+-- 3. HÀM LỌC NPC THỰC SỰ
 local function getRealNPC(obj)
-    -- Kiểm tra xem Model đó có phải là NPC thực sự có máu và có đầu hay không
     if obj:IsA("Model") and obj.Name == "Insurgent" then
         local humanoid = obj:FindFirstChildOfClass("Humanoid")
         local head = obj:FindFirstChild("Head")
-        -- Nếu có đầy đủ Thân (HumanoidRootPart), Đầu (Head) và Máu > 0 thì đây chính là Thân NPC thực sự
         if humanoid and head and obj:FindFirstChild("HumanoidRootPart") and humanoid.Health > 0 then
-            -- Loại trừ nếu trùng tên với folder vũ khí dựa vào việc không có cha là WeaponRig
             if obj.Parent and obj.Parent.Name ~= "WeaponRig" then
                 return obj
             end
@@ -55,7 +52,7 @@ local function getRealNPC(obj)
     return nil
 end
 
--- HÀM TÌM NPC THỰC GẦN NHẤT
+-- HÀM TÌM NPC GẦN NHẤT
 local function getTargetNPC()
     local closest = nil
     local maxDistance = math.huge
@@ -77,13 +74,13 @@ local function getTargetNPC()
     return closest
 end
 
--- 4. PHÓNG TO HITBOX ĐẦU NPC THỰC
+-- 4. PHÓNG TO HITBOX ĐẦU NPC (Giúp đứng xa vẫn chém trúng đầu)
 local function ExpandHitbox()
     for _, obj in pairs(Workspace:GetDescendants()) do
         local realNPC = getRealNPC(obj)
         if realNPC then
             local head = realNPC.Head
-            head.Size = Vector3.new(8, 8, 8)
+            head.Size = Vector3.new(12, 12, 12) -- Tăng lên 12 để đứng xa 6 studs chém vẫn dính
             head.Transparency = 0.6
             head.CanCollide = false
             if not head.Massless then head.Massless = true end
@@ -91,15 +88,21 @@ local function ExpandHitbox()
     end
 end
 
--- 5. HÀM TỰ ĐỘNG LỰA CHỌN MELEE THÔNG MINH
+-- 5. HÀM TỰ ĐỘNG TRANG BỊ CẬN CHIẾN FIX LỖI
 local function equipMeleeWeapon(pHumanoid)
+    local char = localPlayer.Character
+    if not char then return end
+    
+    -- Nếu trên tay đang cầm sẵn vũ khí rồi thì không tự đổi nữa để tránh lỗi kẹt
+    if char:FindFirstChildOfClass("Tool") then return end
+
     local backpack = localPlayer:FindFirstChild("Backpack")
     if not backpack then return end
     
+    -- Ưu tiên tìm vũ khí cận chiến (ví dụ: Fire Axe hoặc món không có thuộc tính súng)
     for _, tool in pairs(backpack:GetChildren()) do
         if tool:IsA("Tool") then
-            -- Tự động bỏ qua súng, gọi máy bay, xe cộ để lấy cận chiến (như Rìu, Dao...)
-            if not tool:FindFirstChild("WeaponStats") and tool.Name ~= "Light Air-Strike" and not tool.Name:find("Truck") then
+            if not tool:FindFirstChild("WeaponStats") and not tool.Name:find("Strike") and not tool.Name:find("Truck") then
                 pHumanoid:EquipTool(tool)
                 break
             end
@@ -107,26 +110,19 @@ local function equipMeleeWeapon(pHumanoid)
     end
 end
 
--- 6. VÒNG LẶP RENDER STEPPED (ESP & AIMBOT THÂN THỰC)
+-- 6. VÒNG LẶP RENDER STEPPED (ESP & AIMBOT)
 RunService.RenderStepped:Connect(function()
-    -- ESP Người chơi
     for _, p in pairs(Players:GetPlayers()) do
         if p.Character then ApplyHighlight(p.Character, Color3.fromRGB(0, 0, 255)) end
     end
-    
-    -- ESP Thân NPC thực sự
     for _, obj in pairs(Workspace:GetDescendants()) do
         local realNPC = getRealNPC(obj)
-        if realNPC then
-            ApplyHighlight(realNPC, Color3.fromRGB(255, 0, 0))
-        end
+        if realNPC then ApplyHighlight(realNPC, Color3.fromRGB(255, 0, 0)) end
     end
-
     for _, hl in pairs(ESPFolder:GetChildren()) do
         if hl:IsA("Highlight") and (not hl.Adornee or not hl.Adornee.Parent) then hl:Destroy() end
     end
 
-    -- Aimbot khóa vào đầu thực
     local viewportSize = Camera.ViewportSize
     fovCircle.Position = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
     local target = getTargetNPC()
@@ -144,9 +140,9 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- 7. TÍNH NĂNG CẤP CAO: TELEPORT THÂN THỰC + SPIN + PRONE + KILL AURA
+-- 7. TÍNH NĂNG CẤP CAO: TELEPORT SAU LƯNG DƯỚI ĐẤT + SPIN + PRONE + KILL AURA
 local spinAngle = 0
-local AURA_RANGE = 20
+local AURA_RANGE = 25 -- Tăng tầm Aura lên một chút vì mình đứng xa ra
 
 RunService.Heartbeat:Connect(function()
     local char = localPlayer.Character
@@ -155,12 +151,12 @@ RunService.Heartbeat:Connect(function()
     local pHumanoid = char:FindFirstChildOfClass("Humanoid")
     if not pRoot or not pHumanoid or pHumanoid.Health <= 0 then return end
 
-    -- Tự động cầm vũ khí cận chiến bất kỳ
+    -- Lấy cận chiến lên tay
     equipMeleeWeapon(pHumanoid)
 
     local currentTool = char:FindFirstChildOfClass("Tool")
     
-    -- Kill Aura diện rộng quét trúng thân thực
+    -- Kill Aura vung dao liên tục vào các mục tiêu xung quanh
     for _, obj in pairs(Workspace:GetDescendants()) do
         local realNPC = getRealNPC(obj)
         if realNPC then
@@ -172,21 +168,27 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- Teleport chính xác lên đỉnh đầu THÂN THỰC + Nằm Xoay né hitbox
+    -- TELEPORT FIX: Đứng dưới đất, sau lưng NPC cách 6 studs
     local targetNPC = getTargetNPC()
     if targetNPC then
         local npcRoot = targetNPC:FindFirstChild("HumanoidRootPart")
         if npcRoot then
             spinAngle = (spinAngle + 45) % 360
-            -- Đáp thẳng xuống đầu thực của nó để chém bổ củi
-            pRoot.CFrame = CFrame.new(npcRoot.Position + Vector3.new(0, 1.5, 0)) 
+            
+            -- Tính toán vị trí phía sau lưng NPC: Lấy vị trí gốc trừ đi hướng nhìn LookVector của NPC
+            -- Giữ nguyên cao độ trục Y của NPC (để sát mặt đất) chứ không bay lên trời nữa
+            local backPosition = npcRoot.Position - (npcRoot.CFrame.LookVector * 6)
+            
+            -- Đưa nhân vật về vị trí đó + Áp dụng hiệu ứng Nằm ngang (-90) + Xoay (spinAngle)
+            pRoot.CFrame = CFrame.new(backPosition) 
                            * CFrame.Angles(math.rad(-90), math.rad(spinAngle), 0)
+            
             pRoot.Velocity = Vector3.new(0, 0, 0)
         end
     end
 end)
 
--- Vòng lặp liên tục quét phình to đầu NPC thực
+-- Vòng lặp quét làm to Hitbox đầu
 task.spawn(function()
     while task.wait(0.3) do
         ExpandHitbox()
