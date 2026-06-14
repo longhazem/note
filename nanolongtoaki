@@ -2,72 +2,52 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
 local localPlayer = Players.LocalPlayer
-local remoteEvent = ReplicatedStorage:WaitForChild("RemoteEvent")
 
--- Các hàm Remote đã tích hợp
-local function EquipKnife()
+-- ĐƯỜNG DẪN REMOTE (Nếu vẫn không chạy, hãy kiểm tra F9 xem có báo "nil" không)
+local remoteEvent = ReplicatedStorage:FindFirstChild("RemoteEvent")
+
+-- HÀM EQUIP BẰNG CÁCH GỬI REMOTE NHƯ BẠN CUNG CẤP
+local function EquipWeapon()
     local args = { { { "\n", "Knife_Equip", {speed = 1.5, priority = Enum.AnimationPriority.Action2}, "Equip", true } } }
-    remoteEvent:FireServer(unpack(args))
+    pcall(function() remoteEvent:FireServer(unpack(args)) end)
 end
 
-local function DealDamage(targetPart)
-    local args = { { { " ", targetPart, {Time = 0.23, CFrame = targetPart.CFrame, Debug = true, Size = Vector3.new(1.5, 1.5, 2.5)} }, { " ", Instance.new("Part", nil), {Time = 0.23, CFrame = targetPart.CFrame, Debug = true, Size = Vector3.new(1.5, 1.5, 2.5)} } } }
-    remoteEvent:FireServer(unpack(args))
+-- HÀM TẤN CÔNG (GỘP CẢ 2 REMOTE ĐỂ ĐẢM BẢO HIT)
+local function AttackNPC(targetPart)
+    -- Remote 1: Gây sát thương
+    local args1 = { { { " ", targetPart, {Time = 0.23, CFrame = targetPart.CFrame, Debug = true, Size = Vector3.new(1.5, 1.5, 2.5) } }, { " ", Instance.new("Part"), {Time = 0.23, CFrame = targetPart.CFrame, Debug = true, Size = Vector3.new(1.5, 1.5, 2.5) } } } }
+    -- Remote 2: Animation chém
+    local args2 = { { {"\v", "Knife_Slice1"}, {"\n", "Knife_Slice2", {priority = Enum.AnimationPriority.Action2, looped = false}}, {"\023", "Move1", false}, {"\023", "Swing", false} } }
+    
+    pcall(function() 
+        remoteEvent:FireServer(unpack(args1)) 
+        remoteEvent:FireServer(unpack(args2))
+    end)
 end
-
-local function TriggerSwing()
-    local args = { { {"\v", "Knife_Slice1"}, {"\n", "Knife_Slice2", {priority = Enum.AnimationPriority.Action2, looped = false}}, {"\023", "Move1", false}, {"\023", "Swing", false} } }
-    remoteEvent:FireServer(unpack(args))
-end
-
--- VÒNG LẶP AUTO FARM CHÍNH
-local spinAngle = 0
-local lastEquip = 0
 
 RunService.Heartbeat:Connect(function()
     local char = localPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return end
-    local pRoot = char.HumanoidRootPart
-
-    -- 1. TỰ ĐỘNG EQUIP DAO
-    if tick() - lastEquip > 5 then
-        EquipKnife()
-        lastEquip = tick()
-    end
-
-    -- 2. TÌM NPC GẦN NHẤT ĐỂ FARM
-    local closestNPC = nil
-    local maxDist = 30
+    
+    -- 1. Equip liên tục để đảm bảo server xác nhận
+    if math.random(1, 20) == 1 then EquipWeapon() end
+    
+    -- 2. Quét NPC
     for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj.Name == "Insurgent" and obj.Parent and obj.Parent.Name ~= "WeaponRig" then
-            local npcRoot = obj:FindFirstChild("HumanoidRootPart")
-            if npcRoot and obj:FindFirstChild("Humanoid") and obj.Humanoid.Health > 0 then
-                local dist = (pRoot.Position - npcRoot.Position).Magnitude
-                if dist < maxDist then
-                    maxDist = dist
-                    closestNPC = obj
+        if obj:IsA("Model") and string.find(obj.Name, "Insurgent") then
+            local root = obj:FindFirstChild("HumanoidRootPart")
+            local head = obj:FindFirstChild("Head")
+            if root and head and obj:FindFirstChild("Humanoid") and obj.Humanoid.Health > 0 then
+                local dist = (char.HumanoidRootPart.Position - root.Position).Magnitude
+                
+                -- Teleport phía sau lưng
+                if dist < 30 then
+                    char.HumanoidRootPart.CFrame = root.CFrame * CFrame.new(0, 0, 4)
+                    -- Spam chém
+                    AttackNPC(head)
                 end
             end
-        end
-    end
-
-    -- 3. HÀNH ĐỘNG AUTO FARM (TELEPORT + KILL)
-    if closestNPC then
-        local npcRoot = closestNPC.HumanoidRootPart
-        local npcHead = closestNPC:FindFirstChild("Head")
-
-        -- Teleport sau lưng dưới đất + Nằm + Xoay
-        spinAngle = (spinAngle + 45) % 360
-        local backPosition = npcRoot.Position - (npcRoot.CFrame.LookVector * 6)
-        pRoot.CFrame = CFrame.new(backPosition) * CFrame.Angles(math.rad(-90), math.rad(spinAngle), 0)
-        pRoot.Velocity = Vector3.new(0, 0, 0)
-
-        -- Kill Aura (Chém vào đầu)
-        if npcHead then
-            DealDamage(npcHead)
-            TriggerSwing()
         end
     end
 end)
