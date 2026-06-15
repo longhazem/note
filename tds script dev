@@ -1150,7 +1150,7 @@ end)
 -- // ui
 
 -- ═══════════════════════════════════════════════════════
--- TOKAIHUB UI LIBRARY (nhúng trực tiếp)
+-- TOKAIHUB UI LIBRARY
 -- ═══════════════════════════════════════════════════════
 -- ╔══════════════════════════════════════════════════╗
 -- ║           TokaiHub — Roblox UI Library           ║
@@ -2968,7 +2968,7 @@ end
 -- ═══════════════════════════════════════════
 
 -- ═══════════════════════════════════════════════════════
--- KHỞI TẠO + GIỮ NGUYÊN TOÀN BỘ TABS GỐC CỦA TOKAIHUB
+-- TABS GỐC TOKAIHUB (Home / Minesweeper / Test / Useless)
 -- ═══════════════════════════════════════════════════════
 local win = Library:CreateWindow()
 
@@ -3677,321 +3677,314 @@ uselessTab:AddUserButton("dolboeb228_negr", function()
     loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/TOKAIHUB/refs/heads/main/Audio"))()
 end, "Đang chạy script: dolboeb228_negr")
 
--- ════ SETTINGS TAB ════
-local settingsTab = win:CreateTab("Settings", "IMG:tabSettings")
-settingsTab:AddSection("ℹ️ Info")
 
--- Helper toast thay Window:Notify
+-- ════════════════════════════════════════════════════════
+-- TDS TABS
+-- ════════════════════════════════════════════════════════
+
 local function Notify(msg, icon)
     ShowToast(msg, icon or "✨")
 end
 
--- ═══════════════════════════════════════════════════════
--- TAB TDS: AUTOMATION
--- ═══════════════════════════════════════════════════════
+-- ══ TAB: AUTO ══
 local autoTab = win:CreateTab("Auto", "IMG:tabHome")
-autoTab:AddSection("⚔️ Match Progression")
+autoTab:AddSection("⚔️ Match")
+autoTab:AddToggle("Auto Rejoin",    "autoRejoin",  function(v) SetSetting("AutoRejoin", v) end)
+autoTab:AddToggle("Auto Ready Up",  "autoReady",   function(v) SetSetting("AutoReady", v);  if v then StartAutoReady() end end)
+autoTab:AddToggle("Auto Skip Wave", "autoSkip",    function(v) SetSetting("AutoSkip",  v) end)
 
-autoTab:AddToggle("Auto Rejoin", "autoRejoin", function(v)
-    SetSetting("AutoRejoin", v)
-end)
+autoTab:AddSection("🎯 Abilities")
+autoTab:AddToggle("Auto Chain",     "autoChain",   function(v) SetSetting("AutoChain",     v) end)
+autoTab:AddToggle("Support Caravan","supCaravan",  function(v) SetSetting("SupportCaravan",v) end)
+autoTab:AddToggle("Auto DJ Booth",  "autoDJ",      function(v) SetSetting("AutoDJ",        v) end)
+autoTab:AddToggle("Auto Necro",     "autoNecro",   function(v) SetSetting("AutoNecro",     v) end)
 
-autoTab:AddToggle("Auto Ready Up", "autoReady", function(v)
-    Globals.AutoReady = v
-    SetSetting("AutoReady", v)
-    if v then StartAutoReady() end
-end)
+autoTab:AddSection("🚁 Spawners")
+autoTab:AddToggle("Auto Mercenary", "autoMerc",    function(v) SetSetting("AutoMercenary", v) end)
+autoTab:AddSlider("Merc Distance",  0, 300, "mercPath",  "", function(v) SetSetting("MercenaryPath", v); Globals.MercenaryPath = v end)
+autoTab:AddToggle("Auto Military",  "autoMil",     function(v) SetSetting("AutoMilitary",  v) end)
+autoTab:AddSlider("Mil Distance",   0, 300, "milPath",   "", function(v) SetSetting("MilitaryPath",  v); Globals.MilitaryPath  = v end)
 
-autoTab:AddToggle("Auto Skip Waves", "autoSkip", function(v)
-    SetSetting("AutoSkip", v)
-end)
+task.spawn(function() while true do if CalcLength() then break end; task.wait(3) end end)
 
-autoTab:AddSection("🎯 Auto-Abilities")
-
-autoTab:AddToggle("Auto Chain", "autoChain", function(v)
-    SetSetting("AutoChain", v)
-end)
-
-autoTab:AddToggle("Support Caravan", "supportCaravan", function(v)
-    SetSetting("SupportCaravan", v)
-end)
-
-autoTab:AddToggle("Auto DJ Booth", "autoDJ", function(v)
-    SetSetting("AutoDJ", v)
-end)
-
-autoTab:AddToggle("Auto Necro", "autoNecro", function(v)
-    SetSetting("AutoNecro", v)
-end)
-
-autoTab:AddSection("🚁 Unit Spawners")
-
-autoTab:AddToggle("Auto Mercenary Base", "autoMerc", function(v)
-    SetSetting("AutoMercenary", v)
-end)
-
-MercenarySlider = nil
-autoTab:AddSlider("Merc Path Distance", 0, 300, "mercPath", "", function(val)
-    SetSetting("MercenaryPath", val)
-    Globals.MercenaryPath = val
-end)
-
-autoTab:AddToggle("Auto Military Base", "autoMil", function(v)
-    SetSetting("AutoMilitary", v)
-end)
-
-MilitarySlider = nil
-autoTab:AddSlider("Mil Path Distance", 0, 300, "milPath", "", function(val)
-    SetSetting("MilitaryPath", val)
-    Globals.MilitaryPath = val
-end)
-
-task.spawn(function()
-    while true do
-        if CalcLength() then break end
-        task.wait(3)
-    end
-end)
-
-autoTab:AddSection("📦 Inventory")
-
-autoTab:AddToggle("Auto Open Crates", "autoOpenCrates", function(v)
-    Globals.AutoOpenCrates = v
-    SetSetting("AutoOpenCrates", v)
-    if v then StartAutoOpenCrates() end
-end)
-
-autoTab:AddDropdown("Target Crate", CrateList, "selectedCrate", function(val)
-    Globals.SelectedCrate = val
-    SetSetting("SelectedCrate", val)
-end)
+autoTab:AddSection("📦 Items")
+autoTab:AddToggle("Auto Open Crates","autoOpenCr", function(v) Globals.AutoOpenCrates=v; SetSetting("AutoOpenCrates",v); if v then StartAutoOpenCrates() end end)
+autoTab:AddDropdown("Target Crate",   CrateList,   "selCrate",  function(v) Globals.SelectedCrate=v; SetSetting("SelectedCrate",v) end)
 
 autoTab:AddSection("💰 Economy")
+autoTab:AddToggle("Sell Farms",      "sellFarms",  function(v) SetSetting("SellFarms",v) end)
+autoTab:AddSlider("Sell at Wave",  1, 100, "sellFarmsWave","", function(v) SetSetting("SellFarmsWave",v) end)
 
-autoTab:AddToggle("Sell Farms", "sellFarms", function(v)
-    SetSetting("SellFarms", v)
+autoTab:AddSection("🛠️ Misc")
+autoTab:AddToggle("Auto Gatling",    "autoGatling",function(v) SetSetting("AutoGatling",v) end)
+autoTab:AddToggle("Auto Pickups",    "autoPickups",function(v) SetSetting("AutoPickups",v) end)
+autoTab:AddDropdown("Pickup Method", {"Pathfinding","Instant"}, "pickupMethod", function(v)
+    local s = type(v)=="table" and v[1] or v
+    SetSetting("PickupMethod", s or "Pathfinding")
 end)
+autoTab:AddToggle("Claim Rewards",   "claimRewards",function(v) SetSetting("ClaimRewards",v) end)
 
-autoTab:AddSlider("Sell at Wave", 1, 100, "sellFarmsWave", "", function(val)
-    SetSetting("SellFarmsWave", val)
-end)
-
-autoTab:AddSection("🛠️ Utilities")
-
-autoTab:AddToggle("Auto Gatling", "autoGatling", function(v)
-    SetSetting("AutoGatling", v)
-end)
-
-autoTab:AddToggle("Auto Collect Pickups", "autoPickups", function(v)
-    SetSetting("AutoPickups", v)
-end)
-
-autoTab:AddDropdown("Pickup Method", {"Pathfinding","Instant"}, "pickupMethod", function(val)
-    local selected = type(val) == "table" and val[1] or val
-    SetSetting("PickupMethod", selected or "Pathfinding")
-end)
-
-autoTab:AddToggle("Claim Rewards", "claimRewards", function(v)
-    SetSetting("ClaimRewards", v)
-end)
-
--- ═══════════════════════════════════════════════════════
--- TAB TDS: TIMESCALE
--- ═══════════════════════════════════════════════════════
+-- ══ TAB: SPEED ══
 local tsTab = win:CreateTab("Speed", "IMG:tabMain")
 tsTab:AddSection("⚡ TimeScale")
-
 tsTab:AddToggle("Enable TimeScale", "tsEnabled", function(v)
     SetSetting("TimeScaleEnabled", v)
     if v then StartTimeScale() end
 end)
-
-tsTab:AddDropdown("TimeScale Speed", {"0.5","1","1.5","2"}, "tsSpeed", function(val)
-    local selected = type(val) == "table" and val[1] or val
-    local value = CoerceTimeScaleValue(selected, 2)
-    SetSetting("TimeScaleValue", value)
+tsTab:AddDropdown("Speed", {"0.5","1","1.5","2"}, "tsSpeed", function(v)
+    local s = type(v)=="table" and v[1] or v
+    local val = CoerceTimeScaleValue(s, 2)
+    SetSetting("TimeScaleValue", val)
     if Globals.TimeScaleEnabled then ApplyTimeScaleOnce() end
 end)
-
 tsTab:AddButton("Kiểm tra Ticket", function()
-    local tickets = LocalPlayer:FindFirstChild("TimescaleTickets")
-    local count = tickets and tickets.Value or LocalPlayer:GetAttribute("TimescaleTickets") or 0
-    Notify("Bạn có " .. tostring(count) .. " timescale ticket!", "🎟️")
+    local t = LocalPlayer:FindFirstChild("TimescaleTickets")
+    local n = t and t.Value or LocalPlayer:GetAttribute("TimescaleTickets") or 0
+    Notify("Bạn có " .. tostring(n) .. " ticket!", "🎟️")
 end, "Đã kiểm tra!", "🎟️")
 
--- ═══════════════════════════════════════════════════════
--- TAB TDS: CHIẾN THUẬT + RECORDER
--- ═══════════════════════════════════════════════════════
+-- ══ TAB: STRAT (Recorder + Runner) ══
 local stratTab = win:CreateTab("Strat", "IMG:tabDisplay")
-stratTab:AddSection("📋 Ghi Chiến Thuật")
+stratTab:AddSection("📼 Recorder")
 
-local strat_recording = false
-local strat_towers    = {}
-local strat_count     = 0
-local strat_file      = "Strat.txt"
-local strat_actions   = 0
+local rec_active = false
+local rec_towers = {}
+local rec_count  = 0
+local rec_acts   = 0
+local rec_buffer = {}
+local rec_file   = "Strat.lua"
+local rec_connAdd, rec_connRem
 
-local function strat_record(cmd)
-    if not strat_recording then return end
-    if appendfile then appendfile(strat_file, cmd .. "\n") end
-    strat_actions = strat_actions + 1
+local function rec_line(s)
+    if not rec_active then return end
+    table.insert(rec_buffer, s)
+    rec_acts = rec_acts + 1
 end
 
-stratTab:AddButton("▶ Bắt đầu ghi", function()
-    if strat_recording then Notify("Đang ghi rồi!", "⚠️") return end
-
-    local mode, map = "Unknown", "Unknown"
-    local sf = ReplicatedStorage:FindFirstChild("State")
-    if sf then mode = sf.Difficulty.Value; map = sf.Map.Value end
-
-    local t1,t2,t3,t4,t5 = "None","None","None","None","None"
+local function rec_header()
+    local mode, map = "Unknown","Unknown"
+    local t = {"None","None","None","None","None"}
     local mods = ""
+    local sf = ReplicatedStorage:FindFirstChild("State")
+    if sf then pcall(function() mode=sf.Difficulty.Value end); pcall(function() map=sf.Map.Value end) end
     local sr = ReplicatedStorage:FindFirstChild("StateReplicators")
     if sr then
         for _, f in ipairs(sr:GetChildren()) do
-            if f.Name == "PlayerReplicator" and f:GetAttribute("UserId") == LocalPlayer.UserId then
+            if f.Name=="PlayerReplicator" and f:GetAttribute("UserId")==LocalPlayer.UserId then
                 local eq = f:GetAttribute("EquippedTowers")
-                if type(eq) == "string" then
-                    local ok, tbl = pcall(function() return HttpService:JSONDecode(eq:match("%[.*%]") or "[]") end)
-                    if ok and tbl then t1=tbl[1] or "None";t2=tbl[2] or "None";t3=tbl[3] or "None";t4=tbl[4] or "None";t5=tbl[5] or "None" end
+                if type(eq)=="string" then
+                    local ok,tb = pcall(function() return HttpService:JSONDecode(eq:match("%[.*%]") or "[]") end)
+                    if ok and tb then for i=1,5 do t[i]=tb[i] or "None" end end
                 end
             end
-            if f.Name == "ModifierReplicator" then
+            if f.Name=="ModifierReplicator" then
                 local raw = f:GetAttribute("Votes")
-                if type(raw) == "string" then
-                    local ok, mt = pcall(function() return HttpService:JSONDecode(raw:match("{.*}") or "{}") end)
+                if type(raw)=="string" then
+                    local ok,mt = pcall(function() return HttpService:JSONDecode(raw:match("{.*}") or "{}") end)
                     if ok and mt then
                         local ml={}; for k in pairs(mt) do table.insert(ml, k.." = true") end
-                        mods = table.concat(ml, ", ")
+                        mods = table.concat(ml,", ")
                     end
                 end
             end
         end
     end
+    return string.format(
+        "-- Strat: %s | Mode: %s\n"..
+        "-- Generated by TokaiHub\n\n"..
+        "local TDS = loadstring(game:HttpGet(\"https://raw.githubusercontent.com/DuxiiT/auto-strat/refs/heads/main/Library.lua\"))()\n\n"..
+        "TDS:Loadout(\"%s\",\"%s\",\"%s\",\"%s\",\"%s\")\n"..
+        "TDS:Mode(\"%s\")\n"..
+        "TDS:GameInfo(\"%s\",{%s})\n",
+        map, mode, t[1],t[2],t[3],t[4],t[5], mode, map, mods
+    ), map, mode
+end
 
-    strat_recording = true; strat_count = 0; strat_towers = {}; strat_actions = 0
+stratTab:AddButton("▶ Bắt đầu ghi", function()
+    if rec_active then Notify("Đang ghi rồi!","⚠️") return end
+    rec_active=true; rec_count=0; rec_acts=0; rec_towers={}; rec_buffer={}
+    local header, map, mode = rec_header()
+    -- split header vao buffer
+    for _, ln in ipairs(string.split(header,"\n")) do table.insert(rec_buffer, ln) end
+    Notify("🔴 Ghi chiến thuật! Map: "..(map or "?"), "🔴")
 
-    if writefile then
-        writefile(strat_file, string.format(
-            'local TDS = loadstring(game:HttpGet("https://raw.githubusercontent.com/DuxiiT/auto-strat/refs/heads/main/Library.lua"))()'
-            .."\n\nTDS:Loadout(\"%s\",\"%s\",\"%s\",\"%s\",\"%s\")\nTDS:Mode(\"%s\")\nTDS:GameInfo(\"%s\",{%s})\n\n",
-            t1,t2,t3,t4,t5, mode, map, mods
-        ))
-    end
+    local tf = workspace:WaitForChild("Towers",10)
+    if not tf then Notify("Không tìm thấy Towers!","❌"); rec_active=false; return end
 
-    Notify("Đang ghi! Map: " .. map, "🔴")
+    if rec_connAdd then rec_connAdd:Disconnect() end
+    if rec_connRem then rec_connRem:Disconnect() end
 
-    local tf = workspace:WaitForChild("Towers", 10)
-    if not tf then return end
-
-    tf.ChildAdded:Connect(function(tower)
-        if not strat_recording then return end
-        local rep = tower:WaitForChild("TowerReplicator", 5)
-        if not rep or rep:GetAttribute("OwnerId") ~= LocalPlayer.UserId then return end
-        strat_count += 1
-        local idx = strat_count
-        strat_towers[tower] = idx
-        local tname = rep:GetAttribute("Name") or tower.Name
-        local rp = rep:GetAttribute("Position")
+    rec_connAdd = tf.ChildAdded:Connect(function(tower)
+        if not rec_active then return end
+        local rep = tower:WaitForChild("TowerReplicator",5)
+        if not rep or rep:GetAttribute("OwnerId")~=LocalPlayer.UserId then return end
+        rec_count += 1; local idx=rec_count; rec_towers[tower]=idx
+        local name = rep:GetAttribute("Name") or tower.Name
+        local raw  = rep:GetAttribute("Position")
         local px,py,pz
-        if typeof(rp) == "Vector3" then px,py,pz=rp.X,rp.Y,rp.Z
+        if typeof(raw)=="Vector3" then px,py,pz=raw.X,raw.Y,raw.Z
         else local p=tower:GetPivot().Position; px,py,pz=p.X,p.Y,p.Z end
-        strat_record(string.format('TDS:Place("%s",%.3f,%.3f,%.3f)',tname,px,py,pz))
+        rec_line(string.format('TDS:Place("%s",%.3f,%.3f,%.3f)',name,px,py,pz))
         rep:GetAttributeChangedSignal("Upgrade"):Connect(function()
-            if strat_recording then strat_record(string.format('TDS:Upgrade(%d)',idx)) end
+            if rec_active then rec_line(string.format("TDS:Upgrade(%d)",idx)) end
         end)
     end)
-
-    tf.ChildRemoved:Connect(function(tower)
-        if not strat_recording then return end
-        local idx = strat_towers[tower]
-        if idx then strat_record(string.format('TDS:Sell(%d)',idx)); strat_towers[tower]=nil end
+    rec_connRem = tf.ChildRemoved:Connect(function(tower)
+        if not rec_active then return end
+        local idx=rec_towers[tower]
+        if idx then rec_line(string.format("TDS:Sell(%d)",idx)); rec_towers[tower]=nil end
     end)
-end, "Đang ghi chiến thuật!", "🔴")
+end, "Đang ghi!", "🔴")
 
 stratTab:AddButton("⏹ Dừng ghi", function()
-    if not strat_recording then Notify("Chưa bắt đầu ghi!", "⚠️") return end
-    strat_recording = false
-    Notify("Đã lưu Strat.txt! (" .. strat_actions .. " hành động)", "✅")
-end, "Đã dừng ghi!", "⏹")
+    if not rec_active then Notify("Chưa ghi!","⚠️") return end
+    rec_active=false
+    if rec_connAdd then rec_connAdd:Disconnect() end
+    if rec_connRem then rec_connRem:Disconnect() end
+    Notify("Đã dừng! "..rec_acts.." actions — nhấn 💾 để lưu","⏹")
+end, "Đã dừng!", "⏹")
 
-stratTab:AddButton("🗑 Xóa Strat.txt", function()
-    if writefile then writefile(strat_file, ""); Notify("Đã xóa!", "🗑") end
-end, "Đã xóa!", "🗑")
+stratTab:AddButton("💾 Tạo file Strat.lua", function()
+    if #rec_buffer==0 then Notify("Không có gì để lưu!","❌") return end
+    local content = table.concat(rec_buffer,"\n")
+    if writefile then
+        pcall(writefile, rec_file, content)
+        Notify("✅ Đã tạo "..rec_file, "💾")
+    else
+        print("\n"..content.."\n")
+        Notify("writefile không khả dụng — đã print ra F9","⚠️")
+    end
+end, "Đã lưu!", "💾")
 
 stratTab:AddSection("▶️ Chạy Chiến Thuật")
 
-stratTab:AddButton("Chạy Strat.txt", function()
-    if not isfile or not isfile(strat_file) then Notify("Không tìm thấy Strat.txt!", "❌") return end
+stratTab:AddButton("Chạy Strat.lua", function()
     task.spawn(function()
-        local ok, content = pcall(readfile, strat_file)
-        if ok and content and content ~= "" then
-            local fn, err = loadstring(content)
-            if fn then pcall(fn); Notify("Đang chạy!", "▶️")
-            else Notify("Lỗi: "..tostring(err), "❌") end
-        else Notify("File trống hoặc lỗi!", "❌") end
+        -- Thu chay tu file
+        if isfile and isfile(rec_file) then
+            local ok,content = pcall(readfile, rec_file)
+            if ok and content and content~="" then
+                local fn,err = loadstring(content)
+                if fn then pcall(fn); Notify("Đang chạy!","▶️")
+                else Notify("Lỗi: "..tostring(err),"❌") end
+                return
+            end
+        end
+        -- Fallback: chay tu buffer
+        if #rec_buffer>0 then
+            local fn,err = loadstring(table.concat(rec_buffer,"\n"))
+            if fn then pcall(fn); Notify("Chạy từ buffer!","▶️")
+            else Notify("Lỗi: "..tostring(err),"❌") end
+        else
+            Notify("Không có file hoặc buffer!","❌")
+        end
     end)
-end, "Đang chạy chiến thuật!", "▶️")
+end, "Đang chạy!", "▶️")
+
+stratTab:AddButton("🗑 Xóa Strat.lua", function()
+    rec_buffer={}; rec_acts=0; rec_count=0
+    if writefile then pcall(writefile, rec_file, "") end
+    Notify("Đã xóa!","🗑")
+end, "Đã xóa!", "🗑")
 
 stratTab:AddSection("⚙️ Easy Mode")
-stratTab:AddToggle("Easy Mode (Summer Castle)", "easyMode", function(v)
-    Globals.Easy = v; SetSetting("Easy", v)
-    if v then StartEasyMode() end
+stratTab:AddToggle("Easy Mode (Summer Castle)","easyMode",function(v)
+    Globals.Easy=v; SetSetting("Easy",v); if v then StartEasyMode() end
 end)
 
--- ═══════════════════════════════════════════════════════
--- TAB TDS: SETTINGS
--- ═══════════════════════════════════════════════════════
-local tdsSetTab = win:CreateTab("TDS Set", "IMG:tabSettings")
+-- ══ TAB: SETTINGS TDS ══
+local tdsSetTab = win:CreateTab("TDS Set","IMG:tabSettings")
 tdsSetTab:AddSection("🔧 Cài đặt")
-
-tdsSetTab:AddButton("💾 Lưu Settings", function()
-    SaveSettings(); Notify("Đã lưu settings!", "💾")
-end, "Đã lưu!", "💾")
-
-tdsSetTab:AddButton("📂 Load Settings", function()
-    LoadSettings(); Notify("Đã load settings!", "📂")
-end, "Đã load!", "📂")
+tdsSetTab:AddButton("💾 Lưu",   function() SaveSettings();  Notify("Đã lưu!","💾")  end,"Đã lưu!","💾")
+tdsSetTab:AddButton("📂 Load",  function() LoadSettings();  Notify("Đã load!","📂") end,"Đã load!","📂")
 
 tdsSetTab:AddSection("🔒 Privacy")
-
-tdsSetTab:AddToggle("Hide Username", "hideUser", function(v)
-    SetSetting("HideUsername", v); UpdatePrivacyState()
-end)
-
-tdsSetTab:AddToggle("Streamer Mode", "streamerMode", function(v)
-    SetSetting("StreamerMode", v); UpdatePrivacyState()
-end)
+tdsSetTab:AddToggle("Hide Username","hideUser",   function(v) SetSetting("HideUsername",v); UpdatePrivacyState() end)
+tdsSetTab:AddToggle("Streamer Mode","streamerMode",function(v) SetSetting("StreamerMode",v); UpdatePrivacyState() end)
 
 tdsSetTab:AddSection("🏷️ Nametag")
 do
-    local tagOptions = collectTagOptions()
+    local tagOpts  = collectTagOptions()
     local tagValue = Globals.tagName or "None"
-    if not table.find(tagOptions, tagValue) then tagValue = "None" end
-    tdsSetTab:AddDropdown("Tag Changer", tagOptions, "tagChanger", function(choice)
-        local selected = type(choice) == "table" and choice[1] or choice
-        if not selected or selected == "" then selected = "None" end
-        SetSetting("tagName", selected)
-        if selected == "None" then stopTagChanger() else startTagChanger() end
+    if not table.find(tagOpts, tagValue) then tagValue="None" end
+    tdsSetTab:AddDropdown("Tag Changer", tagOpts, "tagChanger", function(choice)
+        local sel = type(choice)=="table" and choice[1] or choice
+        if not sel or sel=="" then sel="None" end
+        SetSetting("tagName",sel)
+        if sel=="None" then stopTagChanger() else startTagChanger() end
     end)
 end
 
 tdsSetTab:AddSection("⚡ Performance")
-tdsSetTab:AddToggle("Anti-Lag", "antiLag", function(v) SetSetting("AntiLag", v) end)
-tdsSetTab:AddToggle("Disable 3D Rendering", "disable3d", function(v)
-    SetSetting("Disable3DRendering", v); Apply3dRendering()
-end)
+tdsSetTab:AddToggle("Anti-Lag",         "antiLag",  function(v) SetSetting("AntiLag",v) end)
+tdsSetTab:AddToggle("Disable 3D Render","disable3d",function(v) SetSetting("Disable3DRendering",v); Apply3dRendering() end)
 
--- ═══════════════════════════════════════════════════════
--- APPLY SAVED SETTINGS
--- ═══════════════════════════════════════════════════════
-if Globals.ClaimRewards and not AutoClaimRewards then
-    StartClaimRewards()
-end
+-- ══ SETTINGS TAB GỐC TOKAIHUB ══
+local settingsTab = win:CreateTab("Settings","IMG:tabSettings")
+settingsTab:AddSection("ℹ️ Info")
+settingsTab:AddCreation()
+
+-- ══ APPLY SETTINGS KHI KHỞI ĐỘNG ══
+if Globals.ClaimRewards and not AutoClaimRewards then StartClaimRewards() end
 MissionsUIFix()
 
 local Logger = {}
 function Logger:Log(msg) print("[TokaiHub-TDS]", msg) end
 shared.Logger = Logger
+
+-- ═══════════════════════════════════════════════════════
+-- TDS:AutoPlace(queue) — chạy kèm strat, tự đặt/upgrade/bán
+-- Ví dụ:
+--   TDS:AutoPlace({
+--     { type="place",   name="Scout", x=0, y=0, z=0 },
+--     { type="wait",    wave=3 },
+--     { type="upgrade", idx=1 },
+--     { type="sell",    idx=1 },
+--     { type="delay",   t=1.5 },
+--   })
+-- ═══════════════════════════════════════════════════════
+function TDS:AutoPlace(queue)
+    if GameState ~= "GAME" then return false end
+    if type(queue) ~= "table" or #queue == 0 then return false end
+    task.spawn(function()
+        for _, action in ipairs(queue) do
+            if GameState ~= "GAME" then break end
+            local t = action.type or action[1]
+            if t == "wait" then
+                local target = action.wave or action[2] or 1
+                repeat task.wait(0.5) until GetCurrentWave() >= target or GameState ~= "GAME"
+            elseif t == "delay" then
+                task.wait(action.t or action[2] or 1)
+            elseif t == "place" then
+                self:Place(action.name or action[2], action.x or action[3] or 0, action.y or action[4] or 0, action.z or action[5] or 0)
+                task.wait(0.3)
+            elseif t == "upgrade" then
+                self:Upgrade(action.idx or action[2], action.path or action[3] or 1)
+                task.wait(0.2)
+            elseif t == "sell" then
+                self:Sell(action.idx or action[2])
+                task.wait(0.2)
+            elseif t == "timescale" then
+                self:TimeScale(action.speed or action[2])
+            end
+        end
+    end)
+    return true
+end
+
+-- ═══════════════════════════════════════════════════════
+-- TDS:RunFile(filename) — đọc file .lua từ client rồi chạy
+-- ═══════════════════════════════════════════════════════
+function TDS:RunFile(filename)
+    filename = filename or "Strat.lua"
+    if not isfile or not isfile(filename) then return false end
+    local ok, content = pcall(readfile, filename)
+    if not ok or not content or content == "" then return false end
+    local fn, err = loadstring(content)
+    if not fn then print("[TDS:RunFile] Lỗi:", err); return false end
+    task.spawn(pcall, fn)
+    return true
+end
+
 
 return TDS
