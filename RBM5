@@ -1,4 +1,4 @@
-local Repository = "https://raw.githubusercontent.com/mmr1337/Obsidian/main/"
+local Repository = "https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/"
 
 -- EXECUTOR COMPAT — Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
 local function ExecutorHttpGet(Url)
@@ -38,12 +38,25 @@ local function PatchObsidianSource(Source)
 	-- such as NumSides into Obsidian's generic New() creator. Ignore invalid property
 	-- assignments instead of crashing during CreateWindow.
 	Source = Source:gsub("Instance%[key%] = value", [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
+
+	-- KEYBIND FIX: some executors always return gameProcessed = true, killing all keybinds
+	-- Remove the gameProcessed guard from Obsidian's internal InputBegan keybind handler
+	Source = Source:gsub(
+		"if gameProcessed then return end\n%s*if not self%.Enabled then return end",
+		"if not self.Enabled then return end"
+	)
+	-- Also patch the generic InputBegan guard
+	Source = Source:gsub(
+		"UserInputService%.InputBegan:Connect%(function%(input, gameProcessed%)\n%s*if gameProcessed then return end",
+		"UserInputService.InputBegan:Connect(function(input, gameProcessed)"
+	)
+
 	return Source
 end
 
 local function LoadRemote(Url)
 	local Source = GetLoadstringSource(Url)
-	if string.find(Url, "Obsidian/main/Library.lua", 1, true) then
+	if string.find(Url, "source.lua", 1, true) then
 		Source = PatchObsidianSource(Source)
 	end
 	local Chunk, LoadError = loadstring(Source)
@@ -53,16 +66,14 @@ local function LoadRemote(Url)
 	return Chunk()
 end
 
-local Library = LoadRemote(Repository .. "Library.lua")
-local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
-local SaveManager = LoadRemote(Repository .. "addons/SaveManager.lua")
+local Library = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/source.lua"))()
+local ThemeManager = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/addons/ThemeManager.lua"))()
+local SaveManager = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/addons/SaveManager.lua"))()
 
-Library.ForceCheckbox = false
-Library.ShowToggleFrameInKeybinds = true
-Library.CornerRadius = Library.CornerRadius or 8
+-- libba loaded
 
-local Options = Library.Options
-local Toggles = Library.Toggles
+local Options = getgenv().Options
+local Toggles = getgenv().Toggles
 
 local MoonUI = {
 	Scale = { Window = 1 },
@@ -88,12 +99,11 @@ end
 function MoonUI.newNotify()
 	return {
 		new = function(Data)
-			Library:Notify({
-				Title = (Data and Data.Title) or "Tokaihub",
-				Description = (Data and (Data.Content or Data.Description)) or "",
-				Icon = (Data and Data.Icon) or "info",
-				Time = (Data and Data.Duration) or 5,
-			})
+			local text = (Data and Data.Title) or "Tokaihub"
+			if Data and (Data.Content or Data.Description) then
+				text = text .. ": " .. (Data.Content or Data.Description)
+			end
+			Library:Notify(text, (Data and Data.Duration) or 5)
 		end,
 	}
 end
@@ -135,7 +145,7 @@ local function WrapSection(Groupbox)
 						Text = NormalizeUIString(KeyData.Name or "Keybind", "Keybind"),
 						Mode = NormalizeUIString(KeyData.Mode or "Toggle", "Toggle"),
 						NoUI = KeyData.NoUI or false,
-						SyncToggleState = KeyData.SyncToggleState or false,
+						SyncToggleState = true, -- libba: auto-flip parent toggle on keypress,
 					})
 					if KeyData.Callback and Options[KeyFlag] then
 						Options[KeyFlag]:OnChanged(KeyData.Callback)
@@ -176,8 +186,8 @@ local function WrapSection(Groupbox)
 
 	function Section:AddColorPicker(Data)
 		local Flag = NormalizeUIString(Data.Flag or Data.Name, "ColorPicker")
-		local Toggle = Groupbox:AddToggle(Flag .. "_ColorToggle", { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = false })
-		Toggle:AddColorPicker(Flag, { Default = Data.Default or Color3.new(1, 1, 1), Title = NormalizeUIString(Data.Name or Flag, Flag) })
+		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
+		Label:AddColorPicker(Flag, { Default = Data.Default or Color3.new(1, 1, 1) })
 		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
 		return Options[Flag]
 	end
@@ -191,11 +201,7 @@ local function WrapSection(Groupbox)
 	end
 
 	function Section:AddButton(Data)
-		return Groupbox:AddButton({
-			Text = Data.Name or Data.Text or "Button",
-			Func = Data.Callback or Data.Func or function() end,
-			Tooltip = Data.Tooltip,
-		})
+		return Groupbox:AddButton(Data.Name or Data.Text or "Button", Data.Callback or Data.Func or function() end)
 	end
 
 	return Section
@@ -216,7 +222,7 @@ local function WrapTab(Tab)
 end
 
 function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Tokaihub", Footer = "discord.gg/deVVQEVybd", Icon = nil, Center = true, AutoShow = true, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
+	local Window = Library:CreateWindow({ Title = "Tokaihub", Center = true, AutoShow = true })
 	local SettingsTab
 	local Wrapped = {
 		Raw = Window,
@@ -240,12 +246,12 @@ function MoonUI.new(Data)
 				SaveManager:SetSubFolder("specific-place")
 			end
 			SaveManager:BuildConfigSection(SettingsTab)
-			ThemeManager:AddThemeOptions(SettingsTab)
+			ThemeManager:ApplyToTab(SettingsTab)
 			SaveManager:LoadAutoloadConfig()
 			return { Init = function() end }
 		end,
 		SetMenuKey = function(_, Key)
-			Library.ToggleKeybind = Options.MenuKeybind
+			if Options.MenuKeybind then Library.ToggleKeybind = Options.MenuKeybind end
 		end,
 		Unload = function()
 			Library:Unload()
