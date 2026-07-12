@@ -1,0 +1,574 @@
+local Rayfield = loadstring(game:HttpGet('https://[Log in to view URL]'))()
+
+local Window = Rayfield:CreateWindow({
+   Name = "BLUE HEATER 2",
+   Icon = 0, -- Icon in Topbar. Can use Lucide Icons (string) or Roblox Image (number). 0 to use no icon (default).
+   LoadingTitle = "BLUE HEATER 2 KILL AURA",
+   LoadingSubtitle = "By tokai",
+   ShowText = "Rayfield", -- for mobile users to unhide rayfield, change if you'd like
+   Theme = "Amethyst", -- Check https://[Log in to view URL]
+
+   ToggleUIKeybind = "K", -- The keybind to toggle the UI visibility (string like "K" or Enum.KeyCode)
+
+   DisableRayfieldPrompts = false,
+   DisableBuildWarnings = false, -- Prevents Rayfield from warning when the script has a version mismatch with the interface
+
+   ConfigurationSaving = {
+      Enabled = false,
+      FolderName = nil, -- Create a custom folder for your hub/game
+      FileName = "Big Hub"
+   },
+
+   Discord = {
+      Enabled = false, -- Prompt the user to join your Discord server if their executor supports it
+      Invite = "noinvitelink", -- The Discord invite code, do not include discord.gg/. E.g. discord.gg/ ABCD would be ABCD
+      RememberJoins = true -- Set this to false to make them join the discord every time they load it up
+   },
+
+   KeySystem = false, -- Set this to true to use our key system
+   KeySettings = {
+      Title = "Untitled",
+      Subtitle = "Key System",
+      Note = "No method of obtaining the key is provided", -- Use this to tell the user how to get a key
+      FileName = "Key", -- It is recommended to use something unique as other scripts using Rayfield may overwrite your key file
+      SaveKey = true, -- The user's key will be saved, but if you change the key, they will be unable to use your script
+      GrabKeyFromSite = false, -- If this is true, set Key below to the RAW site you would like Rayfield to get the key from
+      Key = {"Hello"} -- List of keys that will be accepted by the system, can be RAW file links (pastebin, github etc) or simple strings ("hello","key22")
+   }
+})
+
+local MainTab = Window:CreateTab("⚔️Main", nil) -- Title, Image
+local Section = MainTab:CreateSection("Kill Aura🔥")
+
+
+
+
+
+
+
+-- =======================================================================================================================
+
+--// Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    warn("[KillAura] LocalPlayer not found — make sure this is a LocalScript")
+    return
+end
+
+--// Config
+local DEBUG = false                    -- set true for console logs
+local radius = 30                      -- kill-aura radius (studs)
+local tickInterval = 0.12              -- how often to search targets (seconds)
+local batchFire = true                 -- gather all targets and fire once per tick
+
+--// RemoteEvent
+local MultiEntityHit = ReplicatedStorage:WaitForChild("PlayerEvents", 5) and ReplicatedStorage.PlayerEvents:FindFirstChild("MultiEntityHit")
+if not MultiEntityHit then
+    warn("[KillAura] Could not find ReplicatedStorage.PlayerEvents.MultiEntityHit")
+    -- we continue but the event will be nil and firing will be skipped
+end
+
+--// SpawnedEntities container (expected in workspace)
+local SpawnedEntities = workspace:WaitForChild("SpawnedEntities") or nil
+if not SpawnedEntities then
+    warn("[KillAura] workspace.SpawnedEntities not found")
+end
+
+--// State
+local killAuraEnabled = false
+local Character = LocalPlayer.Character
+local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
+
+-- helper to update Character/HRP references
+local function bindCharacter(char)
+    Character = char
+    HRP = char and char:FindFirstChild("HumanoidRootPart")
+    if DEBUG then
+        print("[KillAura] Bound to character:", Character and Character.Name, "HRP found:", HRP ~= nil)
+    end
+end
+
+-- initial bind and connect CharacterAdded
+if not Character then
+    Character = LocalPlayer.CharacterAdded:Wait()
+    bindCharacter(Character)
+else
+    bindCharacter(Character)
+end
+
+LocalPlayer.CharacterAdded:Connect(bindCharacter)
+
+-- optionally clear HRP on CharacterRemoving to avoid trying to use destroyed HRP
+LocalPlayer.CharacterRemoving:Connect(function()
+    HRP = nil
+    Character = nil
+    if DEBUG then print("[KillAura] Character removed — waiting for respawn") end
+end)
+
+-- Utility: squared distance check (faster than .Magnitude)
+local function inRadiusSquared(posA, posB, r)
+    local dx = posA.X - posB.X
+    local dy = posA.Y - posB.Y
+    local dz = posA.Z - posB.Z
+    return (dx*dx + dy*dy + dz*dz) <= (r*r)
+end
+
+-- Public API: set state
+local function SetKillAuraState(state)
+    killAuraEnabled = state and true or false
+    if DEBUG then
+        print("[KillAura] Set state ->", killAuraEnabled)
+    end
+end
+
+-- Main loop: use Heartbeat with accumulator for consistent timing
+task.spawn(function()
+    local accumulator = 0
+    while true do
+        local dt = RunService.Heartbeat:Wait() -- dt is frame delta
+        accumulator = accumulator + dt
+
+        if accumulator >= tickInterval then
+            accumulator = 0
+
+            -- Quick checks
+            if not killAuraEnabled then
+                continue
+            end
+            if not HRP or not HRP.Parent then
+                -- try to rebind if possible
+                if Character and Character.Parent and not HRP then
+                    HRP = Character:FindFirstChild("HumanoidRootPart")
+                end
+                if not HRP then
+                    if DEBUG then print("[KillAura] No HRP — skipping tick") end
+                    continue
+                end
+            end
+
+            -- gather targets
+            local targets = {}
+            local hrpPos = HRP.Position
+
+            if SpawnedEntities and SpawnedEntities.Parent then
+                for _, entity in ipairs(SpawnedEntities:GetChildren()) do
+                    -- small safety checks
+                    if entity and entity:IsA("Model") then
+                        local eHRP = entity:FindFirstChild("HumanoidRootPart")
+                        if eHRP and eHRP.Parent then
+                            if inRadiusSquared(hrpPos, eHRP.Position, radius) then
+                                table.insert(targets, entity)
+                            end
+                        end
+                    end
+                end
+            else
+                if DEBUG then warn("[KillAura] SpawnedEntities container missing") end
+            end
+
+            -- fire once per tick with batched array (if there are targets)
+            if #targets > 0 and MultiEntityHit then
+                local ok, err = pcall(function()
+                    if batchFire then
+                        -- RemoteEvent may expect an array of Model instances
+                        MultiEntityHit:FireServer(targets)
+                    else
+                        -- fallback: fire per entity (slower)
+                        for _, ent in ipairs(targets) do
+                            MultiEntityHit:FireServer({ent})
+                        end
+                    end
+                end)
+
+                if not ok and DEBUG then
+                    warn("[KillAura] Error firing MultiEntityHit:", err)
+                end
+            end
+        end
+    end
+end)
+
+--// Optional UI integration example (Rayfield/Orion style)
+-- Make sure "MainTab" exists in your UI library before using this block.
+-- If you don't use that UI lib, remove or replace this section with your UI code.
+if typeof(MainTab) == "table" and MainTab.CreateToggle then
+    MainTab:CreateToggle({
+        Name = "Kill Aura",
+        CurrentValue = false,
+        Flag = "KillAuraToggle",
+        Callback = function(Value)
+            SetKillAuraState(Value)
+        end,
+    })
+else
+    -- For debugging without a UI: simple keybind (press K to toggle)
+    if DEBUG then
+        local UserInput = game:GetService("UserInputService")
+        UserInput.InputBegan:Connect(function(input, gameProcessed)
+            if gameProcessed then return end
+            if input.KeyCode == Enum.KeyCode.K then
+                SetKillAuraState(not killAuraEnabled)
+                print("[KillAura] Toggle via K ->", killAuraEnabled)
+            end
+        end)
+    end
+end
+
+-- =======================================================================================================================
+
+
+
+
+
+
+
+
+-- =======================================================================================================================
+
+-- ManualOnlyEntityDropdown_Debug.LocalScript
+-- Drop into StarterPlayerScripts (client)
+-- Replace MainTab with your UI tab variable name if different
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local SpawnedEntities = workspace:WaitForChild("SpawnedEntities")
+
+-- ======= UTIL =======
+local function getHRP()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    return char:WaitForChild("HumanoidRootPart")
+end
+
+-- ======= ENTITY LIST + MAPPING =======
+local function buildEntityList()
+    local names = {}
+    local counts = {}
+    local mapping = {}
+
+    for _, ent in ipairs(SpawnedEntities:GetChildren()) do
+        if ent and ent.Parent then
+            local base = ent.Name or "Unknown"
+            counts[base] = (counts[base] or 0) + 1
+            local display = base
+            if counts[base] > 1 then
+                display = base .. " (" .. counts[base] .. ")"
+            end
+            table.insert(names, display)
+            mapping[display] = ent
+        end
+    end
+
+    table.sort(names)
+    return names, mapping
+end
+
+local function isSameList(a, b)
+    if #a ~= #b then return false end
+    for i = 1, #a do
+        if a[i] ~= b[i] then return false end
+    end
+    return true
+end
+
+-- ======= SAFE DROPDOWN SETTER =======
+local function safeSetDropdownSelection(dropdown, displayName)
+    if not dropdown then return end
+    if not displayName then
+        pcall(function() dropdown:Set({}) end)
+        pcall(function() dropdown:Set("") end)
+        pcall(function() dropdown:Set(nil) end)
+        return
+    end
+
+    local tries = {
+        function() dropdown:Set(displayName) end,
+        function() dropdown:Set({displayName}) end,
+        function() if dropdown.SetValue then dropdown.SetValue(displayName) end end,
+        function() if dropdown.SetValue then dropdown.SetValue({displayName}) end end
+    }
+
+    for _, fn in ipairs(tries) do
+        local ok = pcall(fn)
+        if ok then return true end
+    end
+    return false
+end
+
+-- ======= STATE =======
+local lastEntityList = {}
+local displayToInstance = {}
+local selectedDisplayName = nil
+local refreshDebounce = false
+
+-- small helper to print current spawn children (debug)
+local function debugPrintEntities()
+    print("[DEBUG] SpawnedEntities children:")
+    for i, v in ipairs(SpawnedEntities:GetChildren()) do
+        print(i, "-", v.Name, v.ClassName)
+    end
+end
+
+-- ======= Delay a tiny bit so UI lib has time to initialize =======
+task.wait(0.08) -- short; helps libraries finish building tabs
+
+-- ======= CREATE DROPDOWN (initial) =======
+local initialNames, initialMapping = buildEntityList()
+lastEntityList = initialNames
+displayToInstance = initialMapping
+
+local currentOptionField = nil
+-- use string (not a nested table) for CurrentOption where possible
+if selectedDisplayName then
+    currentOptionField = selectedDisplayName
+else
+    currentOptionField = "" -- explicit empty string to avoid nil-shape issues
+end
+
+local Dropdown = MainTab:CreateDropdown({
+    Name = "Select Entity",
+    Options = initialNames,
+    CurrentOption = currentOptionField,
+    MultipleOptions = false,
+    Flag = "EntityDropdown",
+    Callback = function(Options)
+        -- DEBUG: show what the dropdown library passes in
+        print("[Dropdown Callback] raw Options:", typeof(Options), Options)
+
+        -- Normalize incoming Options to a single display string
+        local chosenDisplay = nil
+        if type(Options) == "table" then
+            chosenDisplay = Options[1] or Options.Value or Options.Name
+        else
+            chosenDisplay = tostring(Options)
+        end
+
+        if chosenDisplay == "" then chosenDisplay = nil end
+
+        selectedDisplayName = chosenDisplay
+        print("[Dropdown] Selected normalized ->", tostring(selectedDisplayName))
+    end,
+})
+
+-- ======= Teleport button =======
+local TeleportButton = MainTab:CreateButton({
+    Name = "Teleport to Selected Entity",
+    Callback = function()
+        print("[Teleport] SelectedDisplayName:", tostring(selectedDisplayName))
+        if not selectedDisplayName then
+            warn("[Teleport] No entity selected. Choose one from the dropdown.")
+            return
+        end
+
+        local chosenInstance = displayToInstance[selectedDisplayName]
+        if not chosenInstance or not chosenInstance.Parent then
+            -- fallback using base name if duplicates are not present
+            local baseName = selectedDisplayName:match("^(.-) %(%d+%)$") or selectedDisplayName
+            chosenInstance = SpawnedEntities:FindFirstChild(baseName) or chosenInstance
+            print("[Teleport] Fallback search for baseName:", baseName, "->", tostring(chosenInstance))
+        end
+
+        if not chosenInstance then
+            warn("[Teleport] Could not find instance for:", selectedDisplayName)
+            debugPrintEntities()
+            return
+        end
+
+        local ok, hrp = pcall(getHRP)
+        if not ok or not hrp then
+            warn("[Teleport] Could not get player's HumanoidRootPart")
+            return
+        end
+
+        -- Primary way: GetPivot (works even if parts are streamed out)
+        local okPivot, pivot = pcall(function() return chosenInstance:GetPivot() end)
+        if okPivot and pivot then
+            hrp.CFrame = CFrame.new(pivot.Position + Vector3.new(0, 5, 0))
+            print("[Teleport] Teleported to pivot of:", chosenInstance.Name)
+            return
+        end
+
+        -- Fallbacks
+        local targetPart = chosenInstance.PrimaryPart or chosenInstance:FindFirstChild("HumanoidRootPart") or chosenInstance:FindFirstChildOfClass("BasePart")
+        if targetPart and targetPart.Parent then
+            hrp.CFrame = targetPart.CFrame + Vector3.new(0, 5, 0)
+            print("[Teleport] Teleported to part of:", chosenInstance.Name)
+            return
+        end
+
+        local okBox, cframe, size = pcall(function() return chosenInstance:GetBoundingBox() end)
+        if okBox and cframe then
+            hrp.CFrame = cframe + Vector3.new(0, size.Y/2 + 5, 0)
+            print("[Teleport] Teleported to bounding box of:", chosenInstance.Name)
+            return
+        end
+
+        warn("[Teleport] All teleport attempts failed for:", chosenInstance.Name)
+    end,
+})
+
+-- ======= Test select button (debug) =======
+-- This helps check whether programmatic selection works even if clicking fails.
+local TestSelect = MainTab:CreateButton({
+    Name = "Test Select First",
+    Callback = function()
+        if #lastEntityList == 0 then
+            warn("[TestSelect] No entities to select.")
+            return
+        end
+        local first = lastEntityList[1]
+        print("[TestSelect] Attempting to set dropdown selection to:", first)
+        local ok = safeSetDropdownSelection(Dropdown, first)
+        if ok then
+            selectedDisplayName = first
+            print("[TestSelect] Programmatically selected:", first)
+        else
+            warn("[TestSelect] safeSetDropdownSelection failed. Try checking library docs for how to set programmatically.")
+        end
+    end,
+})
+
+-- ======= REFRESH LOGIC (manual only) =======
+local function doRefreshDropdown()
+    if refreshDebounce then return end
+    refreshDebounce = true
+
+    RunService.Heartbeat:Wait()
+
+    local newNames, newMapping = buildEntityList()
+    if not isSameList(newNames, lastEntityList) then
+        print("[Refresh] Entity list changed. Old:", #lastEntityList, "New:", #newNames)
+
+        displayToInstance = newMapping
+        lastEntityList = newNames
+
+        local previousSelection = selectedDisplayName
+        -- Many lib implementations accept a table or a string; try both
+        Dropdown:Refresh(newNames, true)
+        if previousSelection and table.find(newNames, previousSelection) then
+            safeSetDropdownSelection(Dropdown, previousSelection)
+        else
+            selectedDisplayName = nil
+            safeSetDropdownSelection(Dropdown, nil)
+        end
+    else
+        print("[Refresh] No change detected; dropdown not updated.")
+    end
+
+    task.wait(0.12)
+    refreshDebounce = false
+end
+
+local RefreshButton = MainTab:CreateButton({
+    Name = "Refresh Entity List",
+    Callback = function()
+        doRefreshDropdown()
+    end,
+})
+
+-- ======= INITIALIZE =======
+-- show debug info
+print("[Init] Initial entity count:", #lastEntityList)
+debugPrintEntities()
+safeSetDropdownSelection(Dropdown, selectedDisplayName)
+
+-- =======================================================================================================================
+
+
+
+
+
+
+
+
+
+-- =======================================================================================================================
+local Section = MainTab:CreateSection("WalkSpeed Modifier")
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local MIN_SPEED = 16
+local MAX_SPEED = 100
+
+-- default speed when you join
+local desiredWalkSpeed = 16
+local propertyConn
+
+-- helper to clamp values
+local function clamp(n, a, b)
+    if n < a then return a end
+    if n > b then return b end
+    return n
+end
+
+-- get Humanoid safely
+local function getHumanoid()
+    local char = player.Character or player.CharacterAdded:Wait()
+    return char:WaitForChild("Humanoid")
+end
+
+-- binds a humanoid to enforce WalkSpeed = desiredWalkSpeed
+local function bindHumanoid(humanoid)
+    if propertyConn then
+        propertyConn:Disconnect()
+        propertyConn = nil
+    end
+    if not humanoid then return end
+
+    -- set initial speed
+    humanoid.WalkSpeed = desiredWalkSpeed
+
+    -- listen for changes, and reset to desiredWalkSpeed if tampered
+    propertyConn = humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+        if humanoid and humanoid.Parent then
+            if humanoid.WalkSpeed ~= desiredWalkSpeed then
+                humanoid.WalkSpeed = desiredWalkSpeed
+            end
+        end
+    end)
+end
+
+-- when respawned, rebind
+player.CharacterAdded:Connect(function(char)
+    local humanoid = char:WaitForChild("Humanoid")
+    task.delay(0.05, function() -- small delay to let Roblox finish loading
+        bindHumanoid(humanoid)
+    end)
+end)
+
+-- bind if already spawned
+if player.Character then
+    local humanoid = player.Character:FindFirstChild("Humanoid")
+    if humanoid then bindHumanoid(humanoid) end
+end
+
+-- Slider callback — call this when your UI slider changes
+local function onSliderChanged(value)
+    value = math.floor(value + 0.5)
+    value = clamp(value, MIN_SPEED, MAX_SPEED)
+
+    desiredWalkSpeed = value
+
+    local ok, humanoid = pcall(getHumanoid)
+    if ok and humanoid then
+        humanoid.WalkSpeed = desiredWalkSpeed
+    end
+end
+
+-- Example: create the slider if you’re using MainTab (like your original snippet)
+local Slider = MainTab:CreateSlider({
+   Name = "Walkspeed slider",
+   Range = {MIN_SPEED, MAX_SPEED},
+   Increment = 1,
+   Suffix = "Speed",
+   CurrentValue = desiredWalkSpeed,
+   Flag = "Slider1",
+   Callback = onSliderChanged,
+})
+
+-- =======================================================================================================================
