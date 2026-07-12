@@ -4068,14 +4068,50 @@ FlyToggle.Link:AddKeybind({
 	end
 })
 
+-- KEYBIND ENGINE — Heartbeat loop, bypass Library.Shown check completely
+-- Root cause: Obsidian KeyPicker OnChanged only fires when Library.Shown = true
+-- Fix: poll IsPressed every frame, no dependency on UI visibility
+local _keybindPrev = {} -- track previous press state to detect rising edge
+
+game:GetService("RunService").Heartbeat:Connect(function()
+	if not Options then return end
+
+	for flag, opt in pairs(Options) do
+		-- KeyPicker objects have IsPressed method
+		if opt and opt.IsPressed then
+			local pressed = opt.IsPressed()
+			local wasPressed = _keybindPrev[flag]
+
+			-- Rising edge only (key just pressed, not held)
+			if pressed and not wasPressed then
+				-- Fly keybind
+				if flag == "Char_FlyKey" then
+					local fo = Options["Char_Fly"]
+					if fo and fo.SetValue then fo:SetValue(not fo.Value) end
+
+				-- Vehicle fly keybind handled separately (uses Config.VehicleFly_ToggleKey)
+
+				-- All other toggle keybinds: flag ends "_Key", parent is flag minus "_Key"
+				elseif flag:sub(-4) == "_Key" then
+					local parentFlag = flag:sub(1, -5)
+					local po = Options[parentFlag]
+					if po and po.SetValue and type(po.Value) == "boolean" then
+						po:SetValue(not po.Value)
+					end
+				end
+			end
+
+			_keybindPrev[flag] = pressed
+		end
+	end
+end)
+
+-- UI toggle via Window.Keybind (separate — uses InputBegan, always fires)
 game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
-
-	-- Fly Toggle
-	if FlyKey and FlyKey ~= "None" and (input.KeyCode.Name == FlyKey or input.KeyCode == FlyKey) then
-		FlyToggle:SetValue(not FlyToggle:GetValue())
-	end
-	if Window.Keybind and Window.Keybind ~= "None" and (input.KeyCode.Name == Window.Keybind or input.KeyCode == Window.Keybind) then
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+	if Window and Window.Keybind and Window.Keybind ~= "None" and input.KeyCode.Name == Window.Keybind then
+		if Library and Library.SetShown then Library:SetShown(not Library.Shown) end
 	end
 end)
 
