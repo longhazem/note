@@ -34,23 +34,28 @@ local function GetLoadstringSource(Url)
 end
 
 local function PatchObsidianSource(Source)
-	-- Studio/executor compatibility: some environments inject/forward invalid GUI properties
-	-- such as NumSides into Obsidian's generic New() creator. Ignore invalid property
-	-- assignments instead of crashing during CreateWindow.
-	Source = Source:gsub("Instance%[key%] = value", [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
-
-	-- KEYBIND FIX: some executors always return gameProcessed = true, killing all keybinds
-	-- Remove the gameProcessed guard from Obsidian's internal InputBegan keybind handler
+	-- Fix libba ScreenGui: parent to PlayerGui when protectgui not available
+	-- CoreGui blocks input on many executors (Delta, Wave, mobile)
 	Source = Source:gsub(
-		"if gameProcessed then return end\n%s*if not self%.Enabled then return end",
-		"if not self.Enabled then return end"
+		"local ProtectGui = protectgui or %(syn and syn%.protect_gui%) or %(function%(%%) end%);%s*
+%s*local ScreenGui = Instance%.new%('ScreenGui'%);%s*
+%s*ProtectGui%(ScreenGui%);%s*
+%s*ScreenGui%.ZIndexBehavior = Enum%.ZIndexBehavior%.Global;%s*
+%s*ScreenGui%.Parent = CoreGui;",
+		[[local ProtectGui = protectgui or (syn and syn.protect_gui) or nil;
+local ScreenGui = Instance.new('ScreenGui');
+ScreenGui.ResetOnSpawn = false;
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global;
+if ProtectGui then
+    ProtectGui(ScreenGui);
+    ScreenGui.Parent = game:GetService('CoreGui');
+else
+    pcall(function() ScreenGui.Parent = game:GetService('CoreGui') end)
+    if not ScreenGui.Parent or ScreenGui.Parent ~= game:GetService('CoreGui') then
+        ScreenGui.Parent = game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui')
+    end
+end]]
 	)
-	-- Also patch the generic InputBegan guard
-	Source = Source:gsub(
-		"UserInputService%.InputBegan:Connect%(function%(input, gameProcessed%)\n%s*if gameProcessed then return end",
-		"UserInputService.InputBegan:Connect(function(input, gameProcessed)"
-	)
-
 	return Source
 end
 
@@ -67,13 +72,17 @@ local function LoadRemote(Url)
 end
 
 local Library = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/source.lua"))()
+-- Sync Options/Toggles AFTER libba loads (libba assigns getgenv().Options at startup)
+if getgenv().Options then Options = getgenv().Options end
+if getgenv().Toggles then Toggles = getgenv().Toggles end
 local ThemeManager = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/addons/ThemeManager.lua"))()
 local SaveManager = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/addons/SaveManager.lua"))()
 
 -- libba loaded
 
-local Options = getgenv().Options
-local Toggles = getgenv().Toggles
+-- Options/Toggles read from getgenv AFTER libba loads (libba assigns these at startup)
+local Options = {}
+local Toggles = {}
 
 local MoonUI = {
 	Scale = { Window = 1 },
