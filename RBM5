@@ -1,67 +1,54 @@
-local Repository = "https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/"
+local Repository = "https://raw.githubusercontent.com/longhazem/libba/main/"
 
--- EXECUTOR COMPAT — Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
-local function ExecutorHttpGet(Url)
-	if request then local ok,r=pcall(request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
-	if http_request then local ok,r=pcall(http_request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
-	if syn and syn.request then local ok,r=pcall(syn.request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
-	if fluxus and fluxus.request then local ok,r=pcall(fluxus.request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
-	local ok,r=pcall(function() return game:HttpGet(Url) end)
-	if ok and typeof(r)=="string" then return r,200 end
-	if ok and typeof(r)=="Instance" then local iok,src=pcall(function() return r.Source end) if iok and typeof(src)=="string" then return src,200 end end
-	return nil,0
-end
-
+-- Executor compat: Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
 local function GetLoadstringSource(Url)
-	local MAX=5; local D=3
-	for i=1,MAX do
-		local body,code=ExecutorHttpGet(Url)
-		if not body then
-			if i==MAX then error("[TokaiHub] HTTP fail: "..tostring(Url),2) end
-			warn("[TokaiHub] retry "..i.."/"..MAX) task.wait(D*i) continue
-		end
-		if code==429 or body:match("^429") or body:lower():match("rate limit") then
-			if i==MAX then error("[TokaiHub] Rate limit. Chờ 5-10 phút.",2) end
-			local w=D*(2^(i-1)) warn("[TokaiHub] 429 — chờ "..w.."s") task.wait(w) continue
-		end
-		if code and code~=0 and code~=200 then error("[TokaiHub] HTTP "..code,2) end
-		if body:match("^<!DOCTYPE") or body:match("^<html") then
-			if i==MAX then error("[TokaiHub] Server trả về HTML.",2) end
-			task.wait(D*i) continue
-		end
-		return body
+	local function tryRequest(fn, args)
+		if not fn then return nil end
+		local ok, r = pcall(fn, args)
+		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
 	end
+
+	local body = tryRequest(request, {Url=Url,Method="GET"})
+		or tryRequest(http_request, {Url=Url,Method="GET"})
+		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
+		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
+
+	if not body then
+		local ok, r = pcall(function() return game:HttpGet(Url) end)
+		if ok and typeof(r) == "string" then body = r
+		elseif ok and typeof(r) == "Instance" then
+			local iok, src = pcall(function() return r.Source end)
+			if iok and typeof(src) == "string" then body = src end
+		end
+	end
+
+	if not body then error("[TokaiHub] HTTP failed: " .. tostring(Url), 2) end
+
+	-- 429 retry
+	if body:match("^429") or body:lower():match("rate limit") then
+		warn("[TokaiHub] Rate limit — chờ 10s rồi thử lại")
+		task.wait(10)
+		return GetLoadstringSource(Url)
+	end
+
+	if body:match("^<!DOCTYPE") or body:match("^<html") then
+		error("[TokaiHub] Server trả về HTML — URL sai hoặc repo lỗi", 2)
+	end
+
+	return body
 end
 
 local function PatchObsidianSource(Source)
-	-- Fix libba ScreenGui: parent to PlayerGui when protectgui not available
-	-- CoreGui blocks input on many executors (Delta, Wave, mobile)
-	Source = Source:gsub(
-		"local ProtectGui = protectgui or %(syn and syn%.protect_gui%) or %(function%(%%) end%);%s*
-%s*local ScreenGui = Instance%.new%('ScreenGui'%);%s*
-%s*ProtectGui%(ScreenGui%);%s*
-%s*ScreenGui%.ZIndexBehavior = Enum%.ZIndexBehavior%.Global;%s*
-%s*ScreenGui%.Parent = CoreGui;",
-		[[local ProtectGui = protectgui or (syn and syn.protect_gui) or nil;
-local ScreenGui = Instance.new('ScreenGui');
-ScreenGui.ResetOnSpawn = false;
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global;
-if ProtectGui then
-    ProtectGui(ScreenGui);
-    ScreenGui.Parent = game:GetService('CoreGui');
-else
-    pcall(function() ScreenGui.Parent = game:GetService('CoreGui') end)
-    if not ScreenGui.Parent or ScreenGui.Parent ~= game:GetService('CoreGui') then
-        ScreenGui.Parent = game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui')
-    end
-end]]
-	)
+	-- Studio/executor compatibility: some environments inject/forward invalid GUI properties
+	-- such as NumSides into Obsidian's generic New() creator. Ignore invalid property
+	-- assignments instead of crashing during CreateWindow.
+	Source = Source:gsub("Instance%[key%] = value", [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
 	return Source
 end
 
 local function LoadRemote(Url)
 	local Source = GetLoadstringSource(Url)
-	if string.find(Url, "source.lua", 1, true) then
+	if string.find(Url, "/source.lua", 1, true) then
 		Source = PatchObsidianSource(Source)
 	end
 	local Chunk, LoadError = loadstring(Source)
@@ -71,18 +58,13 @@ local function LoadRemote(Url)
 	return Chunk()
 end
 
-local Library = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/source.lua"))()
--- Sync Options/Toggles AFTER libba loads (libba assigns getgenv().Options at startup)
-if getgenv().Options then Options = getgenv().Options end
-if getgenv().Toggles then Toggles = getgenv().Toggles end
-local ThemeManager = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/addons/ThemeManager.lua"))()
-local SaveManager = loadstring(ExecutorHttpGet("https://raw.githubusercontent.com/longhazem/libba/refs/heads/main/addons/SaveManager.lua"))()
+local Library = LoadRemote(Repository .. "source.lua")
+local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
+local SaveManager = LoadRemote(Repository .. "addons/SaveManager.lua")
 
--- libba loaded
-
--- Options/Toggles read from getgenv AFTER libba loads (libba assigns these at startup)
-local Options = {}
-local Toggles = {}
+-- libba stores Options/Toggles in getgenv(), not Library.Options
+local Options = getgenv().Options or {}
+local Toggles = getgenv().Toggles or {}
 
 local MoonUI = {
 	Scale = { Window = 1 },
@@ -110,9 +92,9 @@ function MoonUI.newNotify()
 		new = function(Data)
 			local text = (Data and Data.Title) or "Tokaihub"
 			if Data and (Data.Content or Data.Description) then
-				text = text .. ": " .. (Data.Content or Data.Description)
+				text = text .. " — " .. (Data.Content or Data.Description)
 			end
-			Library:Notify(text, (Data and Data.Duration) or 5)
+			pcall(function() Library:Notify(text, (Data and Data.Duration) or 5) end)
 		end,
 	}
 end
@@ -154,7 +136,7 @@ local function WrapSection(Groupbox)
 						Text = NormalizeUIString(KeyData.Name or "Keybind", "Keybind"),
 						Mode = NormalizeUIString(KeyData.Mode or "Toggle", "Toggle"),
 						NoUI = KeyData.NoUI or false,
-						SyncToggleState = true, -- libba: auto-flip parent toggle on keypress,
+						SyncToggleState = true, -- libba: always true so keybind flips toggle
 					})
 					if KeyData.Callback and Options[KeyFlag] then
 						Options[KeyFlag]:OnChanged(KeyData.Callback)
@@ -231,13 +213,13 @@ local function WrapTab(Tab)
 end
 
 function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Tokaihub", Center = true, AutoShow = true })
+	local Window = Library:CreateWindow({ Title = "Tokaihub", Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2 })
 	local SettingsTab
 	local Wrapped = {
 		Raw = Window,
 		DrawTab = function(_, TabData)
 			local Name = TabData.Name or "Tab"
-			local Tab = Window:AddTab(Name, TabData.Icon, Name)
+			local Tab = Window:AddTab(Name)
 			if Name == "Settings" or Name == "System" then
 				SettingsTab = Tab
 			end
@@ -260,7 +242,7 @@ function MoonUI.new(Data)
 			return { Init = function() end }
 		end,
 		SetMenuKey = function(_, Key)
-			if Options.MenuKeybind then Library.ToggleKeybind = Options.MenuKeybind end
+			task.defer(function() Library.ToggleKeybind = getgenv().Options and getgenv().Options.MenuKeybind end)
 		end,
 		Unload = function()
 			Library:Unload()
@@ -473,8 +455,6 @@ local Config = {
 	TurretUnlockFiremodes = false,
 	TurretNoRecoil = false,
 	TurretNoSpread = false,
-	TurretCustomRPM = false,
-	TurretRPMValue = 800,
 	AlwaysDay = false,
 	NoFog = false,
 	ThermalVision = false,
@@ -2397,10 +2377,6 @@ local function UpdateCombat(frameId)
 					for _, m in pairs(tConfig.Firemodes) do if m == 0 or m == 2 then hasAuto = true end end
 					if not hasAuto then table.insert(tConfig.Firemodes, 0) end
 				end
-				if cfg.TurretCustomRPM and cfg.TurretRPMValue then
-					tConfig.RPM = cfg.TurretRPMValue
-					if tConfig.RPM_Override then tConfig.RPM_Override = cfg.TurretRPMValue end
-				end
 			end
 		end
 	end
@@ -2408,7 +2384,7 @@ local function UpdateCombat(frameId)
 
 	-- 1. Gun Mods (Standard Cache Loop - Keep for Turrets ONLY)
 	-- THROTTLED: Run every 10 frames (approx 0.16s) to save CPU
-	if (frameId % 10 == 0) and (cfg.TurretNoRecoil or cfg.TurretNoSpread or cfg.TurretUnlockFiremodes or cfg.TurretCustomRPM) then
+	if (frameId % 10 == 0) and (cfg.TurretNoRecoil or cfg.TurretNoSpread or cfg.TurretUnlockFiremodes) then
 		-- VISUALS: Turrets
 		if AllControllersCache.Visuals then
 			for _, controller in ipairs(AllControllersCache.Visuals) do
@@ -2436,10 +2412,6 @@ local function UpdateCombat(frameId)
 							local hasAuto = false
 							for _, m in pairs(tConfig.Firemodes) do if m == 0 then hasAuto = true end end
 							if not hasAuto then table.insert(tConfig.Firemodes, 0) end
-						end
-						if cfg.TurretCustomRPM and cfg.TurretRPMValue then
-							tConfig.RPM = cfg.TurretRPMValue
-							if tConfig.RPM_Override then tConfig.RPM_Override = cfg.TurretRPMValue end
 						end
 					end
 				end
@@ -3742,26 +3714,6 @@ S_GunMods:AddToggle({
 	end 
 })
 
-S_GunMods:AddToggle({
-	Name = "Turret Custom RPM",
-	Flag = "Combat_TurretCustomRPM",
-	Default = false,
-	Callback = function(v)
-		Config.TurretCustomRPM = v
-	end
-})
-
-S_GunMods:AddSlider({
-	Name = "Turret RPM Value",
-	Min = 100,
-	Max = 3000,
-	Default = 800,
-	Flag = "Combat_TurretRPMValue",
-	Callback = function(v)
-		Config.TurretRPMValue = v
-	end
-})
-
 S_GunMods:AddToggle({ 
 	Name = "Custom RPM", 
 	Flag = "Combat_CustomRPM", 
@@ -4083,50 +4035,14 @@ FlyToggle.Link:AddKeybind({
 	end
 })
 
--- KEYBIND ENGINE — Heartbeat loop, bypass Library.Shown check completely
--- Root cause: Obsidian KeyPicker OnChanged only fires when Library.Shown = true
--- Fix: poll IsPressed every frame, no dependency on UI visibility
-local _keybindPrev = {} -- track previous press state to detect rising edge
-
-game:GetService("RunService").Heartbeat:Connect(function()
-	if not Options then return end
-
-	for flag, opt in pairs(Options) do
-		-- KeyPicker objects have IsPressed method
-		if opt and opt.IsPressed then
-			local pressed = opt.IsPressed()
-			local wasPressed = _keybindPrev[flag]
-
-			-- Rising edge only (key just pressed, not held)
-			if pressed and not wasPressed then
-				-- Fly keybind
-				if flag == "Char_FlyKey" then
-					local fo = Options["Char_Fly"]
-					if fo and fo.SetValue then fo:SetValue(not fo.Value) end
-
-				-- Vehicle fly keybind handled separately (uses Config.VehicleFly_ToggleKey)
-
-				-- All other toggle keybinds: flag ends "_Key", parent is flag minus "_Key"
-				elseif flag:sub(-4) == "_Key" then
-					local parentFlag = flag:sub(1, -5)
-					local po = Options[parentFlag]
-					if po and po.SetValue and type(po.Value) == "boolean" then
-						po:SetValue(not po.Value)
-					end
-				end
-			end
-
-			_keybindPrev[flag] = pressed
-		end
-	end
-end)
-
--- UI toggle via Window.Keybind (separate — uses InputBegan, always fires)
 game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
-	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-	if Window and Window.Keybind and Window.Keybind ~= "None" and input.KeyCode.Name == Window.Keybind then
-		if Library and Library.SetShown then Library:SetShown(not Library.Shown) end
+
+	-- Fly Toggle
+	if FlyKey and FlyKey ~= "None" and (input.KeyCode.Name == FlyKey or input.KeyCode == FlyKey) then
+		FlyToggle:SetValue(not FlyToggle:GetValue())
+	end
+	if Window.Keybind and Window.Keybind ~= "None" and (input.KeyCode.Name == Window.Keybind or input.KeyCode == Window.Keybind) then
 	end
 end)
 
