@@ -61,7 +61,7 @@ end
 
 --// Config
 local DEBUG = false                    -- set true for console logs
-local radius = 100                      -- kill-aura radius (studs)
+local radius = 30                      -- kill-aura radius (studs)
 local tickInterval = 0.12              -- how often to search targets (seconds)
 local batchFire = true                 -- gather all targets and fire once per tick
 
