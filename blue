@@ -1,728 +1,178 @@
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+-- Script mở khóa POV (góc nhìn thứ 3) cho toàn bộ game, ghi đè mọi ràng buộc chế độ PvP.
+-- Chạy dưới dạng LocalScript trong StarterPlayerScripts hoặc StarterCharacterScripts.
 
-local Window = Rayfield:CreateWindow({
-   Name = "BLUE HEATER 2",
-   Icon = 0, -- Icon in Topbar. Can use Lucide Icons (string) or Roblox Image (number). 0 to use no icon (default).
-   LoadingTitle = "BLUE HEATER 2 tokaihub",
-   LoadingSubtitle = "By tokai",
-   ShowText = "Rayfield", -- for mobile users to unhide rayfield, change if you'd like
-   Theme = "Amethyst", -- Check https://[Log in to view URL]
-
-   ToggleUIKeybind = "K", -- The keybind to toggle the UI visibility (string like "K" or Enum.KeyCode)
-
-   DisableRayfieldPrompts = false,
-   DisableBuildWarnings = false, -- Prevents Rayfield from warning when the script has a version mismatch with the interface
-
-   ConfigurationSaving = {
-      Enabled = false,
-      FolderName = nil, -- Create a custom folder for your hub/game
-      FileName = "Big Hub"
-   },
-
-   Discord = {
-      Enabled = false, -- Prompt the user to join your Discord server if their executor supports it
-      Invite = "noinvitelink", -- The Discord invite code, do not include discord.gg/. E.g. discord.gg/ ABCD would be ABCD
-      RememberJoins = true -- Set this to false to make them join the discord every time they load it up
-   },
-
-   KeySystem = false, -- Set this to true to use our key system
-   KeySettings = {
-      Title = "Untitled",
-      Subtitle = "Key System",
-      Note = "No method of obtaining the key is provided", -- Use this to tell the user how to get a key
-      FileName = "Key", -- It is recommended to use something unique as other scripts using Rayfield may overwrite your key file
-      SaveKey = true, -- The user's key will be saved, but if you change the key, they will be unable to use your script
-      GrabKeyFromSite = false, -- If this is true, set Key below to the RAW site you would like Rayfield to get the key from
-      Key = {"Hello"} -- List of keys that will be accepted by the system, can be RAW file links (pastebin, github etc) or simple strings ("hello","key22")
-   }
-})
-
-local MainTab = Window:CreateTab("⚔️Main", nil) -- Title, Image
-local Section = MainTab:CreateSection("Kill Aura🔥")
-
-
-
-
-
-
-
--- =======================================================================================================================
-
---// Services
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
 
-local LocalPlayer = Players.LocalPlayer
-if not LocalPlayer then
-    warn("[KillAura] LocalPlayer not found — make sure this is a LocalScript")
-    return
-end
-
---// Config
-local DEBUG = false                    -- set true for console logs
-local radius = 30                      -- kill-aura radius (studs)
-local tickInterval = 0.12              -- how often to search targets (seconds)
-local batchFire = true                 -- gather all targets and fire once per tick
-
---// RemoteEvent
-local MultiEntityHit = ReplicatedStorage:WaitForChild("PlayerEvents", 5) and ReplicatedStorage.PlayerEvents:FindFirstChild("MultiEntityHit")
-if not MultiEntityHit then
-    warn("[KillAura] Could not find ReplicatedStorage.PlayerEvents.MultiEntityHit")
-    -- we continue but the event will be nil and firing will be skipped
-end
-
---// SpawnedEntities container (expected in workspace)
-local SpawnedEntities = workspace:WaitForChild("SpawnedEntities") or nil
-if not SpawnedEntities then
-    warn("[KillAura] workspace.SpawnedEntities not found")
-end
-
---// State
-local killAuraEnabled = false
-local Character = LocalPlayer.Character
-local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
-
--- helper to update Character/HRP references
-local function bindCharacter(char)
-    Character = char
-    HRP = char and char:FindFirstChild("HumanoidRootPart")
-    if DEBUG then
-        print("[KillAura] Bound to character:", Character and Character.Name, "HRP found:", HRP ~= nil)
+-- 1. Vô hiệu hóa cơ chế khóa góc nhìn từ các script khác (thường dùng CameraMode)
+local function ForceThirdPerson()
+    -- Đặt chế độ camera sang Classic (cho phép xoay tự do, góc thứ 3)
+    if Camera.CameraMode ~= Enum.CameraMode.Classic then
+        Camera.CameraMode = Enum.CameraMode.Classic
+    end
+    
+    -- Ép khoảng cách camera (zoom ra) nếu bị giới hạn
+    if Camera.CameraSubject and Camera.CameraSubject:IsA("Humanoid") then
+        local humanoid = Camera.CameraSubject
+        -- Nếu game có script tự động kéo camera vào sát (first person) khi PvP, ta ghi đè mỗi frame
+        humanoid.AutoRotate = true -- giữ tự do xoay
+    end
+    
+    -- Tắt chế độ LockFirstPerson (nếu có)
+    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+    if UserInputService.MouseIconEnabled == false then
+        UserInputService.MouseIconEnabled = true
     end
 end
 
--- initial bind and connect CharacterAdded
-if not Character then
-    Character = LocalPlayer.CharacterAdded:Wait()
-    bindCharacter(Character)
-else
-    bindCharacter(Character)
-end
+-- 2. Can thiệp vào bảng dữ liệu từ file bạn đưa (giả định là bảng GroupedColors lưu trạng thái chế độ)
+-- Dựa trên cấu trúc: có cột "Active" và "AbsolutePosition", "GroupedColors"... 
+-- Ta sẽ tìm và sửa giá trị khóa PvP (thường là số 1 hoặc 0) thành 0 để luôn cho phép góc thứ 3.
 
-LocalPlayer.CharacterAdded:Connect(bindCharacter)
-
--- optionally clear HRP on CharacterRemoving to avoid trying to use destroyed HRP
-LocalPlayer.CharacterRemoving:Connect(function()
-    HRP = nil
-    Character = nil
-    if DEBUG then print("[KillAura] Character removed — waiting for respawn") end
-end)
-
--- Utility: squared distance check (faster than .Magnitude)
-local function inRadiusSquared(posA, posB, r)
-    local dx = posA.X - posB.X
-    local dy = posA.Y - posB.Y
-    local dz = posA.Z - posB.Z
-    return (dx*dx + dy*dy + dz*dz) <= (r*r)
-end
-
--- Public API: set state
-local function SetKillAuraState(state)
-    killAuraEnabled = state and true or false
-    if DEBUG then
-        print("[KillAura] Set state ->", killAuraEnabled)
-    end
-end
-
--- Main loop: use Heartbeat with accumulator for consistent timing
-task.spawn(function()
-    local accumulator = 0
-    while true do
-        local dt = RunService.Heartbeat:Wait() -- dt is frame delta
-        accumulator = accumulator + dt
-
-        if accumulator >= tickInterval then
-            accumulator = 0
-
-            -- Quick checks
-            if not killAuraEnabled then
-                continue
-            end
-            if not HRP or not HRP.Parent then
-                -- try to rebind if possible
-                if Character and Character.Parent and not HRP then
-                    HRP = Character:FindFirstChild("HumanoidRootPart")
-                end
-                if not HRP then
-                    if DEBUG then print("[KillAura] No HRP — skipping tick") end
-                    continue
-                end
-            end
-
-            -- gather targets
-            local targets = {}
-            local hrpPos = HRP.Position
-
-            if SpawnedEntities and SpawnedEntities.Parent then
-                for _, entity in ipairs(SpawnedEntities:GetChildren()) do
-                    -- small safety checks
-                    if entity and entity:IsA("Model") then
-                        local eHRP = entity:FindFirstChild("HumanoidRootPart")
-                        if eHRP and eHRP.Parent then
-                            if inRadiusSquared(hrpPos, eHRP.Position, radius) then
-                                table.insert(targets, entity)
+local function PatchDataTable()
+    -- Giả sử dữ liệu file được lưu trong một biến toàn cục tên _G.PlayerData hoặc game:GetService("ReplicatedStorage")
+    -- Ta dò tìm bất kỳ bảng nào có trường "GroupedColors" và "Active"
+    local function ScanAndFix(tbl, path)
+        if type(tbl) ~= "table" then return end
+        for k, v in pairs(tbl) do
+            if type(v) == "table" then
+                -- Nếu tìm thấy cấu trúc giống file: có key số 0..155 và giá trị là các mảng con
+                if type(k) == "number" and k >= 0 and k <= 155 and type(v) == "table" then
+                    -- Trong mỗi dòng, các giá trị 0/1 tương ứng với quyền góc nhìn
+                    -- Ta ép tất cả giá trị (trừ vị trí) thành 0 để mở khóa
+                    for subKey, subVal in pairs(v) do
+                        if subKey ~= "AbsolutePosition" and subKey ~= "AbsoluteRotation" and subKey ~= "AbsoluteSize" then
+                            if type(subVal) == "number" and subVal == 1 then
+                                v[subKey] = 0 -- gỡ khóa
                             end
                         end
                     end
+                else
+                    ScanAndFix(v, path .. "." .. tostring(k))
                 end
-            else
-                if DEBUG then warn("[KillAura] SpawnedEntities container missing") end
+            elseif type(v) == "number" and tostring(k):find("Active") then
+                -- Nếu có key "Active" và giá trị 1, set về 0
+                if v == 1 then
+                    tbl[k] = 0
+                end
             end
+        end
+    end
 
-            -- fire once per tick with batched array (if there are targets)
-            if #targets > 0 and MultiEntityHit then
-                local ok, err = pcall(function()
-                    if batchFire then
-                        -- RemoteEvent may expect an array of Model instances
-                        MultiEntityHit:FireServer(targets)
-                    else
-                        -- fallback: fire per entity (slower)
-                        for _, ent in ipairs(targets) do
-                            MultiEntityHit:FireServer({ent})
+    -- Quét toàn bộ môi trường game để tìm dữ liệu đó
+    local targets = {game, _G, shared, getfenv(0)}
+    for _, env in ipairs(targets) do
+        if type(env) == "table" then
+            ScanAndFix(env, tostring(env))
+        end
+    end
+    
+    -- Đặc biệt kiểm tra ReplicatedStorage và PlayerData
+    local replicated = game:GetService("ReplicatedStorage")
+    if replicated then
+        for _, child in ipairs(replicated:GetChildren()) do
+            if child:IsA("Folder") or child:IsA("ModuleScript") then
+                local data = child:FindFirstChild("PlayerData") or child:FindFirstChild("Config")
+                if data and type(data.Value) == "table" then
+                    ScanAndFix(data.Value, "ReplicatedStorage")
+                end
+            end
+        end
+    end
+end
+
+-- 3. Chặn các sự kiện thay đổi CameraMode từ server hoặc script khác
+local oldSetCameraMode
+if Camera.GetPropertyChangedSignal then
+    Camera:GetPropertyChangedSignal("CameraMode"):Connect(function()
+        if Camera.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraMode == Enum.CameraMode.FirstPerson then
+            Camera.CameraMode = Enum.CameraMode.Classic
+        end
+    end)
+end
+
+-- 4. Hook vào hàm SetCameraMode của Player (nếu có)
+local player = Players.LocalPlayer
+if player and player.PlayerGui then
+    -- Tìm các Frame/Button điều khiển PvP và vô hiệu hóa sự kiện khóa
+    for _, gui in ipairs(player.PlayerGui:GetDescendants()) do
+        if gui:IsA("TextButton") or gui:IsA("ImageButton") then
+            if gui.Name:lower():find("pvp") or gui.Name:lower():find("lock") or gui.Name:lower():find("first") then
+                -- Xóa hoặc ghi đè hàm click
+                gui.MouseButton1Click:Connect(function()
+                    -- Không làm gì, hoặc chuyển sang Classic
+                    ForceThirdPerson()
+                end)
+                -- Tạm thời ẩn nút khóa nếu cần
+                -- gui.Visible = false
+            end
+        end
+    end
+end
+
+-- 5. Vô hiệu hóa kiểm tra vũ khí (nếu có script kiểm tra PvP để khóa góc nhìn)
+local function DisableWeaponLock()
+    local backpack = player and player.Backpack
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                -- Tìm script trong tool có chức năng khóa camera
+                for _, script in ipairs(tool:GetDescendants()) do
+                    if script:IsA("Script") or script:IsA("LocalScript") then
+                        if script.Name:lower():find("camera") or script.Name:lower():find("pov") or script.Name:lower():find("aim") then
+                            script.Disabled = true -- vô hiệu hóa
                         end
                     end
-                end)
-
-                if not ok and DEBUG then
-                    warn("[KillAura] Error firing MultiEntityHit:", err)
                 end
             end
         end
     end
+end
+
+-- 6. Chạy liên tục mỗi frame để đảm bảo không bị ghi đè
+RunService.Heartbeat:Connect(function()
+    ForceThirdPerson()
+    PatchDataTable() -- quét lại mỗi 0.5s để bắt kịp thay đổi
+    DisableWeaponLock()
 end)
 
---// Optional UI integration example (Rayfield/Orion style)
--- Make sure "MainTab" exists in your UI library before using this block.
--- If you don't use that UI lib, remove or replace this section with your UI code.
-if typeof(MainTab) == "table" and MainTab.CreateToggle then
-    MainTab:CreateToggle({
-        Name = "Kill Aura",
-        CurrentValue = false,
-        Flag = "KillAuraToggle",
-        Callback = function(Value)
-            SetKillAuraState(Value)
-        end,
-    })
-else
-    -- For debugging without a UI: simple keybind (press K to toggle)
-    if DEBUG then
-        local UserInput = game:GetService("UserInputService")
-        UserInput.InputBegan:Connect(function(input, gameProcessed)
-            if gameProcessed then return end
-            if input.KeyCode == Enum.KeyCode.K then
-                SetKillAuraState(not killAuraEnabled)
-                print("[KillAura] Toggle via K ->", killAuraEnabled)
+-- 7. Xử lý khi người chơi đổi nhân vật hoặc respawn
+player.CharacterAdded:Connect(function(character)
+    task.wait(0.5)
+    ForceThirdPerson()
+    -- Tìm Humanoid và gắn sự kiện chặn
+    local humanoid = character:WaitForChild("Humanoid")
+    if humanoid then
+        -- Một số game dùng CameraOffset để giới hạn
+        humanoid:GetPropertyChangedSignal("CameraOffset"):Connect(function()
+            if humanoid.CameraOffset.Z < 2 then -- nếu bị đẩy vào
+                humanoid.CameraOffset = Vector3.new(0, 0, 5) -- kéo ra xa
             end
         end)
     end
-end
-
--- =======================================================================================================================
-
-
-
-
-
-
-
-
--- =======================================================================================================================
-
--- ManualOnlyEntityDropdown_Debug.LocalScript
--- Drop into StarterPlayerScripts (client)
--- Replace MainTab with your UI tab variable name if different
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-
-local LocalPlayer = Players.LocalPlayer
-local SpawnedEntities = workspace:WaitForChild("SpawnedEntities")
-
--- ======= UTIL =======
-local function getHRP()
-    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-    return char:WaitForChild("HumanoidRootPart")
-end
-
--- ======= ENTITY LIST + MAPPING =======
-local function buildEntityList()
-    local names = {}
-    local counts = {}
-    local mapping = {}
-
-    for _, ent in ipairs(SpawnedEntities:GetChildren()) do
-        if ent and ent.Parent then
-            local base = ent.Name or "Unknown"
-            counts[base] = (counts[base] or 0) + 1
-            local display = base
-            if counts[base] > 1 then
-                display = base .. " (" .. counts[base] .. ")"
-            end
-            table.insert(names, display)
-            mapping[display] = ent
-        end
-    end
-
-    table.sort(names)
-    return names, mapping
-end
-
-local function isSameList(a, b)
-    if #a ~= #b then return false end
-    for i = 1, #a do
-        if a[i] ~= b[i] then return false end
-    end
-    return true
-end
-
--- ======= SAFE DROPDOWN SETTER =======
-local function safeSetDropdownSelection(dropdown, displayName)
-    if not dropdown then return end
-    if not displayName then
-        pcall(function() dropdown:Set({}) end)
-        pcall(function() dropdown:Set("") end)
-        pcall(function() dropdown:Set(nil) end)
-        return
-    end
-
-    local tries = {
-        function() dropdown:Set(displayName) end,
-        function() dropdown:Set({displayName}) end,
-        function() if dropdown.SetValue then dropdown.SetValue(displayName) end end,
-        function() if dropdown.SetValue then dropdown.SetValue({displayName}) end end
-    }
-
-    for _, fn in ipairs(tries) do
-        local ok = pcall(fn)
-        if ok then return true end
-    end
-    return false
-end
-
--- ======= STATE =======
-local lastEntityList = {}
-local displayToInstance = {}
-local selectedDisplayName = nil
-local refreshDebounce = false
-
--- small helper to print current spawn children (debug)
-local function debugPrintEntities()
-    print("[DEBUG] SpawnedEntities children:")
-    for i, v in ipairs(SpawnedEntities:GetChildren()) do
-        print(i, "-", v.Name, v.ClassName)
-    end
-end
-
--- ======= Delay a tiny bit so UI lib has time to initialize =======
-task.wait(0.08) -- short; helps libraries finish building tabs
-
--- ======= CREATE DROPDOWN (initial) =======
-local initialNames, initialMapping = buildEntityList()
-lastEntityList = initialNames
-displayToInstance = initialMapping
-
-local currentOptionField = nil
--- use string (not a nested table) for CurrentOption where possible
-if selectedDisplayName then
-    currentOptionField = selectedDisplayName
-else
-    currentOptionField = "" -- explicit empty string to avoid nil-shape issues
-end
-
-local Dropdown = MainTab:CreateDropdown({
-    Name = "Select Entity",
-    Options = initialNames,
-    CurrentOption = currentOptionField,
-    MultipleOptions = false,
-    Flag = "EntityDropdown",
-    Callback = function(Options)
-        -- DEBUG: show what the dropdown library passes in
-        print("[Dropdown Callback] raw Options:", typeof(Options), Options)
-
-        -- Normalize incoming Options to a single display string
-        local chosenDisplay = nil
-        if type(Options) == "table" then
-            chosenDisplay = Options[1] or Options.Value or Options.Name
-        else
-            chosenDisplay = tostring(Options)
-        end
-
-        if chosenDisplay == "" then chosenDisplay = nil end
-
-        selectedDisplayName = chosenDisplay
-        print("[Dropdown] Selected normalized ->", tostring(selectedDisplayName))
-    end,
-})
-
--- ======= Teleport button =======
-local TeleportButton = MainTab:CreateButton({
-    Name = "Teleport to Selected Entity",
-    Callback = function()
-        print("[Teleport] SelectedDisplayName:", tostring(selectedDisplayName))
-        if not selectedDisplayName then
-            warn("[Teleport] No entity selected. Choose one from the dropdown.")
-            return
-        end
-
-        local chosenInstance = displayToInstance[selectedDisplayName]
-        if not chosenInstance or not chosenInstance.Parent then
-            -- fallback using base name if duplicates are not present
-            local baseName = selectedDisplayName:match("^(.-) %(%d+%)$") or selectedDisplayName
-            chosenInstance = SpawnedEntities:FindFirstChild(baseName) or chosenInstance
-            print("[Teleport] Fallback search for baseName:", baseName, "->", tostring(chosenInstance))
-        end
-
-        if not chosenInstance then
-            warn("[Teleport] Could not find instance for:", selectedDisplayName)
-            debugPrintEntities()
-            return
-        end
-
-        local ok, hrp = pcall(getHRP)
-        if not ok or not hrp then
-            warn("[Teleport] Could not get player's HumanoidRootPart")
-            return
-        end
-
-        -- Primary way: GetPivot (works even if parts are streamed out)
-        local okPivot, pivot = pcall(function() return chosenInstance:GetPivot() end)
-        if okPivot and pivot then
-            hrp.CFrame = CFrame.new(pivot.Position + Vector3.new(0, 5, 0))
-            print("[Teleport] Teleported to pivot of:", chosenInstance.Name)
-            return
-        end
-
-        -- Fallbacks
-        local targetPart = chosenInstance.PrimaryPart or chosenInstance:FindFirstChild("HumanoidRootPart") or chosenInstance:FindFirstChildOfClass("BasePart")
-        if targetPart and targetPart.Parent then
-            hrp.CFrame = targetPart.CFrame + Vector3.new(0, 5, 0)
-            print("[Teleport] Teleported to part of:", chosenInstance.Name)
-            return
-        end
-
-        local okBox, cframe, size = pcall(function() return chosenInstance:GetBoundingBox() end)
-        if okBox and cframe then
-            hrp.CFrame = cframe + Vector3.new(0, size.Y/2 + 5, 0)
-            print("[Teleport] Teleported to bounding box of:", chosenInstance.Name)
-            return
-        end
-
-        warn("[Teleport] All teleport attempts failed for:", chosenInstance.Name)
-    end,
-})
-
--- ======= Test select button (debug) =======
--- This helps check whether programmatic selection works even if clicking fails.
-local TestSelect = MainTab:CreateButton({
-    Name = "Test Select First",
-    Callback = function()
-        if #lastEntityList == 0 then
-            warn("[TestSelect] No entities to select.")
-            return
-        end
-        local first = lastEntityList[1]
-        print("[TestSelect] Attempting to set dropdown selection to:", first)
-        local ok = safeSetDropdownSelection(Dropdown, first)
-        if ok then
-            selectedDisplayName = first
-            print("[TestSelect] Programmatically selected:", first)
-        else
-            warn("[TestSelect] safeSetDropdownSelection failed. Try checking library docs for how to set programmatically.")
-        end
-    end,
-})
-
--- ======= REFRESH LOGIC (manual only) =======
-local function doRefreshDropdown()
-    if refreshDebounce then return end
-    refreshDebounce = true
-
-    RunService.Heartbeat:Wait()
-
-    local newNames, newMapping = buildEntityList()
-    if not isSameList(newNames, lastEntityList) then
-        print("[Refresh] Entity list changed. Old:", #lastEntityList, "New:", #newNames)
-
-        displayToInstance = newMapping
-        lastEntityList = newNames
-
-        local previousSelection = selectedDisplayName
-        -- Many lib implementations accept a table or a string; try both
-        Dropdown:Refresh(newNames, true)
-        if previousSelection and table.find(newNames, previousSelection) then
-            safeSetDropdownSelection(Dropdown, previousSelection)
-        else
-            selectedDisplayName = nil
-            safeSetDropdownSelection(Dropdown, nil)
-        end
-    else
-        print("[Refresh] No change detected; dropdown not updated.")
-    end
-
-    task.wait(0.12)
-    refreshDebounce = false
-end
-
-local RefreshButton = MainTab:CreateButton({
-    Name = "Refresh Entity List",
-    Callback = function()
-        doRefreshDropdown()
-    end,
-})
-
--- ======= INITIALIZE =======
--- show debug info
-print("[Init] Initial entity count:", #lastEntityList)
-debugPrintEntities()
-safeSetDropdownSelection(Dropdown, selectedDisplayName)
-
--- =======================================================================================================================
-
-
-
-
-
-
-
-
-
--- =======================================================================================================================
-local Section = MainTab:CreateSection("WalkSpeed Modifier")
-local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-
-local MIN_SPEED = 16
-local MAX_SPEED = 100
-
--- default speed when you join
-local desiredWalkSpeed = 16
-local propertyConn
-
--- helper to clamp values
-local function clamp(n, a, b)
-    if n < a then return a end
-    if n > b then return b end
-    return n
-end
-
--- get Humanoid safely
-local function getHumanoid()
-    local char = player.Character or player.CharacterAdded:Wait()
-    return char:WaitForChild("Humanoid")
-end
-
--- binds a humanoid to enforce WalkSpeed = desiredWalkSpeed
-local function bindHumanoid(humanoid)
-    if propertyConn then
-        propertyConn:Disconnect()
-        propertyConn = nil
-    end
-    if not humanoid then return end
-
-    -- set initial speed
-    humanoid.WalkSpeed = desiredWalkSpeed
-
-    -- listen for changes, and reset to desiredWalkSpeed if tampered
-    propertyConn = humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-        if humanoid and humanoid.Parent then
-            if humanoid.WalkSpeed ~= desiredWalkSpeed then
-                humanoid.WalkSpeed = desiredWalkSpeed
-            end
-        end
-    end)
-end
-
--- when respawned, rebind
-player.CharacterAdded:Connect(function(char)
-    local humanoid = char:WaitForChild("Humanoid")
-    task.delay(0.05, function() -- small delay to let Roblox finish loading
-        bindHumanoid(humanoid)
-    end)
 end)
 
--- bind if already spawned
-if player.Character then
-    local humanoid = player.Character:FindFirstChild("Humanoid")
-    if humanoid then bindHumanoid(humanoid) end
+-- 8. Ghi đè hàm toàn cục nếu game có gọi hàm LockPOV()
+if _G.LockPOV then
+    local oldLock = _G.LockPOV
+    _G.LockPOV = function(...)
+        -- Bỏ qua lệnh khóa, chỉ trả về false
+        return false
+    end
 end
-
--- Slider callback — call this when your UI slider changes
-local function onSliderChanged(value)
-    value = math.floor(value + 0.5)
-    value = clamp(value, MIN_SPEED, MAX_SPEED)
-
-    desiredWalkSpeed = value
-
-    local ok, humanoid = pcall(getHumanoid)
-    if ok and humanoid then
-        humanoid.WalkSpeed = desiredWalkSpeed
+if _G.UnlockPOV then
+    _G.UnlockPOV = function(...)
+        ForceThirdPerson()
+        return true
     end
 end
 
--- Example: create the slider if you’re using MainTab (like your original snippet)
-local Slider = MainTab:CreateSlider({
-   Name = "Walkspeed slider",
-   Range = {MIN_SPEED, MAX_SPEED},
-   Increment = 1,
-   Suffix = "Speed",
-   CurrentValue = desiredWalkSpeed,
-   Flag = "Slider1",
-   Callback = onSliderChanged,
-})
-
--- =======================================================================================================================
-
--- =======================================================================================================================
--- 🪵 AUTO COLLECT WOOD (thêm vào cuối script)
--- =======================================================================================================================
-local SectionWood = MainTab:CreateSection("Auto Collect Wood")
-
-local woodEnabled = false
-local woodCollectConnection = nil
-
--- Hàm tìm vật thể tên "wood" (không phân biệt hoa thường)
-local function FindWood()
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj.Name:lower() == "wood" then
-            return obj
-        end
-    end
-    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-        if obj.Name:lower() == "wood" then
-            return obj
-        end
-    end
-    return nil
-end
-
--- Hàm lấy các RemoteEvent/RemoteFunction liên quan (dựa trên giao diện UgPhone)
-local function GetWoodRemotes()
-    local targets = {}
-    local keywords = {"Replicare", "ReplicaSignal", "LocalEvent", "Clash", "Matteo", "Mod", "Reserve", "F1", "MultiEntityHit"}
-    for _, service in ipairs({ReplicatedStorage, workspace}) do
-        for _, obj in ipairs(service:GetDescendants()) do
-            if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-                for _, kw in ipairs(keywords) do
-                    if obj.Name:find(kw) or obj.Name:lower():find(kw:lower()) then
-                        table.insert(targets, obj)
-                        break
-                    end
-                end
-            end
-        end
-    end
-    -- Thêm các remote con của Replicare
-    local replicare = ReplicatedStorage:FindFirstChild("Replicare")
-    if replicare then
-        for _, child in ipairs(replicare:GetDescendants()) do
-            if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
-                table.insert(targets, child)
-            end
-        end
-    end
-    return targets
-end
-
--- Di chuyển nhân vật đến vị trí wood
-local function MoveToWood(wood)
-    if not wood then return end
-    local char = LocalPlayer.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    local targetPos
-    if wood:IsA("BasePart") then
-        targetPos = wood.Position
-    elseif wood:IsA("Model") then
-        for _, p in ipairs(wood:GetDescendants()) do
-            if p:IsA("BasePart") then
-                targetPos = p.Position
-                break
-            end
-        end
-    end
-    if not targetPos then return end
-    local TweenService = game:GetService("TweenService")
-    local tween = TweenService:Create(hrp, TweenInfo.new(1.5), {CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))})
-    tween:Play()
-    tween.Completed:Wait()
-end
-
--- Hàm thực hiện thu thập wood
-local function DoCollectWood()
-    local wood = FindWood()
-    if not wood then
-        return
-    end
-    -- Di chuyển đến
-    MoveToWood(wood)
-    -- Bắn tất cả remote có thể
-    local remotes = GetWoodRemotes()
-    for _, remote in ipairs(remotes) do
-        pcall(function()
-            if remote:IsA("RemoteEvent") then
-                remote:FireServer(wood)
-                remote:FireServer(wood.Name, LocalPlayer)
-                remote:FireServer({object = wood, player = LocalPlayer})
-                remote:FireServer("collect", wood)
-                remote:FireServer("wood", LocalPlayer)
-                if remote.Name == "MultiEntityHit" then
-                    remote:FireServer({wood})
-                end
-            elseif remote:IsA("RemoteFunction") then
-                remote:InvokeServer(wood)
-                remote:InvokeServer(wood.Name)
-                remote:InvokeServer({target = wood})
-            end
-        end)
-    end
-    -- Thử gán trực tiếp nếu wood nằm trong Workspace hoặc ReplicatedStorage
-    if wood.Parent == workspace or wood.Parent == ReplicatedStorage then
-        local backpack = LocalPlayer:FindFirstChild("Backpack")
-        if backpack then
-            wood.Parent = backpack
-        else
-            wood.Parent = LocalPlayer.Character or workspace
-        end
-    end
-end
-
--- Bật/tắt auto collect
-local function SetWoodState(state)
-    woodEnabled = state
-    if woodEnabled then
-        if not woodCollectConnection then
-            woodCollectConnection = RunService.Heartbeat:Connect(function()
-                if woodEnabled then
-                    DoCollectWood()
-                end
-            end)
-        end
-    else
-        if woodCollectConnection then
-            woodCollectConnection:Disconnect()
-            woodCollectConnection = nil
-        end
-    end
-end
-
--- Tạo Toggle trong UI
-MainTab:CreateToggle({
-    Name = "Auto Collect Wood",
-    CurrentValue = false,
-    Flag = "WoodToggle",
-    Callback = function(Value)
-        SetWoodState(Value)
-    end,
-})
-
--- Nút thu thập thủ công 1 lần
-MainTab:CreateButton({
-    Name = "Collect Wood Now",
-    Callback = function()
-        DoCollectWood()
-    end,
-})
-
--- =======================================================================================================================
+-- Khởi chạy lần đầu
+ForceThirdPerson()
+PatchDataTable()
+DisableWeaponLock()
+print("Đã mở khóa POV (góc nhìn thứ 3) thành công cho mọi chế độ, bao gồm PvP.")
