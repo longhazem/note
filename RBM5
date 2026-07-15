@@ -2531,10 +2531,12 @@ local function UpdateCombat(frameId)
 	local mouse = UserInputService:GetMouseLocation()
 
 	if FOVCircle then
-		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
-		if FOVCircle.Visible then
-			FOVCircle.Position = mouse
-			FOVCircle.Radius = Config.SilentAimFOV
+		-- Sync radius every frame so circle is never size-0 on first enable
+		pcall(function() FOVCircle.Radius = Config.SilentAimFOV end)
+		local fovShow = Config.SilentAim and Config.ShowFOV
+		pcall(function() FOVCircle.Visible = fovShow end)
+		if fovShow then
+			pcall(function() FOVCircle.Position = mouse end)
 		end
 	end
 
@@ -2904,7 +2906,11 @@ local function UpdateESPForActor(uid, espData, frameId, cachedCfg, localSquad)
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing, espData, false)
 		local sESP = espData.SimpleESP
-		local isVisible = actor.OnScreen or actor.ViewportOnScreen or actor.LOD_OnScreen
+		local isVisible = actor.ViewportOnScreen or actor.LOD_OnScreen or actor.OnScreen
+		if not isVisible and actor.Position then
+			local _, v = Camera:WorldToViewportPoint(actor.Position)
+			isVisible = v
+		end
 		if distance < 50 then isVisible = true end
 
 		if isVisible then
@@ -2924,17 +2930,23 @@ local function UpdateESPForActor(uid, espData, frameId, cachedCfg, localSquad)
 	end
 
 	local drawings = espData.Drawing
-	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
+
+	-- Get world position first (needed for engineVisible check)
+	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
+	if not worldPos then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
+
+	-- LOD_OnScreen is never set in this game — use WorldToViewportPoint directly
+	local screen_point, onScreen = Camera:WorldToViewportPoint(worldPos)
+	local engineVisible = onScreen or actor.ViewportOnScreen or (distance < 128)
 
 	if not engineVisible then
 		SetAllVisible(drawings, espData, false)
 		return
 	end
 
-	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
-	if not worldPos then return end
-
-	local screen_point, onScreen = Camera:WorldToViewportPoint(worldPos)
 	if not onScreen then
 		SetAllVisible(drawings, espData, false)
 		return
@@ -4438,18 +4450,6 @@ MenuGroup:AddToggle({
 	Default = true,
 	Callback = function(value)
 		Library.ShowCustomCursor = value
-	end,
-})
-
-MenuGroup:AddDropdown({
-	Name = "Notification Side",
-	Flag = "NotificationSide",
-	Values = { "Left", "Right" },
-	Default = "Right",
-	Callback = function(value)
-		if Library.SetNotifySide then
-			Library:SetNotifySide(value)
-		end
 	end,
 })
 
