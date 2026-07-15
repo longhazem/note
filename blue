@@ -572,3 +572,157 @@ local Slider = MainTab:CreateSlider({
 })
 
 -- =======================================================================================================================
+
+-- =======================================================================================================================
+-- 🪵 AUTO COLLECT WOOD (thêm vào cuối script)
+-- =======================================================================================================================
+local SectionWood = MainTab:CreateSection("Auto Collect Wood")
+
+local woodEnabled = false
+local woodCollectConnection = nil
+
+-- Hàm tìm vật thể tên "wood" (không phân biệt hoa thường)
+local function FindWood()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj.Name:lower() == "wood" then
+            return obj
+        end
+    end
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        if obj.Name:lower() == "wood" then
+            return obj
+        end
+    end
+    return nil
+end
+
+-- Hàm lấy các RemoteEvent/RemoteFunction liên quan (dựa trên giao diện UgPhone)
+local function GetWoodRemotes()
+    local targets = {}
+    local keywords = {"Replicare", "ReplicaSignal", "LocalEvent", "Clash", "Matteo", "Mod", "Reserve", "F1", "MultiEntityHit"}
+    for _, service in ipairs({ReplicatedStorage, workspace}) do
+        for _, obj in ipairs(service:GetDescendants()) do
+            if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+                for _, kw in ipairs(keywords) do
+                    if obj.Name:find(kw) or obj.Name:lower():find(kw:lower()) then
+                        table.insert(targets, obj)
+                        break
+                    end
+                end
+            end
+        end
+    end
+    -- Thêm các remote con của Replicare
+    local replicare = ReplicatedStorage:FindFirstChild("Replicare")
+    if replicare then
+        for _, child in ipairs(replicare:GetDescendants()) do
+            if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                table.insert(targets, child)
+            end
+        end
+    end
+    return targets
+end
+
+-- Di chuyển nhân vật đến vị trí wood
+local function MoveToWood(wood)
+    if not wood then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local targetPos
+    if wood:IsA("BasePart") then
+        targetPos = wood.Position
+    elseif wood:IsA("Model") then
+        for _, p in ipairs(wood:GetDescendants()) do
+            if p:IsA("BasePart") then
+                targetPos = p.Position
+                break
+            end
+        end
+    end
+    if not targetPos then return end
+    local TweenService = game:GetService("TweenService")
+    local tween = TweenService:Create(hrp, TweenInfo.new(1.5), {CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))})
+    tween:Play()
+    tween.Completed:Wait()
+end
+
+-- Hàm thực hiện thu thập wood
+local function DoCollectWood()
+    local wood = FindWood()
+    if not wood then
+        return
+    end
+    -- Di chuyển đến
+    MoveToWood(wood)
+    -- Bắn tất cả remote có thể
+    local remotes = GetWoodRemotes()
+    for _, remote in ipairs(remotes) do
+        pcall(function()
+            if remote:IsA("RemoteEvent") then
+                remote:FireServer(wood)
+                remote:FireServer(wood.Name, LocalPlayer)
+                remote:FireServer({object = wood, player = LocalPlayer})
+                remote:FireServer("collect", wood)
+                remote:FireServer("wood", LocalPlayer)
+                if remote.Name == "MultiEntityHit" then
+                    remote:FireServer({wood})
+                end
+            elseif remote:IsA("RemoteFunction") then
+                remote:InvokeServer(wood)
+                remote:InvokeServer(wood.Name)
+                remote:InvokeServer({target = wood})
+            end
+        end)
+    end
+    -- Thử gán trực tiếp nếu wood nằm trong Workspace hoặc ReplicatedStorage
+    if wood.Parent == workspace or wood.Parent == ReplicatedStorage then
+        local backpack = LocalPlayer:FindFirstChild("Backpack")
+        if backpack then
+            wood.Parent = backpack
+        else
+            wood.Parent = LocalPlayer.Character or workspace
+        end
+    end
+end
+
+-- Bật/tắt auto collect
+local function SetWoodState(state)
+    woodEnabled = state
+    if woodEnabled then
+        if not woodCollectConnection then
+            woodCollectConnection = RunService.Heartbeat:Connect(function()
+                if woodEnabled then
+                    DoCollectWood()
+                end
+            end)
+        end
+    else
+        if woodCollectConnection then
+            woodCollectConnection:Disconnect()
+            woodCollectConnection = nil
+        end
+    end
+end
+
+-- Tạo Toggle trong UI
+MainTab:CreateToggle({
+    Name = "Auto Collect Wood",
+    CurrentValue = false,
+    Flag = "WoodToggle",
+    Callback = function(Value)
+        SetWoodState(Value)
+    end,
+})
+
+-- Nút thu thập thủ công 1 lần
+MainTab:CreateButton({
+    Name = "Collect Wood Now",
+    Callback = function()
+        DoCollectWood()
+    end,
+})
+
+-- =======================================================================================================================
