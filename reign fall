@@ -1,34 +1,7 @@
--- ════════════════════════════════════════════════════════════════════════════
--- TOKAIHUB — REIGN FALL (ALL TABS - FIXED)
--- ════════════════════════════════════════════════════════════════════════════
-
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
-local Window = Rayfield:CreateWindow({
-   Name = "TokaihHub - Reign Fall",
-   Icon = 0,
-   LoadingTitle = "TokaihHub",
-   LoadingSubtitle = "Reign Fall Script",
-   ShowText = "TokaihHub",
-   Theme = "Default",
-   ToggleUIKeybind = "K",
-   DisableRayfieldPrompts = false,
-   DisableBuildWarnings = false,
-   ConfigurationSaving = {
-      Enabled = true,
-      FolderName = "TokaihHub",
-      FileName = "Reign_Fall"
-   },
-   Discord = {
-      Enabled = false,
-      Invite = "noinvitelink",
-      RememberJoins = true
-   },
-   KeySystem = false
-})
-
--- ═════════════════════════════════════════════════════════════════════════════
--- SERVICES & VARIABLES
--- ═════════════════════════════════════════════════════════════════════════════
+local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
+local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
+local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -39,531 +12,556 @@ local lp = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
-local config = {
-   raycasting = false,
-   autoHit = false,
-   infiniteAmmo = false,
-   highlightESP = false,
-   norecoil = false,
-   rpm = 600,
-   nofog = false,
-   fullbright = false,
-   hitboxExpander = false,
-   hitboxSize = 5
-}
-
-local target = {
-   enabled = true,
-   position = nil
-}
-
-local highlightedObjects = {}
-local expandedHitboxes = {}
 local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
--- ═════════════════════════════════════════════════════════════════════════════
--- HITBOX EXPANDER
--- ═════════════════════════════════════════════════════════════════════════════
+local config = {
+   raycasting = false,
+   autoHit = false,
+   aimbot = false,
+   fovEnabled = false,
+   fovRadius = 150,
+   infiniteAmmo = false,
+   infiniteStamina = false,
+   objectiveESP = false,
+   ammoESP = false,
+   armorESP = false,
+   medkitESP = false,
+   playerESP = false,
+   hitboxExpander = false,
+   hitboxSize = 6,
+   nofog = false,
+   fullbright = false
+}
 
-local function isPlayerCharacter(model)
-    if not model or not model:IsA("Model") then return false end
-    return Players:GetPlayerFromCharacter(model) ~= nil
-end
+local target = {enabled = true, position = nil}
+local highlightObjects = {}
+local expandedHitboxes = {}
 
-local function isHumanoidModel(model)
-    if not model or not model:IsA("Model") then return false end
-    return model:FindFirstChildWhichIsA("Humanoid") ~= nil
-end
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Thickness = 1
+FOVCircle.Filled = false
+FOVCircle.Visible = false
+FOVCircle.NumSides = 64
 
-local function applyHitboxExpander(part)
-    if not part or not part:IsA("BasePart") then return end
-    if not config.hitboxExpander then return end
-    if part.Name ~= "Head" then return end
-    
-    local model = part.Parent
-    if isHumanoidModel(model) and not isPlayerCharacter(model) then
-        pcall(function()
-            if not expandedHitboxes[part] then
-                part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-                part.CanCollide = false
-                part.Transparency = 0.7
-                expandedHitboxes[part] = true
-            else
-                part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-                part.Transparency = 0.7
-            end
-        end)
-    end
-end
+local Window = Library:CreateWindow({
+    Title = 'TokaihHub - Reign Fall',
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
 
-local function UpdateHitboxExpander()
-    if config.hitboxExpander then
-        for _, desc in ipairs(Workspace:GetDescendants()) do
-            applyHitboxExpander(desc)
-        end
-    else
-        for part, _ in pairs(expandedHitboxes) do
-            expandedHitboxes[part] = nil
-        end
-        expandedHitboxes = {}
-    end
-end
+local Tabs = {
+    Combat = Window:AddTab('Combat'),
+    Visuals = Window:AddTab('Visuals'),
+    Utility = Window:AddTab('Utility'),
+    ['UI Settings'] = Window:AddTab('UI Settings'),
+}
 
-Workspace.DescendantAdded:Connect(function(desc)
-    if config.hitboxExpander and desc:IsA("BasePart") then
-        task.wait(0.05)
-        applyHitboxExpander(desc)
-    end
-end)
+local CombatLeft = Tabs.Combat:AddLeftGroupbox('Combat Features')
+local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
+local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
+local UtilityLeft = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
 
--- ═════════════════════════════════════════════════════════════════════════════
--- HIGHLIGHT ESP (WALLHACK)
--- ═════════════════════════════════════════════════════════════════════════════
-
-local function AddHighlight(obj, color)
-    if not obj or not obj.Parent then return end
-    
-    pcall(function()
-        if obj:FindFirstChild("Highlight") then
-            obj:FindFirstChild("Highlight"):Destroy()
-        end
-        
-        local highlight = Instance.new("Highlight")
-        highlight.FillColor = color
-        highlight.OutlineColor = color
-        highlight.FillTransparency = 0.3
-        highlight.OutlineTransparency = 0
-        highlight.Parent = obj
-    end)
+local function AddHighlight(obj, color, transparency)
+   if not obj or not obj.Parent then return end
+   pcall(function()
+      if obj:FindFirstChild("TokaiHighlight") then
+         obj:FindFirstChild("TokaiHighlight"):Destroy()
+      end
+      local highlight = Instance.new("Highlight")
+      highlight.Name = "TokaiHighlight"
+      highlight.FillColor = color
+      highlight.OutlineColor = color
+      highlight.FillTransparency = transparency or 0.3
+      highlight.OutlineTransparency = 0
+      highlight.Parent = obj
+      highlightObjects[obj] = true
+   end)
 end
 
 local function RemoveHighlight(obj)
-    pcall(function()
-        local highlight = obj:FindFirstChild("Highlight")
-        if highlight then
-            highlight:Destroy()
-        end
-    end)
+   pcall(function()
+      local highlight = obj:FindFirstChild("TokaiHighlight")
+      if highlight then
+         highlight:Destroy()
+         highlightObjects[obj] = nil
+      end
+   end)
 end
 
-local function UpdateHighlightESP()
-    if not config.highlightESP then return end
-    
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") then
-            local hum = obj:FindFirstChildOfClass("Humanoid")
-            if hum and obj ~= lp.Character then
-                local head = obj:FindFirstChild("Head") or obj:FindFirstChild("HumanoidRootPart")
-                if head then
-                    if not highlightedObjects[obj] then
-                        AddHighlight(obj, Color3.fromRGB(255, 0, 0))
-                        highlightedObjects[obj] = true
-                    end
-                end
-            end
-        end
-    end
-    
-    local game_workspace = Workspace:FindFirstChild("Game")
-    if game_workspace then
-        local current = game_workspace:FindFirstChild("Current")
-        if current then
-            local spawned = current:FindFirstChild("Spawned")
-            if spawned then
-                local gameObjects = spawned:FindFirstChild("GameObjects")
-                if gameObjects then
-                    for _, obj in ipairs(gameObjects:GetChildren()) do
-                        if obj:IsA("Model") and obj.Name:sub(1, 8) == "mission_" then
-                            if not highlightedObjects[obj] then
-                                AddHighlight(obj, Color3.fromRGB(0, 255, 0))
-                                highlightedObjects[obj] = true
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= lp and player.Character then
-            if not highlightedObjects[player.Character] then
-                AddHighlight(player.Character, Color3.fromRGB(0, 255, 255))
-                highlightedObjects[player.Character] = true
-            end
-        end
-    end
-    
-    for obj, _ in pairs(highlightedObjects) do
-        if not obj.Parent then
+local function UpdateObjectiveESP()
+   for obj, _ in pairs(highlightObjects) do
+      if obj and obj.Parent then
+         local name = obj.Name
+         if (name:sub(1, 8) == "mission_" or name == "scenery_phone_ringing") and not config.objectiveESP then
             RemoveHighlight(obj)
-            highlightedObjects[obj] = nil
-        end
-    end
+         elseif name == "pickup_ammo" and not config.ammoESP then
+            RemoveHighlight(obj)
+         elseif name == "pickup_armor" and not config.armorESP then
+            RemoveHighlight(obj)
+         elseif name == "pickup_medkit" and not config.medkitESP then
+            RemoveHighlight(obj)
+         end
+      end
+   end
+
+   local game_workspace = workspace:FindFirstChild("Game")
+   if not game_workspace then return end
+   local current = game_workspace:FindFirstChild("Current")
+   if not current then return end
+   local spawned = current:FindFirstChild("Spawned")
+   if not spawned then return end
+   local gameObjects = spawned:FindFirstChild("GameObjects")
+   if not gameObjects then return end
+   
+   for _, obj in ipairs(gameObjects:GetChildren()) do
+      local name = obj.Name
+      local isMission = name:sub(1, 8) == "mission_"
+      local isPhone = name == "scenery_phone_ringing"
+      local isAmmo = name == "pickup_ammo"
+      local isArmor = name == "pickup_armor"
+      local isMedkit = name == "pickup_medkit"
+      
+      if isMission or isPhone or isAmmo or isArmor or isMedkit then
+         local shouldHighlight = false
+         local color = nil
+         
+         if (isMission or isPhone) and config.objectiveESP then
+            shouldHighlight = true
+            if isMission then
+               color = Color3.fromRGB(0, 255, 0)
+            else
+               color = Color3.fromRGB(255, 255, 255)
+            end
+         elseif isAmmo and config.ammoESP then
+            shouldHighlight = true
+            color = Color3.fromRGB(255, 255, 0)
+         elseif isArmor and config.armorESP then
+            shouldHighlight = true
+            color = Color3.fromRGB(0, 0, 255)
+         elseif isMedkit and config.medkitESP then
+            shouldHighlight = true
+            color = Color3.fromRGB(255, 0, 0)
+         end
+         
+         if shouldHighlight then
+            if not obj:FindFirstChild("TokaiHighlight") then
+               AddHighlight(obj, color, 0.3)
+            end
+         end
+      end
+   end
 end
 
--- ═════════════════════════════════════════════════════════════════════════════
--- RAYCAST REDIRECTION
--- ═════════════════════════════════════════════════════════════════════════════
+local function UpdatePlayerESP()
+   if not config.playerESP then
+      for obj, _ in pairs(highlightObjects) do
+         if obj and obj.Parent and obj:FindFirstChild("Humanoid") then
+            RemoveHighlight(obj)
+         end
+      end
+      return
+   end
+   local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+   if npcContainer then
+      local enemiesFolder = npcContainer:FindFirstChild("enemies")
+      if enemiesFolder then
+         for _, zombie in ipairs(enemiesFolder:GetChildren()) do
+            if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+               if not zombie:FindFirstChild("TokaiHighlight") then
+                  AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
+               end
+            end
+         end
+      end
+   end
+   for _, player in ipairs(Players:GetPlayers()) do
+      if player ~= lp and player.Character then
+         local char = player.Character
+         if char and char:FindFirstChild("Humanoid") then
+            if not char:FindFirstChild("TokaiHighlight") then
+               AddHighlight(char, Color3.fromRGB(0, 255, 255), 0.3)
+            end
+         end
+      end
+   end
+end
+
+local function isPlayerCharacter(model)
+   if not model or not model:IsA("Model") then return false end
+   return Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function isHumanoidModel(model)
+   if not model or not model:IsA("Model") then return false end
+   return model:FindFirstChildWhichIsA("Humanoid") ~= nil
+end
+
+local function applyHitboxExpander(part)
+   if not part or not part:IsA("BasePart") then return end
+   if not config.hitboxExpander then return end
+   if part.Name ~= "Head" then return end
+   local model = part.Parent
+   if isHumanoidModel(model) and not isPlayerCharacter(model) then
+      pcall(function()
+         if not expandedHitboxes[part] then
+            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+            part.CanCollide = false
+            part.Transparency = 0.7
+            expandedHitboxes[part] = true
+         else
+            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+            part.Transparency = 0.7
+         end
+      end)
+   end
+end
+
+local function UpdateHitboxExpander()
+   if config.hitboxExpander then
+      for _, desc in ipairs(Workspace:GetDescendants()) do
+         applyHitboxExpander(desc)
+      end
+   else
+      for part, _ in pairs(expandedHitboxes) do
+         if part and part.Parent then
+            part.Size = Vector3.new(1, 1, 1)
+            part.Transparency = 0
+         end
+         expandedHitboxes[part] = nil
+      end
+      expandedHitboxes = {}
+   end
+end
+
+Workspace.DescendantAdded:Connect(function(desc)
+   if config.hitboxExpander and desc:IsA("BasePart") then
+      task.wait(0.05)
+      applyHitboxExpander(desc)
+   end
+end)
 
 local function getEnemyContainer()
-    local container = Workspace.Game and Workspace.Game.Current and Workspace.Game.Current.Spawned and Workspace.Game.Current.Spawned.NPCs
-    if container then
-        return container:FindFirstChild("enemies")
-    end
-    return nil
+   local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+   if container then
+      return container:FindFirstChild("enemies")
+   end
+   return nil
+end
+
+local function getReferencePos()
+   if isMobile then
+      local vp = camera.ViewportSize
+      return Vector2.new(vp.X / 2, vp.Y / 2)
+   else
+      return UserInputService:GetMouseLocation()
+   end
 end
 
 local function getClosestHead()
-    local container = getEnemyContainer()
-    if not container then return nil end
-    local referencePos
-    if isMobile then
-        local vp = camera.ViewportSize
-        referencePos = Vector2.new(vp.X / 2, vp.Y / 2)
-    else
-        referencePos = UserInputService:GetMouseLocation()
-    end
-    local bestHeadPos = nil
-    local bestDist = math.huge
-    for _, enemy in ipairs(container:GetChildren()) do
-        local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-        if head then
-            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-                if dist < bestDist then
-                    bestDist = dist
-                    bestHeadPos = head.Position
-                end
+   local container = getEnemyContainer()
+   if not container then return nil end
+   local referencePos = getReferencePos()
+   local bestHeadPos = nil
+   local bestDist = config.fovEnabled and config.fovRadius or math.huge
+   for _, enemy in ipairs(container:GetChildren()) do
+      local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
+      if head then
+         local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
+         if onScreen then
+            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+            if dist < bestDist then
+               bestDist = dist
+               bestHeadPos = head.Position
             end
-        end
-    end
-    return bestHeadPos
+         end
+      end
+   end
+   return bestHeadPos
 end
 
 RunService.Heartbeat:Connect(function()
-    if config.raycasting and target.enabled then
-        target.position = getClosestHead()
-    end
+   if target.enabled then
+      target.position = getClosestHead()
+   end
+end)
+
+RunService.RenderStepped:Connect(function()
+   if config.fovEnabled then
+      FOVCircle.Visible = true
+      FOVCircle.Radius = config.fovRadius
+      FOVCircle.Position = getReferencePos()
+   else
+      FOVCircle.Visible = false
+   end
+
+   if config.aimbot and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+      if target.position then
+         camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
+      end
+   end
 end)
 
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
-        local args = {...}
-        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
-            local raycastParams = args[3]
-            if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
-                if target.position then
-                    local origin = args[1]
-                    local dir = target.position - origin
-                    if dir.Magnitude > 0.001 then
-                        args[2] = dir.Unit * args[2].Magnitude
-                    end
-                end
+   local method = getnamecallmethod()
+   if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
+      local args = {...}
+      if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+         local raycastParams = args[3]
+         if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
+            if target.position then
+               local origin = args[1]
+               local dir = target.position - origin
+               if dir.Magnitude > 0.001 then
+                  args[2] = dir.Unit * args[2].Magnitude
+               end
             end
-        end
-        return oldNamecall(self, unpack(args))
-    end
-    return oldNamecall(self, ...)
+         end
+      end
+      return oldNamecall(self, unpack(args))
+   end
+   return oldNamecall(self, ...)
 end))
 
--- ═════════════════════════════════════════════════════════════════════════════
--- AUTO HIT
--- ═════════════════════════════════════════════════════════════════════════════
-
 local function findRegisterHitEvent()
-    local v3 = lp.Character
-    if not v3 then return nil end
-    for v2, v4 in ipairs(v3:GetChildren()) do
-        local v9 = v4:FindFirstChild("ServerEvents")
-        if v9 then
-            local v8 = v9:FindFirstChild("RegisterHit")
-            if v8 and v8:IsA("RemoteEvent") then
-                return v8
-            end
-        end
-    end
-    return nil
+   local v3 = lp.Character
+   if not v3 then return nil end
+   for v2, v4 in ipairs(v3:GetChildren()) do
+      local v9 = v4:FindFirstChild("ServerEvents")
+      if v9 then
+         local v8 = v9:FindFirstChild("RegisterHit")
+         if v8 and v8:IsA("RemoteEvent") then
+            return v8
+         end
+      end
+   end
+   return nil
 end
 
 local function getTargets()
-    local v11 = {}
-    for v2, v7 in ipairs(Workspace:GetDescendants()) do
-        if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+   local v11 = {}
+   for v2, v7 in ipairs(Workspace:GetDescendants()) do
+      if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+         local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+         if v12 then
+            table.insert(v11, {model = v7, part = v12})
+         end
+      end
+   end
+   if #v11 == 0 and typeof(getnilinstances) == "function" then
+      for v2, v7 in ipairs(getnilinstances()) do
+         if v7:IsA("Model") then
             local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
             if v12 then
-                table.insert(v11, {model = v7, part = v12})
+               table.insert(v11, {model = v7, part = v12})
             end
-        end
-    end
-    return v11
+         end
+      end
+   end
+   return v11
 end
 
 task.spawn(function()
-    while task.wait(0.2) do
-        if config.autoHit then
-            local v5 = findRegisterHitEvent()
-            if v5 then
-                local v11 = getTargets()
-                if #v11 > 0 then
-                    local v6 = {}
-                    for v2, v10 in ipairs(v11) do
-                        table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
-                    end
-                    if #v6 > 0 then
-                        v5:FireServer(v6, {})
-                    end
-                end
+   while task.wait(0.2) do
+      if config.autoHit then
+         local v5 = findRegisterHitEvent()
+         if v5 then
+            local v11 = getTargets()
+            if #v11 > 0 then
+               local v6 = {}
+               for v2, v10 in ipairs(v11) do
+                  table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
+               end
+               if #v6 > 0 then
+                  v5:FireServer(v6, {})
+               end
             end
-        end
-    end
-end)
-
--- ═════════════════════════════════════════════════════════════════════════════
--- INFINITE AMMO
--- ═════════════════════════════════════════════════════════════════════════════
-
-local function SetInfiniteAmmo(tool)
-    if not tool then return end
-    pcall(function()
-        local weaponData = tool:FindFirstChild("WeaponData")
-        if weaponData then
-            local essentials = weaponData:FindFirstChild("Essentials")
-            if essentials then
-                local ammo = essentials:FindFirstChild("Ammo")
-                if ammo and ammo:IsA("NumberValue") then
-                    ammo.Value = 99999
-                end
-            end
-        end
-    end)
-end
-
-local function UpdateAllAmmo()
-    local backpack = lp:FindFirstChild("Backpack")
-    if backpack then
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if tool:IsA("Tool") then
-                SetInfiniteAmmo(tool)
-            end
-        end
-    end
-    local character = lp.Character
-    if character then
-        for _, tool in ipairs(character:GetChildren()) do
-            if tool:IsA("Tool") then
-                SetInfiniteAmmo(tool)
-            end
-        end
-    end
-end
-
-lp.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    if config.infiniteAmmo then
-        UpdateAllAmmo()
-    end
-end)
-
-RunService.Heartbeat:Connect(function()
-    if config.infiniteAmmo then
-        UpdateAllAmmo()
-    end
-end)
-
--- ═════════════════════════════════════════════════════════════════════════════
--- WEAPON MODIFICATIONS
--- ═════════════════════════════════════════════════════════════════════════════
-
-local function ModifyWeaponRecoil(tool)
-    if not tool then return end
-    pcall(function()
-        local weaponData = tool:FindFirstChild("WeaponData")
-        if not weaponData then return end
-        
-        if config.norecoil then
-            local recoil = weaponData:FindFirstChild("Recoil")
-            if recoil then recoil.Value = 0 end
-            local cameraKick = weaponData:FindFirstChild("CameraKick")
-            if cameraKick then cameraKick.Value = 0 end
-        end
-        
-        if config.rpm > 0 then
-            local fireRate = weaponData:FindFirstChild("FireRate")
-            if fireRate then fireRate.Value = 60 / config.rpm end
-        end
-    end)
-end
-
-local function ModifyAllWeapons()
-    local backpack = lp:FindFirstChild("Backpack")
-    if backpack then
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
-        end
-    end
-    local character = lp.Character
-    if character then
-        for _, tool in ipairs(character:GetChildren()) do
-            if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
-        end
-    end
-end
-
-lp.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    if config.norecoil or config.rpm > 0 then
-        ModifyAllWeapons()
-    end
-end)
-
-RunService.Heartbeat:Connect(function()
-    if config.norecoil or config.rpm > 0 then
-        ModifyAllWeapons()
-    end
-end)
-
--- ═════════════════════════════════════════════════════════════════════════════
--- WORLD MODIFICATIONS
--- ═════════════════════════════════════════════════════════════════════════════
-
-local function UpdateWorldMods()
-    if config.nofog then
-        Lighting.FogEnd = 100000
-    else
-        Lighting.FogEnd = originalFogEnd
-    end
-    
-    if config.fullbright then
-        Lighting.Brightness = 3
-        Lighting.GlobalShadows = false
-    else
-        Lighting.Brightness = originalBrightness
-        Lighting.GlobalShadows = true
-    end
-end
-
-RunService.Heartbeat:Connect(function()
-    UpdateWorldMods()
-    UpdateHighlightESP()
-    UpdateHitboxExpander()
-end)
-
--- ═════════════════════════════════════════════════════════════════════════════
--- UI TABS
--- ═════════════════════════════════════════════════════════════════════════════
-
-local CombatTab = Window:CreateTab("Combat", 4483362458)
-local WeaponsTab = Window:CreateTab("Weapons", 4483362458)
-local VisualsTab = Window:CreateTab("Visuals", 4483362458)
-local WorldTab = Window:CreateTab("World", 4483362458)
-local SettingsTab = Window:CreateTab("Settings", 4483362458)
-
--- Combat Tab Content
-CombatTab:CreateToggle({
-   Name = "Raycast Silent Aim",
-   CurrentValue = false,
-   Flag = "Raycast",
-   Callback = function(v) config.raycasting = v end
-})
-
-CombatTab:CreateToggle({
-   Name = "Auto Hit",
-   CurrentValue = false,
-   Flag = "AutoHit",
-   Callback = function(v) config.autoHit = v end
-})
-
-CombatTab:CreateToggle({
-   Name = "Hitbox Expander",
-   CurrentValue = false,
-   Flag = "HitboxExp",
-   Callback = function(v) config.hitboxExpander = v; UpdateHitboxExpander() end
-})
-
-CombatTab:CreateSlider({
-   Name = "Hitbox Size",
-   Min = 0,
-   Max = 20,
-   Default = 5,
-   CurrentValue = 5,
-   Flag = "HitboxSize",
-   Callback = function(v) config.hitboxSize = v end
-})
-
--- Weapons Tab Content
-WeaponsTab:CreateToggle({
-   Name = "No Recoil",
-   CurrentValue = false,
-   Flag = "NoRecoil",
-   Callback = function(v) config.norecoil = v; ModifyAllWeapons() end
-})
-
-WeaponsTab:CreateSlider({
-   Name = "RPM",
-   Min = 0,
-   Max = 1200,
-   Default = 600,
-   CurrentValue = 600,
-   Flag = "RPM",
-   Callback = function(v) config.rpm = v end
-})
-
-WeaponsTab:CreateToggle({
-   Name = "Infinite Ammo",
-   CurrentValue = false,
-   Flag = "InfAmmo",
-   Callback = function(v) config.infiniteAmmo = v; if v then UpdateAllAmmo() end end
-})
-
--- Visuals Tab Content
-VisualsTab:CreateToggle({
-   Name = "Highlight ESP",
-   CurrentValue = false,
-   Flag = "ESP",
-   Callback = function(v) 
-      config.highlightESP = v
-      if not v then
-         for obj, _ in pairs(highlightedObjects) do RemoveHighlight(obj) end
-         highlightedObjects = {}
+         end
       end
    end
-})
+end)
 
-VisualsTab:CreateLabel("🔴 Red = Zombies")
-VisualsTab:CreateLabel("🟢 Green = Objectives")
-VisualsTab:CreateLabel("🔵 Cyan = Team")
+task.spawn(function()
+   while task.wait(0.1) do
+      local Character = lp.Character
+      if Character then
+         if config.infiniteStamina then
+            local Humanoid = Character:FindFirstChild("Humanoid")
+            if Humanoid then
+               local Values = Humanoid:FindFirstChild("Values")
+               if Values then
+                  local Stamina = Values:FindFirstChild("Stamina")
+                  if Stamina and Stamina:IsA("NumberValue") then
+                     Stamina.Value = math.huge
+                  end
+               end
+            end
+         end
+         
+         if config.infiniteAmmo then
+            local Backpack = lp:FindFirstChild("Backpack")
+            local items = {}
+            
+            for _, v in ipairs(Character:GetChildren()) do
+               table.insert(items, v)
+            end
+            
+            if Backpack then
+               for _, v in ipairs(Backpack:GetChildren()) do
+                  table.insert(items, v)
+               end
+            end
+            
+            for _, item in ipairs(items) do
+               if item:IsA("Tool") then
+                  local WeaponData = item:FindFirstChild("WeaponData")
+                  if WeaponData then
+                     local Essentials = WeaponData:FindFirstChild("Essentials")
+                     if Essentials then
+                        local Ammo = Essentials:FindFirstChild("Ammo")
+                        if Ammo and Ammo:IsA("NumberValue") then
+                           Ammo.Value = math.huge
+                        end
+                     end
+                  end
+               end
+            end
+         end
+      end
+   end
+end)
 
--- World Tab Content
-WorldTab:CreateToggle({
-   Name = "No Fog",
-   CurrentValue = false,
-   Flag = "NoFog",
-   Callback = function(v) config.nofog = v end
-})
+RunService.Heartbeat:Connect(function()
+   if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
+   if config.fullbright then
+      Lighting.Brightness = 3
+      Lighting.GlobalShadows = false
+   else
+      Lighting.Brightness = originalBrightness
+      Lighting.GlobalShadows = true
+   end
+   UpdateHitboxExpander()
+   UpdateObjectiveESP()
+   UpdatePlayerESP()
+end)
 
-WorldTab:CreateToggle({
-   Name = "Fullbright",
-   CurrentValue = false,
-   Flag = "FB",
-   Callback = function(v) config.fullbright = v end
-})
+CombatLeft:AddToggle('Aimbot', { Text = 'Aimbot (Hold Right Click)', Default = false })
+Toggles.Aimbot:OnChanged(function()
+    config.aimbot = Toggles.Aimbot.Value
+end)
 
--- Settings Tab Content
-SettingsTab:CreateLabel("TokaihHub - Reign Fall")
-SettingsTab:CreateButton({
-   Name = "Destroy UI",
-   Callback = function() Window:Destroy() end
-})
+CombatLeft:AddToggle('DrawFOV', { Text = 'Draw FOV', Default = false })
+Toggles.DrawFOV:OnChanged(function()
+    config.fovEnabled = Toggles.DrawFOV.Value
+end)
 
-print("[TokaihHub] Reign Fall Loaded")
-Rayfield:Notify({
-   Title = "TokaihHub",
-   Content = "Reign Fall Ready!",
-   Duration = 5,
-   Image = 4483362458
-})
+CombatLeft:AddSlider('FOVRadius', { Text = 'FOV Radius', Default = 150, Min = 10, Max = 800, Rounding = 0, Compact = false })
+Options.FOVRadius:OnChanged(function()
+    config.fovRadius = Options.FOVRadius.Value
+end)
+
+CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
+Toggles.SilentAim:OnChanged(function()
+    config.raycasting = Toggles.SilentAim.Value
+end)
+
+CombatLeft:AddToggle('AutoHit', { Text = 'Auto Hit', Default = false })
+Toggles.AutoHit:OnChanged(function()
+    config.autoHit = Toggles.AutoHit.Value
+end)
+
+CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
+Toggles.HitboxExpander:OnChanged(function()
+    config.hitboxExpander = Toggles.HitboxExpander.Value
+end)
+
+VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
+Toggles.ObjectiveESP:OnChanged(function()
+    config.objectiveESP = Toggles.ObjectiveESP.Value
+end)
+
+VisualsLeft:AddToggle('AmmoESP', { Text = 'Ammo ESP', Default = false })
+Toggles.AmmoESP:OnChanged(function()
+    config.ammoESP = Toggles.AmmoESP.Value
+end)
+
+VisualsLeft:AddToggle('ArmorESP', { Text = 'Armor ESP', Default = false })
+Toggles.ArmorESP:OnChanged(function()
+    config.armorESP = Toggles.ArmorESP.Value
+end)
+
+VisualsLeft:AddToggle('MedkitESP', { Text = 'Medkit ESP', Default = false })
+Toggles.MedkitESP:OnChanged(function()
+    config.medkitESP = Toggles.MedkitESP.Value
+end)
+
+VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
+Toggles.PlayerESP:OnChanged(function()
+    config.playerESP = Toggles.PlayerESP.Value
+end)
+
+VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
+Toggles.Fullbright:OnChanged(function()
+    config.fullbright = Toggles.Fullbright.Value
+end)
+
+VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false })
+Toggles.NoFog:OnChanged(function()
+    config.nofog = Toggles.NoFog.Value
+end)
+
+UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false })
+Toggles.InfiniteAmmo:OnChanged(function()
+    config.infiniteAmmo = Toggles.InfiniteAmmo.Value
+end)
+
+UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
+Toggles.InfiniteStamina:OnChanged(function()
+    config.infiniteStamina = Toggles.InfiniteStamina.Value
+end)
+
+Library:SetWatermarkVisibility(true)
+local FrameTimer = tick()
+local FrameCounter = 0
+local FPS = 60
+
+local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(function()
+    FrameCounter = FrameCounter + 1
+    if (tick() - FrameTimer) >= 1 then
+        FPS = FrameCounter
+        FrameTimer = tick()
+        FrameCounter = 0
+    end
+    Library:SetWatermark(('TokaihHub | %s fps | %s ms'):format(
+        math.floor(FPS),
+        math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
+    ))
+end)
+
+local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
+MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+ThemeManager:SetFolder('TokaihHub')
+SaveManager:SetFolder('TokaihHub/reign-fall')
+SaveManager:BuildConfigSection(Tabs['UI Settings'])
+ThemeManager:ApplyToTab(Tabs['UI Settings'])
+SaveManager:LoadAutoloadConfig()
+
+Library.KeybindFrame.Visible = true
+
+Library:OnUnload(function()
+    if WatermarkConnection then WatermarkConnection:Disconnect() end
+    if FOVCircle then FOVCircle:Remove() end
+    Library.Unloaded = true
+end)
