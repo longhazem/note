@@ -38,6 +38,7 @@ local config = {
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
+local cachedTargets = {}
 
 local FOVCircle = Drawing.new("Circle")
 FOVCircle.Color = Color3.fromRGB(255, 255, 255)
@@ -92,6 +93,28 @@ local function RemoveHighlight(obj)
       end
    end)
 end
+
+local function getTargets()
+   local v11 = {}
+   for v2, v7 in ipairs(Workspace:GetDescendants()) do
+      if v7:IsA("Model") and v7 ~= lp.Character then
+         local hum = v7:FindFirstChild("Humanoid")
+         if hum and hum.Health > 0 then
+            local v12 = v7:FindFirstChild("Head") or v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+            if v12 then
+               table.insert(v11, {model = v7, part = v12})
+            end
+         end
+      end
+   end
+   return v11
+end
+
+task.spawn(function()
+   while task.wait(0.5) do
+      cachedTargets = getTargets()
+   end
+end)
 
 local function UpdateObjectiveESP()
    for obj, _ in pairs(highlightObjects) do
@@ -166,27 +189,12 @@ local function UpdatePlayerESP()
       end
       return
    end
-   local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-   if npcContainer then
-      local enemiesFolder = npcContainer:FindFirstChild("enemies")
-      if enemiesFolder then
-         for _, zombie in ipairs(enemiesFolder:GetChildren()) do
-            if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
-               if not zombie:FindFirstChild("TokaiHighlight") then
-                  AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
-               end
-            end
-         end
-      end
-   end
-   for _, player in ipairs(Players:GetPlayers()) do
-      if player ~= lp and player.Character then
-         local char = player.Character
-         if char and char:FindFirstChild("Humanoid") then
-            if not char:FindFirstChild("TokaiHighlight") then
-               AddHighlight(char, Color3.fromRGB(0, 255, 255), 0.3)
-            end
-         end
+   
+   for _, targetData in ipairs(cachedTargets) do
+      local model = targetData.model
+      if not model:FindFirstChild("TokaiHighlight") then
+         local color = Players:GetPlayerFromCharacter(model) and Color3.fromRGB(0, 255, 255) or Color3.fromRGB(255, 0, 0)
+         AddHighlight(model, color, 0.3)
       end
    end
 end
@@ -245,14 +253,6 @@ Workspace.DescendantAdded:Connect(function(desc)
    end
 end)
 
-local function getEnemyContainer()
-   local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-   if container then
-      return container:FindFirstChild("enemies")
-   end
-   return nil
-end
-
 local function getReferencePos()
    if isMobile then
       local vp = camera.ViewportSize
@@ -263,8 +263,6 @@ local function getReferencePos()
 end
 
 local function getClosestHead()
-   local container = getEnemyContainer()
-   if not container then return nil end
    local referencePos = getReferencePos()
    local bestHeadPos = nil
    local bestDist = config.fovEnabled and config.fovRadius or math.huge
@@ -272,29 +270,29 @@ local function getClosestHead()
    local raycastParams = RaycastParams.new()
    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
    
-   for _, enemy in ipairs(container:GetChildren()) do
-      if enemy:IsA("Model") then
-         local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-         if head then
-            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
-            if onScreen then
-               local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-               if dist <= bestDist then
-                  local isVisible = true
-                  if config.wallCheck then
-                     raycastParams.FilterDescendantsInstances = {camera, lp.Character, enemy}
-                     local origin = camera.CFrame.Position
-                     local direction = head.Position - origin
-                     local result = Workspace:Raycast(origin, direction, raycastParams)
-                     if result then
-                        isVisible = false
-                     end
+   for _, targetData in ipairs(cachedTargets) do
+      local head = targetData.part
+      local enemy = targetData.model
+      
+      if head and head.Parent then
+         local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
+         if onScreen then
+            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+            if dist <= bestDist then
+               local isVisible = true
+               if config.wallCheck then
+                  raycastParams.FilterDescendantsInstances = {camera, lp.Character, enemy}
+                  local origin = camera.CFrame.Position
+                  local direction = head.Position - origin
+                  local result = Workspace:Raycast(origin, direction, raycastParams)
+                  if result then
+                     isVisible = false
                   end
-                  
-                  if isVisible then
-                     bestDist = dist
-                     bestHeadPos = head.Position
-                  end
+               end
+               
+               if isVisible then
+                  bestDist = dist
+                  bestHeadPos = head.Position
                end
             end
          end
@@ -364,38 +362,14 @@ local function findRegisterHitEvent()
    return nil
 end
 
-local function getTargets()
-   local v11 = {}
-   for v2, v7 in ipairs(Workspace:GetDescendants()) do
-      if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
-         local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
-         if v12 then
-            table.insert(v11, {model = v7, part = v12})
-         end
-      end
-   end
-   if next(v11) == nil and typeof(getnilinstances) == "function" then
-      for v2, v7 in ipairs(getnilinstances()) do
-         if v7:IsA("Model") then
-            local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
-            if v12 then
-               table.insert(v11, {model = v7, part = v12})
-            end
-         end
-      end
-   end
-   return v11
-end
-
 task.spawn(function()
    while task.wait(0.2) do
       if config.autoHit then
          local v5 = findRegisterHitEvent()
          if v5 then
-            local v11 = getTargets()
-            if next(v11) ~= nil then
+            if next(cachedTargets) ~= nil then
                local v6 = {}
-               for v2, v10 in ipairs(v11) do
+               for _, v10 in ipairs(cachedTargets) do
                   table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
                end
                if next(v6) ~= nil then
