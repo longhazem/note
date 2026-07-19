@@ -21,6 +21,7 @@ local config = {
    aimbot = false,
    fovEnabled = false,
    fovRadius = 150,
+   wallCheck = true,
    infiniteAmmo = false,
    infiniteStamina = false,
    objectiveESP = false,
@@ -267,15 +268,35 @@ local function getClosestHead()
    local referencePos = getReferencePos()
    local bestHeadPos = nil
    local bestDist = config.fovEnabled and config.fovRadius or math.huge
+   
+   local raycastParams = RaycastParams.new()
+   raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+   raycastParams.FilterDescendantsInstances = {camera, lp.Character}
+   
    for _, enemy in ipairs(container:GetChildren()) do
-      local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-      if head then
-         local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
-         if onScreen then
-            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-            if dist < bestDist then
-               bestDist = dist
-               bestHeadPos = head.Position
+      local hum = enemy:FindFirstChild("Humanoid")
+      if hum and hum.Health > 0 then
+         local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
+         if head then
+            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
+            if onScreen then
+               local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+               if dist <= bestDist then
+                  local isVisible = true
+                  if config.wallCheck then
+                     local origin = camera.CFrame.Position
+                     local direction = head.Position - origin
+                     local result = Workspace:Raycast(origin, direction, raycastParams)
+                     if result and not result.Instance:IsDescendantOf(enemy) then
+                        isVisible = false
+                     end
+                  end
+                  
+                  if isVisible then
+                     bestDist = dist
+                     bestHeadPos = head.Position
+                  end
+               end
             end
          end
       end
@@ -300,7 +321,7 @@ RunService.RenderStepped:Connect(function()
 
    if config.aimbot and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
       if target.position then
-         camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
+         camera.CFrame = CFrame.lookAt(camera.CFrame.Position, target.position)
       end
    end
 end)
@@ -310,7 +331,7 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    local method = getnamecallmethod()
    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
       local args = {...}
-      if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+      if args[1] and args[2] and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
          local raycastParams = args[3]
          if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
             if target.position then
@@ -352,7 +373,7 @@ local function getTargets()
          end
       end
    end
-   if #v11 == 0 and typeof(getnilinstances) == "function" then
+   if next(v11) == nil and typeof(getnilinstances) == "function" then
       for v2, v7 in ipairs(getnilinstances()) do
          if v7:IsA("Model") then
             local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
@@ -371,12 +392,12 @@ task.spawn(function()
          local v5 = findRegisterHitEvent()
          if v5 then
             local v11 = getTargets()
-            if #v11 > 0 then
+            if next(v11) ~= nil then
                local v6 = {}
                for v2, v10 in ipairs(v11) do
                   table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
                end
-               if #v6 > 0 then
+               if next(v6) ~= nil then
                   v5:FireServer(v6, {})
                end
             end
@@ -462,6 +483,11 @@ end)
 CombatLeft:AddSlider('FOVRadius', { Text = 'FOV Radius', Default = 150, Min = 10, Max = 800, Rounding = 0, Compact = false })
 Options.FOVRadius:OnChanged(function()
     config.fovRadius = Options.FOVRadius.Value
+end)
+
+CombatLeft:AddToggle('WallCheck', { Text = 'Wall Check', Default = true })
+Toggles.WallCheck:OnChanged(function()
+    config.wallCheck = Toggles.WallCheck.Value
 end)
 
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
