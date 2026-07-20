@@ -29,11 +29,7 @@ local config = {
    hitboxSize = 6,
    nofog = false,
    fullbright = false,
-   rainbowGun = false,
-   noRecoil = false,
-   fastReload = false,
-   fastRPM = false,
-   instaReload = false
+   rainbowGun = false
 }
 
 local target = {enabled = true, position = nil}
@@ -186,59 +182,66 @@ local function UpdatePlayerESP()
    end
 end
 
-local function isPlayerCharacter(model)
-   if not model or not model:IsA("Model") then return false end
-   return Players:GetPlayerFromCharacter(model) ~= nil
-end
-
-local function isHumanoidModel(model)
-   if not model or not model:IsA("Model") then return false end
-   return model:FindFirstChildWhichIsA("Humanoid") ~= nil
-end
-
-local function applyHitboxExpander(part)
-   if not part or not part:IsA("BasePart") then return end
-   if not config.hitboxExpander then return end
-   if part.Name ~= "Head" then return end
-   local model = part.Parent
-   if isHumanoidModel(model) and not isPlayerCharacter(model) then
-      pcall(function()
-         if not expandedHitboxes[part] then
-            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-            part.CanCollide = false
-            part.Transparency = 0.7
-            expandedHitboxes[part] = true
-         else
-            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-            part.Transparency = 0.7
-         end
-      end)
-   end
-end
-
 local function UpdateHitboxExpander()
+   local currentHeads = {}
+   
    if config.hitboxExpander then
-      for _, desc in ipairs(Workspace:GetDescendants()) do
-         applyHitboxExpander(desc)
+      local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+      if npcContainer then
+         local enemiesFolder = npcContainer:FindFirstChild("enemies")
+         if enemiesFolder then
+            for _, zombie in ipairs(enemiesFolder:GetChildren()) do
+               if zombie:IsA("Model") then
+                  local hum = zombie:FindFirstChild("Humanoid")
+                  local head = zombie:FindFirstChild("Head")
+                  if hum and hum.Health > 0 and head then
+                     currentHeads[head] = true
+                     if not expandedHitboxes[head] then
+                        expandedHitboxes[head] = head.Size
+                        head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                        head.CanCollide = false
+                        head.Transparency = 0.7
+                     else
+                        head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                     end
+                  end
+               end
+            end
+         end
       end
-   else
-      for part, _ in pairs(expandedHitboxes) do
+      
+      for _, player in ipairs(Players:GetPlayers()) do
+         if player ~= lp and player.Character then
+            local char = player.Character
+            local hum = char:FindFirstChild("Humanoid")
+            local head = char:FindFirstChild("Head")
+            if hum and hum.Health > 0 and head then
+               currentHeads[head] = true
+               if not expandedHitboxes[head] then
+                  expandedHitboxes[head] = head.Size
+                  head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                  head.CanCollide = false
+                  head.Transparency = 0.7
+               else
+                  head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+               end
+            end
+         end
+      end
+   end
+   
+   for part, origSize in pairs(expandedHitboxes) do
+      if not currentHeads[part] then
          if part and part.Parent then
-            part.Size = Vector3.new(1, 1, 1)
-            part.Transparency = 0
+            pcall(function()
+               part.Size = origSize or Vector3.new(1, 1, 1)
+               part.Transparency = 0
+            end)
          end
          expandedHitboxes[part] = nil
       end
-      expandedHitboxes = {}
    end
 end
-
-Workspace.DescendantAdded:Connect(function(desc)
-   if config.hitboxExpander and desc:IsA("BasePart") then
-      task.wait(0.05)
-      applyHitboxExpander(desc)
-   end
-end)
 
 local function getEnemyContainer()
    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
@@ -262,7 +265,8 @@ local function getClosestHead()
    local bestDist = math.huge
    for _, enemy in ipairs(container:GetChildren()) do
       local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-      if head then
+      local hum = enemy:FindFirstChild("Humanoid")
+      if head and hum and hum.Health > 0 then
          local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
          if onScreen then
             local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
@@ -297,47 +301,11 @@ RunService.Heartbeat:Connect(function()
    end
 end)
 
-local oldIndex
-oldIndex = hookmetamethod(game, "__index", newcclosure(function(t, k)
-   if not checkcaller() and type(k) == "string" then
-      if config.noRecoil then
-         if k == "Recoil" or k == "MaxRecoil" or k == "Spread" or k == "MaxSpread" or k == "CameraRecoil" or k == "Kick" then
-            return 0
-         end
-      end
-      if config.fastRPM then
-         if k == "RPM" then return 5000 end
-         if k == "FireRate" or k == "Delay" then return 0.01 end
-      end
-      if config.fastReload then
-         if k == "ReloadTime" or k == "EmptyReloadTime" or k == "TacticalReloadTime" or k == "EquipTime" then
-            return 0.01
-         end
-      end
-   end
-   return oldIndex(t, k)
-end))
-
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    local method = getnamecallmethod()
    local args = {...}
    
-   if config.instaReload and method == "FireServer" and self.Name == "StartedReloading" then
-       task.spawn(function()
-           local char = lp.Character
-           if char and char:FindFirstChild("primary") and char.primary:FindFirstChild("ServerEvents") then
-               local ev = char.primary.ServerEvents
-               if ev:FindFirstChild("ReloadAmmo") then
-                   ev.ReloadAmmo:FireServer(false)
-               end
-               if ev:FindFirstChild("BroadcastVisuals") then
-                   ev.BroadcastVisuals:FireServer("tactical_reload", 1)
-               end
-           end
-       end)
-   end
-
    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
       if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
          local raycastParams = args[3]
@@ -375,19 +343,10 @@ local function getTargets()
    local v11 = {}
    for v2, v7 in ipairs(Workspace:GetDescendants()) do
       if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+         local hum = v7:FindFirstChild("Humanoid")
          local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
-         if v12 then
+         if v12 and hum and hum.Health > 0 then
             table.insert(v11, {model = v7, part = v12})
-         end
-      end
-   end
-   if #v11 == 0 and typeof(getnilinstances) == "function" then
-      for v2, v7 in ipairs(getnilinstances()) do
-         if v7:IsA("Model") then
-            local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
-            if v12 then
-               table.insert(v11, {model = v7, part = v12})
-            end
          end
       end
    end
@@ -407,47 +366,6 @@ task.spawn(function()
                end
                if #v6 > 0 then
                   v5:FireServer(v6, {})
-               end
-            end
-         end
-      end
-   end
-end)
-
-task.spawn(function()
-   while task.wait(0.5) do
-      if config.noRecoil or config.fastReload or config.fastRPM then
-         for _, v in pairs(getgc(true)) do
-            if type(v) == "table" then
-               local isGunConfig = false
-               for key, _ in pairs(v) do
-                  if type(key) == "string" and (string.find(key, "Recoil") or string.find(key, "RPM") or string.find(key, "FireRate") or string.find(key, "ReloadTime")) then
-                     isGunConfig = true
-                     break
-                  end
-               end
-               if isGunConfig then
-                  if config.noRecoil then
-                     if rawget(v, "Recoil") ~= nil then rawset(v, "Recoil", 0) end
-                     if rawget(v, "MaxRecoil") ~= nil then rawset(v, "MaxRecoil", 0) end
-                     if rawget(v, "Spread") ~= nil then rawset(v, "Spread", 0) end
-                     if rawget(v, "MaxSpread") ~= nil then rawset(v, "MaxSpread", 0) end
-                     if rawget(v, "CameraRecoil") ~= nil then rawset(v, "CameraRecoil", 0) end
-                     if rawget(v, "GunRecoil") ~= nil then rawset(v, "GunRecoil", 0) end
-                     if rawget(v, "Kick") ~= nil then rawset(v, "Kick", 0) end
-                  end
-                  if config.fastRPM then
-                     if rawget(v, "RPM") ~= nil then rawset(v, "RPM", 5000) end
-                     if rawget(v, "FireRate") ~= nil then rawset(v, "FireRate", 0.01) end
-                     if rawget(v, "Delay") ~= nil then rawset(v, "Delay", 0.01) end
-                  end
-                  if config.fastReload then
-                     if rawget(v, "ReloadTime") ~= nil then rawset(v, "ReloadTime", 0.01) end
-                     if rawget(v, "EmptyReloadTime") ~= nil then rawset(v, "EmptyReloadTime", 0.01) end
-                     if rawget(v, "TacticalReloadTime") ~= nil then rawset(v, "TacticalReloadTime", 0.01) end
-                     if rawget(v, "ReloadSpeed") ~= nil then rawset(v, "ReloadSpeed", 100) end
-                     if rawget(v, "EquipTime") ~= nil then rawset(v, "EquipTime", 0.01) end
-                  end
                end
             end
          end
@@ -505,18 +423,21 @@ task.spawn(function()
    end
 end)
 
-RunService.Heartbeat:Connect(function()
-   if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
-   if config.fullbright then
-      Lighting.Brightness = 3
-      Lighting.GlobalShadows = false
-   else
-      Lighting.Brightness = originalBrightness
-      Lighting.GlobalShadows = true
+task.spawn(function()
+   while task.wait(0.1) do
+      UpdateHitboxExpander()
+      UpdateObjectiveESP()
+      UpdatePlayerESP()
+      
+      if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
+      if config.fullbright then
+         Lighting.Brightness = 3
+         Lighting.GlobalShadows = false
+      else
+         Lighting.Brightness = originalBrightness
+         Lighting.GlobalShadows = true
+      end
    end
-   UpdateHitboxExpander()
-   UpdateObjectiveESP()
-   UpdatePlayerESP()
 end)
 
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false }):OnChanged(function()
@@ -529,6 +450,10 @@ end)
 
 CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false }):OnChanged(function()
     config.hitboxExpander = Toggles.HitboxExpander.Value
+end)
+
+CombatLeft:AddSlider('HitboxSize', { Text = 'Hitbox Size', Default = 6, Min = 1, Max = 20, Rounding = 1 }):OnChanged(function(Value)
+    config.hitboxSize = Value
 end)
 
 VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false }):OnChanged(function()
@@ -567,24 +492,8 @@ UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = 
     config.infiniteStamina = Toggles.InfiniteStamina.Value
 end)
 
-UtilityRight:AddToggle('RainbowGun', { Text = 'Súng 7 màu', Default = false }):OnChanged(function()
+UtilityRight:AddToggle('RainbowGun', { Text = 'Súng 7 màu (Trong suốt)', Default = false }):OnChanged(function()
     config.rainbowGun = Toggles.RainbowGun.Value
-end)
-
-UtilityRight:AddToggle('NoRecoil', { Text = 'Không giật', Default = false }):OnChanged(function()
-    config.noRecoil = Toggles.NoRecoil.Value
-end)
-
-UtilityRight:AddToggle('FastReload', { Text = 'Nạp đạn nhanh', Default = false }):OnChanged(function()
-    config.fastReload = Toggles.FastReload.Value
-end)
-
-UtilityRight:AddToggle('FastRPM', { Text = 'Tốc độ bắn cao', Default = false }):OnChanged(function()
-    config.fastRPM = Toggles.FastRPM.Value
-end)
-
-UtilityRight:AddToggle('InstaReload', { Text = 'Nạp đạn tức thì', Default = false }):OnChanged(function()
-    config.instaReload = Toggles.InstaReload.Value
 end)
 
 Library:SetWatermarkVisibility(true)
