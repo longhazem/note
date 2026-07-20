@@ -29,12 +29,22 @@ local config = {
    hitboxSize = 6,
    nofog = false,
    fullbright = false,
-   rainbowGun = false
+   rainbowGun = false,
+   aimbot = false,
+   aimbotFov = 100,
+   fovCircle = false
 }
 
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
+
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Filled = false
+FOVCircle.Transparency = 1
+FOVCircle.Visible = false
 
 local Window = Library:CreateWindow({
     Title = 'TokaihHub - Reign Fall',
@@ -262,7 +272,7 @@ local function getClosestHead()
       referencePos = UserInputService:GetMouseLocation()
    end
    local bestHeadPos = nil
-   local bestDist = math.huge
+   local bestDist = config.aimbotFov
    for _, enemy in ipairs(container:GetChildren()) do
       local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
       local hum = enemy:FindFirstChild("Humanoid")
@@ -281,8 +291,12 @@ local function getClosestHead()
 end
 
 RunService.Heartbeat:Connect(function()
-   if config.raycasting and target.enabled then
+   if (config.raycasting or config.aimbot) and target.enabled then
       target.position = getClosestHead()
+   end
+   
+   if config.aimbot and target.position then
+      camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
    end
    
    if config.rainbowGun then
@@ -298,6 +312,21 @@ RunService.Heartbeat:Connect(function()
             end
          end
       end
+   end
+end)
+
+RunService.RenderStepped:Connect(function()
+   if config.fovCircle then
+      FOVCircle.Visible = true
+      FOVCircle.Radius = config.aimbotFov
+      if isMobile then
+         local vp = camera.ViewportSize
+         FOVCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+      else
+         FOVCircle.Position = UserInputService:GetMouseLocation()
+      end
+   else
+      FOVCircle.Visible = false
    end
 end)
 
@@ -438,6 +467,18 @@ task.spawn(function()
          Lighting.GlobalShadows = true
       end
    end
+end)
+
+CombatLeft:AddToggle('Aimbot', { Text = 'Aimbot NPC', Default = false }):OnChanged(function()
+    config.aimbot = Toggles.Aimbot.Value
+end)
+
+CombatLeft:AddToggle('FovCircle', { Text = 'Show FOV', Default = false }):OnChanged(function()
+    config.fovCircle = Toggles.FovCircle.Value
+end)
+
+CombatLeft:AddSlider('AimbotFov', { Text = 'FOV Size', Default = 100, Min = 10, Max = 500, Rounding = 1 }):OnChanged(function(Value)
+    config.aimbotFov = Value
 end)
 
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false }):OnChanged(function()
