@@ -297,9 +297,31 @@ RunService.Heartbeat:Connect(function()
    end
 end)
 
+local oldIndex
+oldIndex = hookmetamethod(game, "__index", newcclosure(function(t, k)
+   if not checkcaller() and type(k) == "string" then
+      if config.noRecoil then
+         if k == "Recoil" or k == "MaxRecoil" or k == "Spread" or k == "MaxSpread" or k == "CameraRecoil" or k == "Kick" then
+            return 0
+         end
+      end
+      if config.fastRPM then
+         if k == "RPM" then return 5000 end
+         if k == "FireRate" or k == "Delay" then return 0.01 end
+      end
+      if config.fastReload then
+         if k == "ReloadTime" or k == "EmptyReloadTime" or k == "TacticalReloadTime" or k == "EquipTime" then
+            return 0.01
+         end
+      end
+   end
+   return oldIndex(t, k)
+end))
+
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    local method = getnamecallmethod()
+   local args = {...}
    
    if config.instaReload and method == "FireServer" and self.Name == "StartedReloading" then
        task.spawn(function()
@@ -317,7 +339,6 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    end
 
    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
-      local args = {...}
       if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
          local raycastParams = args[3]
          if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
@@ -332,7 +353,7 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
       end
       return oldNamecall(self, unpack(args))
    end
-   return oldNamecall(self, ...)
+   return oldNamecall(self, unpack(args))
 end))
 
 local function findRegisterHitEvent()
@@ -394,22 +415,39 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-   while task.wait(1) do
+   while task.wait(0.5) do
       if config.noRecoil or config.fastReload or config.fastRPM then
-         for _, h in pairs(getgc(true)) do
-            if type(h) == "table" then
-               if config.noRecoil then
-                  if rawget(h, "Recoil") then rawset(h, "Recoil", 0) end
-                  if rawget(h, "MaxRecoil") then rawset(h, "MaxRecoil", 0) end
-                  if rawget(h, "Spread") then rawset(h, "Spread", 0) end
-                  if rawget(h, "MaxSpread") then rawset(h, "MaxSpread", 0) end
+         for _, v in pairs(getgc(true)) do
+            if type(v) == "table" then
+               local isGunConfig = false
+               for key, _ in pairs(v) do
+                  if type(key) == "string" and (string.find(key, "Recoil") or string.find(key, "RPM") or string.find(key, "FireRate") or string.find(key, "ReloadTime")) then
+                     isGunConfig = true
+                     break
+                  end
                end
-               if config.fastRPM then
-                  if rawget(h, "RPM") then rawset(h, "RPM", 3000) end
-                  if rawget(h, "FireRate") then rawset(h, "FireRate", 0.01) end
-               end
-               if config.fastReload then
-                  if rawget(h, "ReloadTime") then rawset(h, "ReloadTime", 0.01) end
+               if isGunConfig then
+                  if config.noRecoil then
+                     if rawget(v, "Recoil") ~= nil then rawset(v, "Recoil", 0) end
+                     if rawget(v, "MaxRecoil") ~= nil then rawset(v, "MaxRecoil", 0) end
+                     if rawget(v, "Spread") ~= nil then rawset(v, "Spread", 0) end
+                     if rawget(v, "MaxSpread") ~= nil then rawset(v, "MaxSpread", 0) end
+                     if rawget(v, "CameraRecoil") ~= nil then rawset(v, "CameraRecoil", 0) end
+                     if rawget(v, "GunRecoil") ~= nil then rawset(v, "GunRecoil", 0) end
+                     if rawget(v, "Kick") ~= nil then rawset(v, "Kick", 0) end
+                  end
+                  if config.fastRPM then
+                     if rawget(v, "RPM") ~= nil then rawset(v, "RPM", 5000) end
+                     if rawget(v, "FireRate") ~= nil then rawset(v, "FireRate", 0.01) end
+                     if rawget(v, "Delay") ~= nil then rawset(v, "Delay", 0.01) end
+                  end
+                  if config.fastReload then
+                     if rawget(v, "ReloadTime") ~= nil then rawset(v, "ReloadTime", 0.01) end
+                     if rawget(v, "EmptyReloadTime") ~= nil then rawset(v, "EmptyReloadTime", 0.01) end
+                     if rawget(v, "TacticalReloadTime") ~= nil then rawset(v, "TacticalReloadTime", 0.01) end
+                     if rawget(v, "ReloadSpeed") ~= nil then rawset(v, "ReloadSpeed", 100) end
+                     if rawget(v, "EquipTime") ~= nil then rawset(v, "EquipTime", 0.01) end
+                  end
                end
             end
          end
@@ -529,23 +567,23 @@ UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = 
     config.infiniteStamina = Toggles.InfiniteStamina.Value
 end)
 
-UtilityRight:AddToggle('RainbowGun', { Text = 'Súng 7 màu (Trong suốt)', Default = false }):OnChanged(function()
+UtilityRight:AddToggle('RainbowGun', { Text = 'Súng 7 màu', Default = false }):OnChanged(function()
     config.rainbowGun = Toggles.RainbowGun.Value
 end)
 
-UtilityRight:AddToggle('NoRecoil', { Text = 'Không giật (No Recoil)', Default = false }):OnChanged(function()
+UtilityRight:AddToggle('NoRecoil', { Text = 'Không giật', Default = false }):OnChanged(function()
     config.noRecoil = Toggles.NoRecoil.Value
 end)
 
-UtilityRight:AddToggle('FastReload', { Text = 'Nạp đạn nhanh (Bypass Config)', Default = false }):OnChanged(function()
+UtilityRight:AddToggle('FastReload', { Text = 'Nạp đạn nhanh', Default = false }):OnChanged(function()
     config.fastReload = Toggles.FastReload.Value
 end)
 
-UtilityRight:AddToggle('FastRPM', { Text = 'Tốc độ bắn cao (RPM)', Default = false }):OnChanged(function()
+UtilityRight:AddToggle('FastRPM', { Text = 'Tốc độ bắn cao', Default = false }):OnChanged(function()
     config.fastRPM = Toggles.FastRPM.Value
 end)
 
-UtilityRight:AddToggle('InstaReload', { Text = 'Nạp đạn tức thì (Remotes)', Default = false }):OnChanged(function()
+UtilityRight:AddToggle('InstaReload', { Text = 'Nạp đạn tức thì', Default = false }):OnChanged(function()
     config.instaReload = Toggles.InstaReload.Value
 end)
 
