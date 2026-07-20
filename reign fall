@@ -32,19 +32,25 @@ local config = {
    rainbowGun = false,
    aimbot = false,
    aimbotFov = 100,
-   fovCircle = false
+   fovCircle = false,
+   wallCheck = false
 }
 
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
 
-local FOVCircle = Drawing.new("Circle")
-FOVCircle.Thickness = 1
-FOVCircle.Color = Color3.fromRGB(255, 255, 255)
-FOVCircle.Filled = false
-FOVCircle.Transparency = 1
-FOVCircle.Visible = false
+local FOVCircle
+pcall(function()
+   if Drawing then
+      FOVCircle = Drawing.new("Circle")
+      FOVCircle.Thickness = 2
+      FOVCircle.Color = Color3.fromRGB(255, 0, 0)
+      FOVCircle.Filled = false
+      FOVCircle.Transparency = 1
+      FOVCircle.Visible = false
+   end
+end)
 
 local Window = Library:CreateWindow({
     Title = 'TokaihHub - Reign Fall',
@@ -261,6 +267,24 @@ local function getEnemyContainer()
    return nil
 end
 
+local function isVisible(targetPart)
+   local origin = camera.CFrame.Position
+   local direction = targetPart.Position - origin
+   local rayParams = RaycastParams.new()
+   rayParams.FilterDescendantsInstances = {lp.Character, camera}
+   rayParams.FilterType = Enum.RaycastFilterType.Exclude
+   rayParams.IgnoreWater = true
+   
+   local result = Workspace:Raycast(origin, direction, rayParams)
+   if result then
+      if result.Instance:IsDescendantOf(targetPart.Parent) then
+         return true
+      end
+      return false
+   end
+   return true
+end
+
 local function getClosestHead()
    local container = getEnemyContainer()
    if not container then return nil end
@@ -281,8 +305,10 @@ local function getClosestHead()
          if onScreen then
             local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
             if dist < bestDist then
-               bestDist = dist
-               bestHeadPos = head.Position
+               if not config.wallCheck or isVisible(head) then
+                  bestDist = dist
+                  bestHeadPos = head.Position
+               end
             end
          end
       end
@@ -316,17 +342,19 @@ RunService.Heartbeat:Connect(function()
 end)
 
 RunService.RenderStepped:Connect(function()
-   if config.fovCircle then
-      FOVCircle.Visible = true
-      FOVCircle.Radius = config.aimbotFov
-      if isMobile then
-         local vp = camera.ViewportSize
-         FOVCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+   if FOVCircle then
+      if config.fovCircle then
+         FOVCircle.Visible = true
+         FOVCircle.Radius = config.aimbotFov
+         if isMobile then
+            local vp = camera.ViewportSize
+            FOVCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+         else
+            FOVCircle.Position = UserInputService:GetMouseLocation()
+         end
       else
-         FOVCircle.Position = UserInputService:GetMouseLocation()
+         FOVCircle.Visible = false
       end
-   else
-      FOVCircle.Visible = false
    end
 end)
 
@@ -375,7 +403,9 @@ local function getTargets()
          local hum = v7:FindFirstChild("Humanoid")
          local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
          if v12 and hum and hum.Health > 0 then
-            table.insert(v11, {model = v7, part = v12})
+            if not config.wallCheck or isVisible(v12) then
+               table.insert(v11, {model = v7, part = v12})
+            end
          end
       end
    end
@@ -473,6 +503,10 @@ CombatLeft:AddToggle('Aimbot', { Text = 'Aimbot NPC', Default = false }):OnChang
     config.aimbot = Toggles.Aimbot.Value
 end)
 
+CombatLeft:AddToggle('WallCheck', { Text = 'Wall Check', Default = false }):OnChanged(function()
+    config.wallCheck = Toggles.WallCheck.Value
+end)
+
 CombatLeft:AddToggle('FovCircle', { Text = 'Show FOV', Default = false }):OnChanged(function()
     config.fovCircle = Toggles.FovCircle.Value
 end)
@@ -533,7 +567,7 @@ UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = 
     config.infiniteStamina = Toggles.InfiniteStamina.Value
 end)
 
-UtilityRight:AddToggle('RainbowGun', { Text = 'Súng 7 màu (Trong suốt)', Default = false }):OnChanged(function()
+UtilityRight:AddToggle('RainbowGun', { Text = 'Súng 7 màu', Default = false }):OnChanged(function()
     config.rainbowGun = Toggles.RainbowGun.Value
 end)
 
@@ -556,7 +590,10 @@ local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(
 end)
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
-MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
+MenuGroup:AddButton({ Text = 'Unload', Func = function()
+    if FOVCircle then FOVCircle:Remove() end
+    Library:Unload() 
+end })
 MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
 
 Library.ToggleKeybind = Options.MenuKeybind
@@ -575,5 +612,6 @@ Library.KeybindFrame.Visible = true
 
 Library:OnUnload(function()
     if WatermarkConnection then WatermarkConnection:Disconnect() end
+    if FOVCircle then FOVCircle:Remove() end
     Library.Unloaded = true
 end)
