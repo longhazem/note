@@ -17,6 +17,7 @@ local originalBrightness = Lighting.Brightness
 
 local config = {
    aimbot = false,
+   aimbotRange = 1000,
    wallcheck = false,
    raycasting = false,
    autoHit = false,
@@ -284,7 +285,7 @@ local function getClosestHead()
          if onScreen then
             if isVisible(head.Position) then
                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-               if dist < bestDist then
+               if dist < bestDist and dist <= config.aimbotRange then
                   bestDist = dist
                   bestHeadPos = head.Position
                end
@@ -475,6 +476,18 @@ Toggles.Aimbot:OnChanged(function()
     config.aimbot = Toggles.Aimbot.Value
 end)
 
+CombatLeft:AddSlider('AimbotRange', {
+    Text = 'Aimbot Range',
+    Default = 1000,
+    Min = 0,
+    Max = 1000,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        config.aimbotRange = Value
+    end
+})
+
 CombatLeft:AddToggle('Wallcheck', { Text = 'Wallcheck', Default = false })
 Toggles.Wallcheck:OnChanged(function()
     config.wallcheck = Toggles.Wallcheck.Value
@@ -552,43 +565,18 @@ Toggles.InfiniteStamina:OnChanged(function()
     config.infiniteStamina = Toggles.InfiniteStamina.Value
 end)
 
-Library:SetWatermarkVisibility(true)
-local FrameTimer = tick()
-local FrameCounter = 0
-local FPS = 60
-
-local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(function()
-    FrameCounter = FrameCounter + 1
-    if (tick() - FrameTimer) >= 1 then
-        FPS = FrameCounter
-        FrameTimer = tick()
-        FrameCounter = 0
-    end
-    Library:SetWatermark(('Tokai HUB | %s fps | %s ms'):format(
-        math.floor(FPS),
-        math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
-    ))
-end)
-
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
-MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
-
-Library.ToggleKeybind = Options.MenuKeybind
 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
 ThemeManager:SetFolder('TokaihHub')
 SaveManager:SetFolder('TokaihHub/reign-fall')
 SaveManager:BuildConfigSection(Tabs['UI Settings'])
 ThemeManager:ApplyToTab(Tabs['UI Settings'])
 SaveManager:LoadAutoloadConfig()
 
-Library.KeybindFrame.Visible = true
-
 Library:OnUnload(function()
-    if WatermarkConnection then WatermarkConnection:Disconnect() end
     Library.Unloaded = true
 end)
