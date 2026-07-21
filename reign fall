@@ -38,6 +38,8 @@ local config = {
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
+local originalAmmoValues = {}
+local originalStaminaValue = nil
 
 local Window = Library:CreateWindow({
     Title = 'Tokai HUB - Reign Fall',
@@ -404,42 +406,60 @@ task.spawn(function()
    while task.wait(0.1) do
       local Character = lp.Character
       if Character then
-         if config.infiniteStamina then
-            local Humanoid = Character:FindFirstChild("Humanoid")
-            if Humanoid then
-               local Values = Humanoid:FindFirstChild("Values")
-               if Values then
-                  local Stamina = Values:FindFirstChild("Stamina")
-                  if Stamina and Stamina:IsA("NumberValue") then
-                     Stamina.Value = math.huge
+         local Humanoid = Character:FindFirstChild("Humanoid")
+         if Humanoid then
+            local Values = Humanoid:FindFirstChild("Values")
+            if Values then
+               local Stamina = Values:FindFirstChild("Stamina")
+               if Stamina and Stamina:IsA("NumberValue") then
+                  if config.infiniteStamina then
+                     if not originalStaminaValue then
+                        originalStaminaValue = Stamina.Value
+                     end
+                     Stamina.Value = 99999
+                  else
+                     if originalStaminaValue and Stamina.Value == 99999 then
+                        Stamina.Value = originalStaminaValue
+                        originalStaminaValue = nil
+                     end
                   end
                end
             end
          end
          
-         if config.infiniteAmmo then
-            local Backpack = lp:FindFirstChild("Backpack")
-            local items = {}
-            
-            for _, v in ipairs(Character:GetChildren()) do
+         local Backpack = lp:FindFirstChild("Backpack")
+         local items = {}
+         
+         for _, v in ipairs(Character:GetChildren()) do
+            table.insert(items, v)
+         end
+         
+         if Backpack then
+            for _, v in ipairs(Backpack:GetChildren()) do
                table.insert(items, v)
             end
-            
-            if Backpack then
-               for _, v in ipairs(Backpack:GetChildren()) do
-                  table.insert(items, v)
-               end
-            end
-            
-            for _, item in ipairs(items) do
-               if item:IsA("Tool") then
-                  local WeaponData = item:FindFirstChild("WeaponData")
-                  if WeaponData then
-                     local Essentials = WeaponData:FindFirstChild("Essentials")
-                     if Essentials then
-                        local Ammo = Essentials:FindFirstChild("Ammo")
-                        if Ammo and Ammo:IsA("NumberValue") then
-                           Ammo.Value = math.huge
+         end
+         
+         for _, item in ipairs(items) do
+            if item:IsA("Tool") then
+               local WeaponData = item:FindFirstChild("WeaponData")
+               if WeaponData then
+                  local Essentials = WeaponData:FindFirstChild("Essentials")
+                  if Essentials then
+                     local Ammo = Essentials:FindFirstChild("Ammo")
+                     if Ammo and Ammo:IsA("NumberValue") then
+                        if config.infiniteAmmo then
+                           if originalAmmoValues[item] == nil then
+                              originalAmmoValues[item] = Ammo.Value
+                           end
+                           Ammo.Value = 9999
+                        else
+                           if originalAmmoValues[item] ~= nil then
+                              if Ammo.Value == 9999 then
+                                 Ammo.Value = originalAmmoValues[item]
+                              end
+                              originalAmmoValues[item] = nil
+                           end
                         end
                      end
                   end
