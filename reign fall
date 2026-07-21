@@ -30,8 +30,7 @@ local config = {
    hitboxExpander = false,
    hitboxSize = 6,
    nofog = false,
-   fullbright = false,
-   rainbowGun = false
+   fullbright = false
 }
 
 local target = {enabled = true, position = nil}
@@ -465,21 +464,6 @@ RunService.Heartbeat:Connect(function()
       Lighting.Brightness = originalBrightness
       Lighting.GlobalShadows = true
    end
-   
-   if config.rainbowGun then
-      local char = lp.Character
-      if char then
-         local tool = char:FindFirstChildOfClass("Tool")
-         if tool then
-            local color = Color3.fromHSV(tick() % 5 / 5, 1, 1)
-            for _, v in ipairs(tool:GetDescendants()) do
-               if v:IsA("BasePart") or v:IsA("MeshPart") then
-                  v.Color = color
-               end
-            end
-         end
-      end
-   end
 
    UpdateHitboxExpander()
    UpdateObjectiveESP()
@@ -511,10 +495,17 @@ Toggles.HitboxExpander:OnChanged(function()
     config.hitboxExpander = Toggles.HitboxExpander.Value
 end)
 
-VisualsLeft:AddToggle('RainbowGun', { Text = 'Rainbow Gun', Default = false })
-Toggles.RainbowGun:OnChanged(function()
-    config.rainbowGun = Toggles.RainbowGun.Value
-end)
+CombatLeft:AddSlider('HitboxSize', {
+    Text = 'Hitbox Size',
+    Default = 6,
+    Min = 0,
+    Max = 20,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        config.hitboxSize = Value
+    end
+})
 
 VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
 Toggles.ObjectiveESP:OnChanged(function()
