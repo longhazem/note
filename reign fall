@@ -40,29 +40,26 @@ local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
 
-local fovGui = Instance.new("ScreenGui")
-fovGui.Name = "TokaiFOV"
-fovGui.ResetOnSpawn = false
-fovGui.IgnoreGuiInset = true
-pcall(function() fovGui.Parent = game:GetService("CoreGui") end)
-if not fovGui.Parent then
-   fovGui.Parent = lp:WaitForChild("PlayerGui")
+local FOVCircle
+if Drawing then
+   pcall(function()
+      FOVCircle = Drawing.new("Circle")
+      FOVCircle.Thickness = 1.5
+      FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+      FOVCircle.Filled = false
+      FOVCircle.Transparency = 1
+      FOVCircle.Visible = false
+   end)
 end
 
-local fovFrame = Instance.new("Frame")
-fovFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-fovFrame.BackgroundTransparency = 1
-fovFrame.Visible = false
-fovFrame.Parent = fovGui
-
-local fovCorner = Instance.new("UICorner")
-fovCorner.CornerRadius = UDim.new(1, 0)
-fovCorner.Parent = fovFrame
-
-local fovStroke = Instance.new("UIStroke")
-fovStroke.Color = Color3.fromRGB(255, 255, 255)
-fovStroke.Thickness = 1.5
-fovStroke.Parent = fovFrame
+local function getReferencePos()
+   if isMobile then
+      local vp = camera.ViewportSize
+      return Vector2.new(vp.X / 2, vp.Y / 2)
+   else
+      return UserInputService:GetMouseLocation()
+   end
+end
 
 local Window = Library:CreateWindow({
     Title = 'Tokai HUB - Reign Fall',
@@ -300,13 +297,7 @@ end
 local function getClosestHead()
    local container = getEnemyContainer()
    if not container then return nil end
-   local referencePos
-   if isMobile then
-      local vp = camera.ViewportSize
-      referencePos = Vector2.new(vp.X / 2, vp.Y / 2)
-   else
-      referencePos = UserInputService:GetMouseLocation()
-   end
+   local referencePos = getReferencePos()
    local bestHeadPos = nil
    local bestDist = config.aimbotFov
    for _, enemy in ipairs(container:GetChildren()) do
@@ -354,19 +345,13 @@ RunService.Heartbeat:Connect(function()
 end)
 
 RunService.RenderStepped:Connect(function()
-   if fovFrame then
+   if FOVCircle then
       if config.fovCircle then
-         fovFrame.Visible = true
-         fovFrame.Size = UDim2.new(0, config.aimbotFov * 2, 0, config.aimbotFov * 2)
-         if isMobile then
-            local vp = camera.ViewportSize
-            fovFrame.Position = UDim2.new(0, vp.X / 2, 0, vp.Y / 2)
-         else
-            local mousePos = UserInputService:GetMouseLocation()
-            fovFrame.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
-         end
+         FOVCircle.Visible = true
+         FOVCircle.Radius = config.aimbotFov
+         FOVCircle.Position = getReferencePos()
       else
-         fovFrame.Visible = false
+         FOVCircle.Visible = false
       end
    end
 end)
@@ -602,7 +587,7 @@ end)
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function()
-    if fovGui then fovGui:Destroy() end
+    if FOVCircle then FOVCircle:Remove() end
     Library:Unload() 
 end })
 MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
@@ -623,6 +608,6 @@ Library.KeybindFrame.Visible = true
 
 Library:OnUnload(function()
     if WatermarkConnection then WatermarkConnection:Disconnect() end
-    if fovGui then fovGui:Destroy() end
+    if FOVCircle then FOVCircle:Remove() end
     Library.Unloaded = true
 end)
