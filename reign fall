@@ -40,20 +40,32 @@ local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
 
-local FOVCircle
-if Drawing then
-   pcall(function()
-      FOVCircle = Drawing.new("Circle")
-      FOVCircle.Thickness = 1.5
-      FOVCircle.Color = Color3.fromRGB(255, 255, 255)
-      FOVCircle.Filled = false
-      FOVCircle.Transparency = 1
-      FOVCircle.Visible = false
-   end)
+local fovGui = Instance.new("ScreenGui")
+fovGui.Name = "TokaiFOV"
+fovGui.ResetOnSpawn = false
+fovGui.IgnoreGuiInset = true
+pcall(function() fovGui.Parent = game:GetService("CoreGui") end)
+if not fovGui.Parent then
+   fovGui.Parent = lp:WaitForChild("PlayerGui")
 end
 
+local fovFrame = Instance.new("Frame")
+fovFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+fovFrame.BackgroundTransparency = 1
+fovFrame.Visible = false
+fovFrame.Parent = fovGui
+
+local fovCorner = Instance.new("UICorner")
+fovCorner.CornerRadius = UDim.new(1, 0)
+fovCorner.Parent = fovFrame
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Color = Color3.fromRGB(255, 255, 255)
+fovStroke.Thickness = 1.5
+fovStroke.Parent = fovFrame
+
 local Window = Library:CreateWindow({
-    Title = 'TokaihHub - Reign Fall',
+    Title = 'Tokai HUB - Reign Fall',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -342,18 +354,19 @@ RunService.Heartbeat:Connect(function()
 end)
 
 RunService.RenderStepped:Connect(function()
-   if FOVCircle then
+   if fovFrame then
       if config.fovCircle then
-         FOVCircle.Visible = true
-         FOVCircle.Radius = config.aimbotFov
+         fovFrame.Visible = true
+         fovFrame.Size = UDim2.new(0, config.aimbotFov * 2, 0, config.aimbotFov * 2)
          if isMobile then
             local vp = camera.ViewportSize
-            FOVCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+            fovFrame.Position = UDim2.new(0, vp.X / 2, 0, vp.Y / 2)
          else
-            FOVCircle.Position = UserInputService:GetMouseLocation()
+            local mousePos = UserInputService:GetMouseLocation()
+            fovFrame.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
          end
       else
-         FOVCircle.Visible = false
+         fovFrame.Visible = false
       end
    end
 end)
@@ -581,7 +594,7 @@ local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(
         FrameTimer = tick()
         FrameCounter = 0
     end
-    Library:SetWatermark(('TokaihHub | %s fps | %s ms'):format(
+    Library:SetWatermark(('Tokai HUB | %s fps | %s ms'):format(
         math.floor(FPS),
         math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
     ))
@@ -589,7 +602,7 @@ end)
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function()
-    if FOVCircle then FOVCircle:Remove() end
+    if fovGui then fovGui:Destroy() end
     Library:Unload() 
 end })
 MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
@@ -610,6 +623,6 @@ Library.KeybindFrame.Visible = true
 
 Library:OnUnload(function()
     if WatermarkConnection then WatermarkConnection:Disconnect() end
-    if FOVCircle then FOVCircle:Remove() end
+    if fovGui then fovGui:Destroy() end
     Library.Unloaded = true
 end)
