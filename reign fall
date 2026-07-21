@@ -32,34 +32,12 @@ local config = {
    rainbowGun = false,
    aimbot = false,
    aimbotFov = 100,
-   fovCircle = false,
    wallCheck = false
 }
 
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
-
-local FOVCircle
-if Drawing then
-   pcall(function()
-      FOVCircle = Drawing.new("Circle")
-      FOVCircle.Thickness = 1.5
-      FOVCircle.Color = Color3.fromRGB(255, 255, 255)
-      FOVCircle.Filled = false
-      FOVCircle.Transparency = 1
-      FOVCircle.Visible = false
-   end)
-end
-
-local function getReferencePos()
-   if isMobile then
-      local vp = camera.ViewportSize
-      return Vector2.new(vp.X / 2, vp.Y / 2)
-   else
-      return UserInputService:GetMouseLocation()
-   end
-end
 
 local Window = Library:CreateWindow({
     Title = 'Tokai HUB - Reign Fall',
@@ -297,7 +275,13 @@ end
 local function getClosestHead()
    local container = getEnemyContainer()
    if not container then return nil end
-   local referencePos = getReferencePos()
+   local referencePos
+   if isMobile then
+      local vp = camera.ViewportSize
+      referencePos = Vector2.new(vp.X / 2, vp.Y / 2)
+   else
+      referencePos = UserInputService:GetMouseLocation()
+   end
    local bestHeadPos = nil
    local bestDist = config.aimbotFov
    for _, enemy in ipairs(container:GetChildren()) do
@@ -340,18 +324,6 @@ RunService.Heartbeat:Connect(function()
                f.Transparency = 0.3
             end
          end
-      end
-   end
-end)
-
-RunService.RenderStepped:Connect(function()
-   if FOVCircle then
-      if config.fovCircle then
-         FOVCircle.Visible = true
-         FOVCircle.Radius = config.aimbotFov
-         FOVCircle.Position = getReferencePos()
-      else
-         FOVCircle.Visible = false
       end
    end
 end)
@@ -503,11 +475,7 @@ CombatLeft:AddToggle('WallCheck', { Text = 'Wall Check', Default = false }):OnCh
     config.wallCheck = Toggles.WallCheck.Value
 end)
 
-CombatLeft:AddToggle('FovCircle', { Text = 'Show FOV', Default = false }):OnChanged(function()
-    config.fovCircle = Toggles.FovCircle.Value
-end)
-
-CombatLeft:AddSlider('AimbotFov', { Text = 'FOV Size', Default = 100, Min = 10, Max = 500, Rounding = 1 }):OnChanged(function(Value)
+CombatLeft:AddSlider('AimbotFov', { Text = 'Aimbot Radius', Default = 100, Min = 10, Max = 500, Rounding = 1 }):OnChanged(function(Value)
     config.aimbotFov = Value
 end)
 
@@ -587,7 +555,6 @@ end)
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function()
-    if FOVCircle then FOVCircle:Remove() end
     Library:Unload() 
 end })
 MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
@@ -608,6 +575,5 @@ Library.KeybindFrame.Visible = true
 
 Library:OnUnload(function()
     if WatermarkConnection then WatermarkConnection:Disconnect() end
-    if FOVCircle then FOVCircle:Remove() end
     Library.Unloaded = true
 end)
