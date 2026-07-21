@@ -16,6 +16,8 @@ local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
 local config = {
+   aimbot = false,
+   wallcheck = false,
    raycasting = false,
    autoHit = false,
    infiniteAmmo = false,
@@ -28,7 +30,8 @@ local config = {
    hitboxExpander = false,
    hitboxSize = 6,
    nofog = false,
-   fullbright = false
+   fullbright = false,
+   rainbowGun = false
 }
 
 local target = {enabled = true, position = nil}
@@ -244,6 +247,25 @@ local function getEnemyContainer()
    return nil
 end
 
+local function isVisible(targetPos)
+   if not config.wallcheck then return true end
+   local origin = camera.CFrame.Position
+   local dir = targetPos - origin
+   local raycastParams = RaycastParams.new()
+   raycastParams.FilterDescendantsInstances = {lp.Character, camera}
+   raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+   
+   local result = Workspace:Raycast(origin, dir, raycastParams)
+   if result then
+      local hitInstance = result.Instance
+      if hitInstance:IsDescendantOf(workspace.Game.Current.Spawned.NPCs) then
+         return true
+      end
+      return false
+   end
+   return true
+end
+
 local function getClosestHead()
    local container = getEnemyContainer()
    if not container then return nil end
@@ -261,10 +283,12 @@ local function getClosestHead()
       if head then
          local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
          if onScreen then
-            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-            if dist < bestDist then
-               bestDist = dist
-               bestHeadPos = head.Position
+            if isVisible(head.Position) then
+               local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+               if dist < bestDist then
+                  bestDist = dist
+                  bestHeadPos = head.Position
+               end
             end
          end
       end
@@ -273,8 +297,14 @@ local function getClosestHead()
 end
 
 RunService.Heartbeat:Connect(function()
-   if config.raycasting and target.enabled then
+   if (config.raycasting or config.aimbot) and target.enabled then
       target.position = getClosestHead()
+   end
+end)
+
+RunService.RenderStepped:Connect(function()
+   if config.aimbot and target.position then
+      camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
    end
 end)
 
@@ -435,9 +465,35 @@ RunService.Heartbeat:Connect(function()
       Lighting.Brightness = originalBrightness
       Lighting.GlobalShadows = true
    end
+   
+   if config.rainbowGun then
+      local char = lp.Character
+      if char then
+         local tool = char:FindFirstChildOfClass("Tool")
+         if tool then
+            local color = Color3.fromHSV(tick() % 5 / 5, 1, 1)
+            for _, v in ipairs(tool:GetDescendants()) do
+               if v:IsA("BasePart") or v:IsA("MeshPart") then
+                  v.Color = color
+               end
+            end
+         end
+      end
+   end
+
    UpdateHitboxExpander()
    UpdateObjectiveESP()
    UpdatePlayerESP()
+end)
+
+CombatLeft:AddToggle('Aimbot', { Text = 'Aimbot', Default = false })
+Toggles.Aimbot:OnChanged(function()
+    config.aimbot = Toggles.Aimbot.Value
+end)
+
+CombatLeft:AddToggle('Wallcheck', { Text = 'Wallcheck', Default = false })
+Toggles.Wallcheck:OnChanged(function()
+    config.wallcheck = Toggles.Wallcheck.Value
 end)
 
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
@@ -453,6 +509,11 @@ end)
 CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
 Toggles.HitboxExpander:OnChanged(function()
     config.hitboxExpander = Toggles.HitboxExpander.Value
+end)
+
+VisualsLeft:AddToggle('RainbowGun', { Text = 'Rainbow Gun', Default = false })
+Toggles.RainbowGun:OnChanged(function()
+    config.rainbowGun = Toggles.RainbowGun.Value
 end)
 
 VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
