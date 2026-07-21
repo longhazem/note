@@ -41,16 +41,16 @@ local highlightObjects = {}
 local expandedHitboxes = {}
 
 local FOVCircle
-pcall(function()
-   if Drawing then
+if Drawing then
+   pcall(function()
       FOVCircle = Drawing.new("Circle")
-      FOVCircle.Thickness = 2
-      FOVCircle.Color = Color3.fromRGB(255, 0, 0)
+      FOVCircle.Thickness = 1.5
+      FOVCircle.Color = Color3.fromRGB(255, 255, 255)
       FOVCircle.Filled = false
       FOVCircle.Transparency = 1
       FOVCircle.Visible = false
-   end
-end)
+   end)
+end
 
 local Window = Library:CreateWindow({
     Title = 'TokaihHub - Reign Fall',
@@ -396,16 +396,14 @@ local function findRegisterHitEvent()
    return nil
 end
 
-local function getTargets()
+local function getAutoHitTargets()
    local v11 = {}
    for v2, v7 in ipairs(Workspace:GetDescendants()) do
       if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
          local hum = v7:FindFirstChild("Humanoid")
          local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
          if v12 and hum and hum.Health > 0 then
-            if not config.wallCheck or isVisible(v12) then
-               table.insert(v11, {model = v7, part = v12})
-            end
+            table.insert(v11, {model = v7, part = v12})
          end
       end
    end
@@ -417,7 +415,7 @@ task.spawn(function()
       if config.autoHit then
          local v5 = findRegisterHitEvent()
          if v5 then
-            local v11 = getTargets()
+            local v11 = getAutoHitTargets()
             if #v11 > 0 then
                local v6 = {}
                for v2, v10 in ipairs(v11) do
