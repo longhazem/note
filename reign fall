@@ -1,8 +1,29 @@
--- FULL CODE ĐÃ SỬA LỖI HITBOX EXPANDER (ZOMBIE SỐNG CÓ HITBOX, CHẾT MẤT)
+-- FULL CODE ĐÃSỬA LỖI + CRASH FIX
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
-local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+-- Safe library loading
+local Library, ThemeManager, SaveManager
+
+local function safeLoadString(url)
+    local success, result = pcall(function()
+        return loadstring(game:HttpGet(url))()
+    end)
+    return success and result or nil
+end
+
+Library = safeLoadString(repo .. 'source.lua')
+if not Library then
+    warn("Failed to load main Library from: " .. repo .. 'source.lua')
+    return
+end
+
+ThemeManager = safeLoadString(repo .. 'addons/ThemeManager.lua')
+SaveManager = safeLoadString(repo .. 'addons/SaveManager.lua')
+
+if not ThemeManager or not SaveManager then
+    warn("Failed to load ThemeManager or SaveManager")
+    return
+end
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -11,6 +32,12 @@ local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 local lp = Players.LocalPlayer
 local camera = workspace.CurrentCamera
+
+if not lp then
+    warn("LocalPlayer not found!")
+    return
+end
+
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 local originalFogEnd = Lighting.FogEnd
@@ -123,39 +150,44 @@ local function UpdateVisuals(obj, shouldShow, color, nameText)
 end
 
 local function UpdateESP()
-    local game_workspace = workspace:FindFirstChild("Game")
-    if game_workspace then
+    pcall(function()
+        local game_workspace = workspace:FindFirstChild("Game")
+        if not game_workspace then return end
+        
         local current = game_workspace:FindFirstChild("Current")
-        if current then
-            local spawned = current:FindFirstChild("Spawned")
-            if spawned then
-                local gameObjects = spawned:FindFirstChild("GameObjects")
-                if gameObjects then
-                    for _, obj in ipairs(gameObjects:GetChildren()) do
-                        local name = obj.Name
-                        if name:sub(1, 8) == "mission_" or name == "scenery_phone_ringing" then
-                            local color = name:sub(1, 8) == "mission_" and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 255, 255)
-                            UpdateVisuals(obj, config.objectiveESP, color, "Objective")
-                        elseif name == "pickup_ammo" then
-                            UpdateVisuals(obj, config.ammoESP, Color3.fromRGB(255, 255, 0), "Ammo")
-                        elseif name == "pickup_armor" then
-                            UpdateVisuals(obj, config.armorESP, Color3.fromRGB(0, 0, 255), "Armor")
-                        elseif name == "pickup_medkit" then
-                            UpdateVisuals(obj, config.medkitESP, Color3.fromRGB(255, 0, 0), "Medkit")
-                        end
-                    end
-                end
-                local npcs = spawned:FindFirstChild("NPCs")
-                if npcs and npcs:FindFirstChild("enemies") then
-                    for _, zombie in ipairs(npcs.enemies:GetChildren()) do
-                        if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
-                            UpdateVisuals(zombie, config.zombieESP, Color3.fromRGB(255, 0, 0), "Zombie")
-                        end
-                    end
+        if not current then return end
+        
+        local spawned = current:FindFirstChild("Spawned")
+        if not spawned then return end
+        
+        local gameObjects = spawned:FindFirstChild("GameObjects")
+        if gameObjects then
+            for _, obj in ipairs(gameObjects:GetChildren()) do
+                if not obj or not obj.Parent then continue end
+                local name = obj.Name
+                if name:sub(1, 8) == "mission_" or name == "scenery_phone_ringing" then
+                    local color = name:sub(1, 8) == "mission_" and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 255, 255)
+                    UpdateVisuals(obj, config.objectiveESP, color, "Objective")
+                elseif name == "pickup_ammo" then
+                    UpdateVisuals(obj, config.ammoESP, Color3.fromRGB(255, 255, 0), "Ammo")
+                elseif name == "pickup_armor" then
+                    UpdateVisuals(obj, config.armorESP, Color3.fromRGB(0, 0, 255), "Armor")
+                elseif name == "pickup_medkit" then
+                    UpdateVisuals(obj, config.medkitESP, Color3.fromRGB(255, 0, 0), "Medkit")
                 end
             end
         end
-    end
+        
+        local npcs = spawned:FindFirstChild("NPCs")
+        if npcs and npcs:FindFirstChild("enemies") then
+            for _, zombie in ipairs(npcs.enemies:GetChildren()) do
+                if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+                    UpdateVisuals(zombie, config.zombieESP, Color3.fromRGB(255, 0, 0), "Zombie")
+                end
+            end
+        end
+    end)
+    
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= lp and player.Character and player.Character:FindFirstChild("Humanoid") then
             UpdateVisuals(player.Character, config.playerESP, Color3.fromRGB(0, 255, 255), player.Name)
@@ -165,11 +197,19 @@ end
 
 -- =================== HELPER =====================
 local function getEnemyContainer()
-    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-    if container then
-        return container:FindFirstChild("enemies")
-    end
-    return nil
+    local container = workspace:FindFirstChild("Game")
+    if not container then return nil end
+    
+    container = container:FindFirstChild("Current")
+    if not container then return nil end
+    
+    container = container:FindFirstChild("Spawned")
+    if not container then return nil end
+    
+    container = container:FindFirstChild("NPCs")
+    if not container then return nil end
+    
+    return container:FindFirstChild("enemies")
 end
 
 local function isPlayerCharacter(model)
@@ -182,7 +222,7 @@ local function isHumanoidModel(model)
     return model:FindFirstChildWhichIsA("Humanoid") ~= nil
 end
 
--- =================== HITBOX EXPANDER (SỬA LẦN CUỐI) =====================
+-- =================== HITBOX EXPANDER =====================
 function applyHitboxExpander(part)
     if not part or not part:IsA("BasePart") then return end
     if string.lower(part.Name) ~= "head" then return end
@@ -191,7 +231,6 @@ function applyHitboxExpander(part)
     if not config.hitboxExpander then return end
 
     local hum = model:FindFirstChild("Humanoid")
-    -- CHỈ ÁP DỤNG KHI CÒN SỐNG (HEALTH > 0)
     if not hum or hum.Health <= 0 then return end
 
     pcall(function()
@@ -261,11 +300,9 @@ function toggleHitboxExpander(status)
     end
 end
 
--- Xử lý khi health thay đổi
 local function onHumanoidHealthChanged(model)
     local hum = model:FindFirstChild("Humanoid")
     if not hum then return end
-    -- Nếu chết (health <= 0) thì xóa hitbox
     if hum.Health <= 0 then
         for part, _ in pairs(expandedHitboxes) do
             if part and part:IsDescendantOf(model) then
@@ -275,7 +312,6 @@ local function onHumanoidHealthChanged(model)
             end
         end
     else
-        -- Nếu sống lại (hiếm khi) thì áp dụng
         if config.hitboxExpander then
             local head = model:FindFirstChild("Head") or model:FindFirstChild("head")
             if head then applyHitboxExpander(head) end
@@ -292,7 +328,6 @@ local function hookZombie(model)
         hum.HealthChanged:Connect(function()
             onHumanoidHealthChanged(model)
         end)
-        -- Khi mới spawn, nếu sống thì áp dụng ngay
         if hum.Health > 0 and config.hitboxExpander then
             local head = model:FindFirstChild("Head") or model:FindFirstChild("head")
             if head then applyHitboxExpander(head) end
@@ -319,7 +354,6 @@ task.spawn(function()
     end
 end)
 
--- Vòng lặp bảo trì (mỗi 0.5s)
 task.spawn(function()
     while task.wait(0.5) do
         if config.hitboxExpander then
@@ -333,7 +367,6 @@ task.spawn(function()
                             part.Transparency = 0.7
                         end)
                     else
-                        -- Nếu zombie đã chết mà vẫn còn hitbox thì xóa
                         revertHitboxExpander(part)
                     end
                 else
@@ -365,10 +398,13 @@ local function isVisible(targetPos)
     local raycastParams = RaycastParams.new()
     raycastParams.FilterDescendantsInstances = {lp.Character, camera}
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    local result = Workspace:Raycast(origin, dir, raycastParams)
+    local result = pcall(function()
+        return Workspace:Raycast(origin, dir, raycastParams)
+    end)
+    
     if result then
         local hitInstance = result.Instance
-        if hitInstance:IsDescendantOf(workspace.Game.Current.Spawned.NPCs) then
+        if hitInstance and hitInstance:IsDescendantOf(workspace:FindFirstChild("Game")) then
             return true
         end
         return false
@@ -468,12 +504,17 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
         local args = {...}
         if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
             local raycastParams = args[3]
-            if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
-                if target.position then
-                    local origin = args[1]
-                    local dir = target.position - origin
-                    if dir.Magnitude > 0.001 then
-                        args[2] = dir.Unit * args[2].Magnitude
+            if raycastParams then
+                local success = pcall(function()
+                    return raycastParams.CollisionGroup == "raycast_npc_neutral"
+                end)
+                if success and raycastParams.CollisionGroup == "raycast_npc_neutral" then
+                    if target.position then
+                        local origin = args[1]
+                        local dir = target.position - origin
+                        if dir.Magnitude > 0.001 then
+                            args[2] = dir.Unit * args[2].Magnitude
+                        end
                     end
                 end
             end
@@ -534,7 +575,9 @@ task.spawn(function()
                         table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
                     end
                     if #v6 > 0 then
-                        v5:FireServer(v6, {})
+                        pcall(function()
+                            v5:FireServer(v6, {})
+                        end)
                     end
                 end
             end
@@ -792,29 +835,41 @@ local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({
     Text = 'Unload',
     Func = function()
-        FOVCircle:Remove()
+        pcall(function()
+            FOVCircle:Remove()
+        end)
         revertAllHitboxes()
         for obj, _ in pairs(highlightObjects) do
             if obj then
-                local highlight = obj:FindFirstChild("TokaiHighlight")
-                if highlight then highlight:Destroy() end
-                local label = obj:FindFirstChild("TokaiNameESP")
-                if label then label:Destroy() end
+                pcall(function()
+                    local highlight = obj:FindFirstChild("TokaiHighlight")
+                    if highlight then highlight:Destroy() end
+                    local label = obj:FindFirstChild("TokaiNameESP")
+                    if label then label:Destroy() end
+                end)
             end
         end
-        Library:Unload()
+        if Library then
+            Library:Unload()
+        end
     end
 })
 
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-ThemeManager:SetFolder('TokaihHub')
-SaveManager:SetFolder('TokaihHub/reign-fall')
-SaveManager:BuildConfigSection(Tabs['UI Settings'])
-ThemeManager:ApplyToTab(Tabs['UI Settings'])
-SaveManager:LoadAutoloadConfig()
+if ThemeManager then
+    ThemeManager:SetLibrary(Library)
+end
+if SaveManager then
+    SaveManager:SetLibrary(Library)
+    SaveManager:IgnoreThemeSettings()
+    ThemeManager:SetFolder('TokaihHub')
+    SaveManager:SetFolder('TokaihHub/reign-fall')
+    SaveManager:BuildConfigSection(Tabs['UI Settings'])
+    ThemeManager:ApplyToTab(Tabs['UI Settings'])
+    SaveManager:LoadAutoloadConfig()
+end
 
-Library:OnUnload(function()
-    Library.Unloaded = true
-end)
+if Library then
+    Library:OnUnload(function()
+        Library.Unloaded = true
+    end)
+end
