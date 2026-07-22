@@ -245,6 +245,7 @@ local function getClosestHead()
     local container = getEnemyContainer()
     if not container then return nil end
 
+    -- Lấy vị trí tham chiếu: tâm màn hình nếu mobile, còn PC lấy theo chuột (đồng bộ với FOV Circle)
     local referencePos
     if isMobile then
         local vp = camera.ViewportSize
@@ -260,20 +261,23 @@ local function getClosestHead()
         local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
         if head then
             local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
-            if onScreen and isVisible(head.Position) then
-                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-                if dist <= config.aimbotRange then
-                    -- Kiểm tra FOV nếu bật (không phụ thuộc vào aimbot hay silent)
-                    if config.fovEnabled then
-                        if dist <= config.fovSize and dist < bestDist then
-                            bestDist = dist
-                            bestHeadPos = head.Position
-                        end
-                    else
-                        if dist < bestDist then
-                            bestDist = dist
-                            bestHeadPos = head.Position
-                        end
+            -- Bỏ qua nếu không nằm trên màn hình (để tránh tính khoảng cách ảo)
+            if not onScreen then continue end
+            if not isVisible(head.Position) then continue end
+
+            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+
+            -- Kiểm tra range tổng (aimbotRange) và FOV nếu bật
+            if dist <= config.aimbotRange then
+                if config.fovEnabled then
+                    if dist <= config.fovSize and dist < bestDist then
+                        bestDist = dist
+                        bestHeadPos = head.Position
+                    end
+                else
+                    if dist < bestDist then
+                        bestDist = dist
+                        bestHeadPos = head.Position
                     end
                 end
             end
@@ -287,7 +291,6 @@ end
 RunService.Heartbeat:Connect(function()
     if (config.raycasting or config.aimbot) and target.enabled then
         target.position = getClosestHead()
-        -- Nếu không có mục tiêu trong FOV, target.position sẽ là nil → vô hiệu hóa aim/silent
     end
 end)
 
@@ -493,7 +496,7 @@ end)
 CombatLeft:AddSlider('FOVSize', {
     Text = 'FOV Size',
     Default = 100,
-    Min = 10,
+    Min = 1,   -- cho phép giá trị nhỏ để test
     Max = 1000,
     Rounding = 0,
     Compact = false,
