@@ -183,7 +183,7 @@ end
 
 function applyHitboxExpander(part)
     if not part or not part:IsA("BasePart") then return end
-    if part.Name ~= "Head" then return end
+    if string.lower(part.Name) ~= "head" then return end  -- so sánh không phân biệt hoa thường
     local model = part.Parent
     if not isHumanoidModel(model) or isPlayerCharacter(model) then return end
     if not config.hitboxExpander then return end
@@ -223,8 +223,11 @@ function applyToAllZombies()
     if not container then return end
     for _, enemy in ipairs(container:GetChildren()) do
         if enemy:IsA("Model") and enemy:FindFirstChild("Humanoid") then
-            local head = enemy:FindFirstChild("Head")
-            if head then applyHitboxExpander(head) end
+            local hum = enemy:FindFirstChild("Humanoid")
+            if hum and hum.Health > 0 then  -- chỉ áp dụng cho zombie sống
+                local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("head")
+                if head then applyHitboxExpander(head) end
+            end
         end
     end
 end
@@ -251,33 +254,7 @@ function toggleHitboxExpander(status)
     end
 end
 
--- Xóa hitbox khi zombie chết (health <= 0 hoặc bị xóa)
-function cleanupDeadZombies()
-    for part, _ in pairs(expandedHitboxes) do
-        if part and part.Parent then
-            local model = part.Parent
-            if model:IsA("Model") then
-                local hum = model:FindFirstChild("Humanoid")
-                if hum and hum.Health <= 0 then
-                    revertHitboxExpander(part)
-                end
-            end
-        else
-            -- part đã bị xóa
-            expandedHitboxes[part] = nil
-            originalSizes[part] = nil
-        end
-    end
-end
-
--- Gọi cleanup mỗi 0.5s để dọn zombie chết (không gây lag)
-task.spawn(function()
-    while task.wait(0.5) do
-        cleanupDeadZombies()
-    end
-end)
-
--- Xóa khi model bị xóa khỏi workspace
+-- Xóa khi model bị xóa (zombie chết và biến mất)
 Workspace.DescendantRemoving:Connect(function(desc)
     if desc:IsA("Model") and desc:FindFirstChild("Humanoid") and not isPlayerCharacter(desc) then
         for part, _ in pairs(expandedHitboxes) do
@@ -294,8 +271,37 @@ end)
 Workspace.DescendantAdded:Connect(function(desc)
     if config.hitboxExpander and desc:IsA("Model") and desc:FindFirstChild("Humanoid") and not isPlayerCharacter(desc) then
         task.wait(0.1)
-        local head = desc:FindFirstChild("Head")
-        if head then applyHitboxExpander(head) end
+        local hum = desc:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then
+            local head = desc:FindFirstChild("Head") or desc:FindFirstChild("head")
+            if head then applyHitboxExpander(head) end
+        end
+    end
+end)
+
+-- Duy trì size mỗi 0.5s để tránh game reset (tùy chọn, nhưng đảm bảo không lag)
+task.spawn(function()
+    while task.wait(0.5) do
+        if config.hitboxExpander then
+            for part, _ in pairs(expandedHitboxes) do
+                if part and part.Parent then
+                    local model = part.Parent
+                    local hum = model:FindFirstChild("Humanoid")
+                    if hum and hum.Health > 0 then
+                        pcall(function()
+                            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                            part.Transparency = 0.7
+                        end)
+                    else
+                        -- Nếu zombie chết (health <= 0) thì khôi phục size
+                        revertHitboxExpander(part)
+                    end
+                else
+                    expandedHitboxes[part] = nil
+                    originalSizes[part] = nil
+                end
+            end
+        end
     end
 end)
 
@@ -339,7 +345,7 @@ local function getClosestHead()
         local hum = enemy:FindFirstChild("Humanoid")
         if hum and hum.Health <= 0 then continue end  -- bỏ qua zombie chết
 
-        local headPart = enemy:FindFirstChild("Head")
+        local headPart = enemy:FindFirstChild("Head") or enemy:FindFirstChild("head")
         if not headPart then
             headPart = enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Torso")
         end
@@ -371,7 +377,7 @@ local function getClosestHead()
     end
 
     if bestZombie then
-        local head = bestZombie:FindFirstChild("Head")
+        local head = bestZombie:FindFirstChild("Head") or bestZombie:FindFirstChild("head")
         if head then return head.Position end
         local root = bestZombie:FindFirstChild("HumanoidRootPart") or bestZombie:FindFirstChild("Torso")
         if root then return root.Position end
@@ -644,7 +650,9 @@ CombatLeft:AddSlider('HitboxSize', {
         if config.hitboxExpander then
             for part, _ in pairs(expandedHitboxes) do
                 if part and part.Parent then
-                    part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                    pcall(function()
+                        part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                    end)
                 end
             end
         end
