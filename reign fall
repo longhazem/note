@@ -240,7 +240,7 @@ local function isVisible(targetPos)
     return true
 end
 
--- ================== HÀM getClosestHead CẢI TIẾN ==================
+-- ================== HÀM getClosestHead TỐI ƯU TỐC ĐỘ ==================
 local function getClosestHead()
     local container = getEnemyContainer()
     if not container then return nil end
@@ -253,62 +253,53 @@ local function getClosestHead()
         referencePos = UserInputService:GetMouseLocation()
     end
 
-    -- Danh sách các bộ phận cần kiểm tra (ưu tiên head trước)
-    local bodyParts = {"Head", "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart", "LeftArm", "RightArm", "LeftLeg", "RightLeg"}
-
     local bestZombie = nil
     local bestDist = math.huge
 
+    -- Chỉ kiểm tra 3 phần chính để tiết kiệm thời gian
+    local criticalParts = {"Head", "HumanoidRootPart", "Torso"}
+
     for _, enemy in ipairs(container:GetChildren()) do
-        if enemy:IsA("Model") and enemy:FindFirstChild("Humanoid") then
-            -- Lấy vị trí head để dùng khi tìm thấy zombie trong FOV
-            local headPart = enemy:FindFirstChild("Head")
-            local aimPos = nil
-            if headPart then
-                aimPos = headPart.Position
-            else
-                -- fallback: HumanoidRootPart hoặc Torso
-                local root = enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Torso")
-                if root then aimPos = root.Position end
-            end
-            if not aimPos then continue end
+        if not enemy:IsA("Model") then continue end
+        if not enemy:FindFirstChild("Humanoid") then continue end
 
-            -- Kiểm tra từng bộ phận để xác định có nằm trong FOV không
-            local foundInFOV = false
-            local minPartDist = math.huge
+        -- Lấy head để dùng làm vị trí aim
+        local headPart = enemy:FindFirstChild("Head")
+        if not headPart then
+            -- fallback lấy root hoặc torso
+            headPart = enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Torso")
+        end
+        if not headPart then continue end
 
-            for _, partName in ipairs(bodyParts) do
-                local part = enemy:FindFirstChild(partName)
-                if part and part:IsA("BasePart") then
-                    local screenPoint, onScreen = camera:WorldToScreenPoint(part.Position)
-                    if onScreen then
-                        local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-                        if dist <= config.fovSize and dist <= config.aimbotRange then
-                            if dist < minPartDist then
-                                minPartDist = dist
-                            end
-                            foundInFOV = true
-                            -- Không break để tìm khoảng cách nhỏ nhất
-                        end
+        -- Kiểm tra từng phần quan trọng
+        local found = false
+        local minDist = math.huge
+        for _, partName in ipairs(criticalParts) do
+            local part = enemy:FindFirstChild(partName)
+            if part and part:IsA("BasePart") then
+                local screenPoint, onScreen = camera:WorldToScreenPoint(part.Position)
+                if onScreen then
+                    local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+                    if dist <= config.fovSize and dist <= config.aimbotRange then
+                        if dist < minDist then minDist = dist end
+                        found = true
+                        -- không break để lấy khoảng cách nhỏ nhất
                     end
                 end
             end
+        end
 
-            -- Nếu có bất kỳ phần nào trong FOV và khoảng cách nhỏ hơn bestDist
-            if foundInFOV and minPartDist < bestDist then
-                -- Kiểm tra wallcheck (nếu bật)
-                if config.wallcheck and not isVisible(aimPos) then
-                    -- thử check từ head, nếu không thấy thì bỏ qua
-                    continue
-                end
-                bestDist = minPartDist
-                bestZombie = enemy
+        if found and minDist < bestDist then
+            -- Kiểm tra wallcheck (nếu bật)
+            if config.wallcheck and not isVisible(headPart.Position) then
+                continue
             end
+            bestDist = minDist
+            bestZombie = enemy
         end
     end
 
     if bestZombie then
-        -- Lấy vị trí head để aim
         local head = bestZombie:FindFirstChild("Head")
         if head then
             return head.Position
@@ -321,7 +312,8 @@ local function getClosestHead()
 end
 -- ============================================================
 
-RunService.Heartbeat:Connect(function()
+-- Dùng RenderStepped thay vì Heartbeat để cập nhật liên tục, giảm độ trễ
+RunService.RenderStepped:Connect(function()
     if (config.raycasting or config.aimbot) and target.enabled then
         target.position = getClosestHead()
     end
