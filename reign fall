@@ -240,7 +240,7 @@ local function isVisible(targetPos)
     return true
 end
 
--- ========== SỬA HÀM getClosestHead – THÊM KIỂM TRA FOV ==========
+-- ================== SỬA HÀM getClosestHead ==================
 local function getClosestHead()
     local container = getEnemyContainer()
     if not container then return nil end
@@ -263,14 +263,13 @@ local function getClosestHead()
             if onScreen and isVisible(head.Position) then
                 local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
                 if dist <= config.aimbotRange then
-                    -- Nếu bật FOV (và đang bật aimbot hoặc silent), bắt buộc dist <= fovSize
-                    if config.fovEnabled and (config.aimbot or config.raycasting) then
+                    -- Kiểm tra FOV nếu bật (không phụ thuộc vào aimbot hay silent)
+                    if config.fovEnabled then
                         if dist <= config.fovSize and dist < bestDist then
                             bestDist = dist
                             bestHeadPos = head.Position
                         end
                     else
-                        -- Không bật FOV hoặc không dùng aimbot/silent thì giữ logic cũ
                         if dist < bestDist then
                             bestDist = dist
                             bestHeadPos = head.Position
@@ -283,11 +282,12 @@ local function getClosestHead()
 
     return bestHeadPos
 end
--- ========== KẾT THÚC SỬA ==========
+-- ============================================================
 
 RunService.Heartbeat:Connect(function()
     if (config.raycasting or config.aimbot) and target.enabled then
         target.position = getClosestHead()
+        -- Nếu không có mục tiêu trong FOV, target.position sẽ là nil → vô hiệu hóa aim/silent
     end
 end)
 
