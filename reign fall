@@ -240,12 +240,11 @@ local function isVisible(targetPos)
     return true
 end
 
--- ================== SỬA HÀM getClosestHead ==================
+-- ================== HÀM getClosestHead CẢI TIẾN ==================
 local function getClosestHead()
     local container = getEnemyContainer()
     if not container then return nil end
 
-    -- Lấy vị trí tham chiếu: tâm màn hình nếu mobile, còn PC lấy theo chuột (đồng bộ với FOV Circle)
     local referencePos
     if isMobile then
         local vp = camera.ViewportSize
@@ -254,37 +253,71 @@ local function getClosestHead()
         referencePos = UserInputService:GetMouseLocation()
     end
 
-    local bestHeadPos = nil
+    -- Danh sách các bộ phận cần kiểm tra (ưu tiên head trước)
+    local bodyParts = {"Head", "UpperTorso", "LowerTorso", "Torso", "HumanoidRootPart", "LeftArm", "RightArm", "LeftLeg", "RightLeg"}
+
+    local bestZombie = nil
     local bestDist = math.huge
 
     for _, enemy in ipairs(container:GetChildren()) do
-        local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-        if head then
-            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
-            -- Bỏ qua nếu không nằm trên màn hình (để tránh tính khoảng cách ảo)
-            if not onScreen then continue end
-            if not isVisible(head.Position) then continue end
+        if enemy:IsA("Model") and enemy:FindFirstChild("Humanoid") then
+            -- Lấy vị trí head để dùng khi tìm thấy zombie trong FOV
+            local headPart = enemy:FindFirstChild("Head")
+            local aimPos = nil
+            if headPart then
+                aimPos = headPart.Position
+            else
+                -- fallback: HumanoidRootPart hoặc Torso
+                local root = enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Torso")
+                if root then aimPos = root.Position end
+            end
+            if not aimPos then continue end
 
-            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+            -- Kiểm tra từng bộ phận để xác định có nằm trong FOV không
+            local foundInFOV = false
+            local minPartDist = math.huge
 
-            -- Kiểm tra range tổng (aimbotRange) và FOV nếu bật
-            if dist <= config.aimbotRange then
-                if config.fovEnabled then
-                    if dist <= config.fovSize and dist < bestDist then
-                        bestDist = dist
-                        bestHeadPos = head.Position
-                    end
-                else
-                    if dist < bestDist then
-                        bestDist = dist
-                        bestHeadPos = head.Position
+            for _, partName in ipairs(bodyParts) do
+                local part = enemy:FindFirstChild(partName)
+                if part and part:IsA("BasePart") then
+                    local screenPoint, onScreen = camera:WorldToScreenPoint(part.Position)
+                    if onScreen then
+                        local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+                        if dist <= config.fovSize and dist <= config.aimbotRange then
+                            if dist < minPartDist then
+                                minPartDist = dist
+                            end
+                            foundInFOV = true
+                            -- Không break để tìm khoảng cách nhỏ nhất
+                        end
                     end
                 end
+            end
+
+            -- Nếu có bất kỳ phần nào trong FOV và khoảng cách nhỏ hơn bestDist
+            if foundInFOV and minPartDist < bestDist then
+                -- Kiểm tra wallcheck (nếu bật)
+                if config.wallcheck and not isVisible(aimPos) then
+                    -- thử check từ head, nếu không thấy thì bỏ qua
+                    continue
+                end
+                bestDist = minPartDist
+                bestZombie = enemy
             end
         end
     end
 
-    return bestHeadPos
+    if bestZombie then
+        -- Lấy vị trí head để aim
+        local head = bestZombie:FindFirstChild("Head")
+        if head then
+            return head.Position
+        else
+            local root = bestZombie:FindFirstChild("HumanoidRootPart") or bestZombie:FindFirstChild("Torso")
+            if root then return root.Position end
+        end
+    end
+    return nil
 end
 -- ============================================================
 
@@ -496,7 +529,7 @@ end)
 CombatLeft:AddSlider('FOVSize', {
     Text = 'FOV Size',
     Default = 100,
-    Min = 1,   -- cho phép giá trị nhỏ để test
+    Min = 1,
     Max = 1000,
     Rounding = 0,
     Compact = false,
