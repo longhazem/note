@@ -1,4 +1,4 @@
--- Full code đã fix hoàn toàn lỗi HitboxExpander (zombie sống có hitbox, chết thì mất)
+-- FULL CODE ĐÃ SỬA LỖI HITBOX EXPANDER (ZOMBIE SỐNG CÓ HITBOX, CHẾT MẤT)
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
 local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
@@ -182,7 +182,7 @@ local function isHumanoidModel(model)
     return model:FindFirstChildWhichIsA("Humanoid") ~= nil
 end
 
--- =================== HITBOX EXPANDER FIX =====================
+-- =================== HITBOX EXPANDER (SỬA LẦN CUỐI) =====================
 function applyHitboxExpander(part)
     if not part or not part:IsA("BasePart") then return end
     if string.lower(part.Name) ~= "head" then return end
@@ -191,7 +191,8 @@ function applyHitboxExpander(part)
     if not config.hitboxExpander then return end
 
     local hum = model:FindFirstChild("Humanoid")
-    if hum and hum.Health <= 0 then return end  -- không áp cho zombie chết
+    -- CHỈ ÁP DỤNG KHI CÒN SỐNG (HEALTH > 0)
+    if not hum or hum.Health <= 0 then return end
 
     pcall(function()
         if not expandedHitboxes[part] then
@@ -260,10 +261,11 @@ function toggleHitboxExpander(status)
     end
 end
 
--- Theo dõi health để revert khi chết
+-- Xử lý khi health thay đổi
 local function onHumanoidHealthChanged(model)
     local hum = model:FindFirstChild("Humanoid")
     if not hum then return end
+    -- Nếu chết (health <= 0) thì xóa hitbox
     if hum.Health <= 0 then
         for part, _ in pairs(expandedHitboxes) do
             if part and part:IsDescendantOf(model) then
@@ -273,6 +275,7 @@ local function onHumanoidHealthChanged(model)
             end
         end
     else
+        -- Nếu sống lại (hiếm khi) thì áp dụng
         if config.hitboxExpander then
             local head = model:FindFirstChild("Head") or model:FindFirstChild("head")
             if head then applyHitboxExpander(head) end
@@ -289,6 +292,7 @@ local function hookZombie(model)
         hum.HealthChanged:Connect(function()
             onHumanoidHealthChanged(model)
         end)
+        -- Khi mới spawn, nếu sống thì áp dụng ngay
         if hum.Health > 0 and config.hitboxExpander then
             local head = model:FindFirstChild("Head") or model:FindFirstChild("head")
             if head then applyHitboxExpander(head) end
@@ -315,6 +319,7 @@ task.spawn(function()
     end
 end)
 
+-- Vòng lặp bảo trì (mỗi 0.5s)
 task.spawn(function()
     while task.wait(0.5) do
         if config.hitboxExpander then
@@ -328,6 +333,7 @@ task.spawn(function()
                             part.Transparency = 0.7
                         end)
                     else
+                        -- Nếu zombie đã chết mà vẫn còn hitbox thì xóa
                         revertHitboxExpander(part)
                     end
                 else
