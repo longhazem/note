@@ -26,7 +26,8 @@ local config = {
    aimbot = false,
    raycasting = false,
    fovEnabled = false,
-   aimbotRange = 100,
+   fovSize = 100,
+   aimbotRange = 1000,
    wallcheck = false,
    autoHit = false,
    infiniteAmmo = false,
@@ -286,7 +287,7 @@ RunService.RenderStepped:Connect(function()
    
    if config.fovEnabled then
       FOVCircle.Visible = true
-      FOVCircle.Radius = config.aimbotRange
+      FOVCircle.Radius = config.fovSize
       if isMobile then
          FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
       else
@@ -472,11 +473,23 @@ CombatLeft:AddToggle('ShowFOV', { Text = 'Show FOV Circle', Default = false }):O
     config.fovEnabled = Toggles.ShowFOV.Value
 end)
 
-CombatLeft:AddSlider('AimbotRange', {
-    Text = 'FOV / Aimbot Range',
+CombatLeft:AddSlider('FOVSize', {
+    Text = 'FOV Size',
     Default = 100,
     Min = 10,
-    Max = 800,
+    Max = 1000,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        config.fovSize = Value
+    end
+})
+
+CombatLeft:AddSlider('AimbotRange', {
+    Text = 'Aimbot Range',
+    Default = 1000,
+    Min = 10,
+    Max = 2000,
     Rounding = 0,
     Compact = false,
     Callback = function(Value)
