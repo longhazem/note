@@ -47,8 +47,8 @@ local config = {
 
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
-local expandedHitboxes = {}  -- key: part, value: true
-local originalSizes = {}     -- lưu kích thước gốc để khôi phục
+local expandedHitboxes = {}   -- key = part, value = true
+local originalSizes = {}      -- lưu kích thước gốc
 local originalAmmoValues = {}
 local originalStaminaValue = nil
 
@@ -72,6 +72,7 @@ local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
 local UtilityLeft = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
 
+-- =================== ESP =====================
 local function UpdateVisuals(obj, shouldShow, color, nameText)
     if not obj or not obj.Parent then return end
     pcall(function()
@@ -161,6 +162,15 @@ local function UpdateESP()
     end
 end
 
+-- =================== HITBOX EXPANDER =====================
+local function getEnemyContainer()
+    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+    if container then
+        return container:FindFirstChild("enemies")
+    end
+    return nil
+end
+
 local function isPlayerCharacter(model)
     if not model or not model:IsA("Model") then return false end
     return Players:GetPlayerFromCharacter(model) ~= nil
@@ -171,24 +181,20 @@ local function isHumanoidModel(model)
     return model:FindFirstChildWhichIsA("Humanoid") ~= nil
 end
 
--- ========== HITBOX EXPANDER – TỐI ƯU KHÔNG LAG ==========
 function applyHitboxExpander(part)
     if not part or not part:IsA("BasePart") then return end
     if part.Name ~= "Head" then return end
     local model = part.Parent
     if not isHumanoidModel(model) or isPlayerCharacter(model) then return end
     if not config.hitboxExpander then return end
-
     pcall(function()
         if not expandedHitboxes[part] then
-            -- Lưu kích thước gốc
             originalSizes[part] = part.Size
             part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
             part.CanCollide = false
             part.Transparency = 0.7
             expandedHitboxes[part] = true
         else
-            -- Cập nhật kích thước nếu thay đổi
             part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
             part.Transparency = 0.7
         end
@@ -218,9 +224,7 @@ function applyToAllZombies()
     for _, enemy in ipairs(container:GetChildren()) do
         if enemy:IsA("Model") and enemy:FindFirstChild("Humanoid") then
             local head = enemy:FindFirstChild("Head")
-            if head then
-                applyHitboxExpander(head)
-            end
+            if head then applyHitboxExpander(head) end
         end
     end
 end
@@ -238,10 +242,44 @@ function revertAllHitboxes()
     originalSizes = {}
 end
 
--- Xóa khi zombie chết (model bị xóa)
+function toggleHitboxExpander(status)
+    config.hitboxExpander = status
+    if status then
+        applyToAllZombies()
+    else
+        revertAllHitboxes()
+    end
+end
+
+-- Xóa hitbox khi zombie chết (health <= 0 hoặc bị xóa)
+function cleanupDeadZombies()
+    for part, _ in pairs(expandedHitboxes) do
+        if part and part.Parent then
+            local model = part.Parent
+            if model:IsA("Model") then
+                local hum = model:FindFirstChild("Humanoid")
+                if hum and hum.Health <= 0 then
+                    revertHitboxExpander(part)
+                end
+            end
+        else
+            -- part đã bị xóa
+            expandedHitboxes[part] = nil
+            originalSizes[part] = nil
+        end
+    end
+end
+
+-- Gọi cleanup mỗi 0.5s để dọn zombie chết (không gây lag)
+task.spawn(function()
+    while task.wait(0.5) do
+        cleanupDeadZombies()
+    end
+end)
+
+-- Xóa khi model bị xóa khỏi workspace
 Workspace.DescendantRemoving:Connect(function(desc)
     if desc:IsA("Model") and desc:FindFirstChild("Humanoid") and not isPlayerCharacter(desc) then
-        -- Tìm các phần của model này trong expandedHitboxes
         for part, _ in pairs(expandedHitboxes) do
             if part and part:IsDescendantOf(desc) then
                 revertHitboxExpander(part)
@@ -255,33 +293,13 @@ end)
 -- Áp dụng cho zombie mới xuất hiện
 Workspace.DescendantAdded:Connect(function(desc)
     if config.hitboxExpander and desc:IsA("Model") and desc:FindFirstChild("Humanoid") and not isPlayerCharacter(desc) then
-        task.wait(0.05) -- đợi để model load đầy đủ
+        task.wait(0.1)
         local head = desc:FindFirstChild("Head")
-        if head then
-            applyHitboxExpander(head)
-        end
+        if head then applyHitboxExpander(head) end
     end
 end)
 
--- Bật/tắt chức năng
-function toggleHitboxExpander(status)
-    config.hitboxExpander = status
-    if status then
-        applyToAllZombies()
-    else
-        revertAllHitboxes()
-    end
-end
-
--- Hàm lấy container enemy (dùng chung)
-local function getEnemyContainer()
-    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-    if container then
-        return container:FindFirstChild("enemies")
-    end
-    return nil
-end
-
+-- =================== AIMBOT & SILENT =====================
 local function isVisible(targetPos)
     if not config.wallcheck then return true end
     local origin = camera.CFrame.Position
@@ -300,7 +318,6 @@ local function isVisible(targetPos)
     return true
 end
 
--- ========== AIMBOT TỐI ƯU ==========
 local function getClosestHead()
     local container = getEnemyContainer()
     if not container then return nil end
@@ -319,6 +336,8 @@ local function getClosestHead()
 
     for _, enemy in ipairs(container:GetChildren()) do
         if not enemy:IsA("Model") or not enemy:FindFirstChild("Humanoid") then continue end
+        local hum = enemy:FindFirstChild("Humanoid")
+        if hum and hum.Health <= 0 then continue end  -- bỏ qua zombie chết
 
         local headPart = enemy:FindFirstChild("Head")
         if not headPart then
@@ -406,9 +425,147 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     return oldNamecall(self, ...)
 end))
 
--- ... (các phần khác giữ nguyên: autoHit, infinite ammo/stamina, nofog, fullbright, UI)
+-- =================== AUTO HIT =====================
+local function findRegisterHitEvent()
+    local v3 = lp.Character
+    if not v3 then return nil end
+    for v2, v4 in ipairs(v3:GetChildren()) do
+        local v9 = v4:FindFirstChild("ServerEvents")
+        if v9 then
+            local v8 = v9:FindFirstChild("RegisterHit")
+            if v8 and v8:IsA("RemoteEvent") then
+                return v8
+            end
+        end
+    end
+    return nil
+end
 
--- ========== GIAO DIỆN ==========
+local function getTargets()
+    local v11 = {}
+    for v2, v7 in ipairs(Workspace:GetDescendants()) do
+        if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+            local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+            if v12 then
+                table.insert(v11, {model = v7, part = v12})
+            end
+        end
+    end
+    if #v11 == 0 and typeof(getnilinstances) == "function" then
+        for v2, v7 in ipairs(getnilinstances()) do
+            if v7:IsA("Model") then
+                local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+                if v12 then
+                    table.insert(v11, {model = v7, part = v12})
+                end
+            end
+        end
+    end
+    return v11
+end
+
+task.spawn(function()
+    while task.wait(0.2) do
+        if config.autoHit then
+            local v5 = findRegisterHitEvent()
+            if v5 then
+                local v11 = getTargets()
+                if #v11 > 0 then
+                    local v6 = {}
+                    for v2, v10 in ipairs(v11) do
+                        table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
+                    end
+                    if #v6 > 0 then
+                        v5:FireServer(v6, {})
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- =================== INFINITE AMMO & STAMINA =====================
+task.spawn(function()
+    while task.wait(0.1) do
+        local Character = lp.Character
+        if Character then
+            local Humanoid = Character:FindFirstChild("Humanoid")
+            if Humanoid then
+                local Values = Humanoid:FindFirstChild("Values")
+                if Values then
+                    local Stamina = Values:FindFirstChild("Stamina")
+                    if Stamina and Stamina:IsA("NumberValue") then
+                        if config.infiniteStamina then
+                            if not originalStaminaValue then
+                                originalStaminaValue = Stamina.Value
+                            end
+                            Stamina.Value = 99999
+                        else
+                            if originalStaminaValue and Stamina.Value == 99999 then
+                                Stamina.Value = originalStaminaValue
+                                originalStaminaValue = nil
+                            end
+                        end
+                    end
+                end
+            end
+            local Backpack = lp:FindFirstChild("Backpack")
+            local items = {}
+            for _, v in ipairs(Character:GetChildren()) do
+                table.insert(items, v)
+            end
+            if Backpack then
+                for _, v in ipairs(Backpack:GetChildren()) do
+                    table.insert(items, v)
+                end
+            end
+            for _, item in ipairs(items) do
+                if item:IsA("Tool") then
+                    local WeaponData = item:FindFirstChild("WeaponData")
+                    if WeaponData then
+                        local Essentials = WeaponData:FindFirstChild("Essentials")
+                        if Essentials then
+                            local Ammo = Essentials:FindFirstChild("Ammo")
+                            if Ammo and Ammo:IsA("NumberValue") then
+                                if config.infiniteAmmo then
+                                    if originalAmmoValues[item] == nil then
+                                        originalAmmoValues[item] = Ammo.Value
+                                    end
+                                    Ammo.Value = 9999
+                                else
+                                    if originalAmmoValues[item] ~= nil then
+                                        if Ammo.Value == 9999 then
+                                            Ammo.Value = originalAmmoValues[item]
+                                        end
+                                        originalAmmoValues[item] = nil
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- =================== NO FOG & FULLBRIGHT =====================
+RunService.Heartbeat:Connect(function()
+    if config.nofog then
+        Lighting.FogEnd = 100000
+    else
+        Lighting.FogEnd = originalFogEnd
+    end
+    if config.fullbright then
+        Lighting.Brightness = 3
+        Lighting.GlobalShadows = false
+    else
+        Lighting.Brightness = originalBrightness
+        Lighting.GlobalShadows = true
+    end
+end)
+
+-- =================== UI =====================
 CombatLeft:AddToggle('Aimbot', {
     Text = 'Aimbot',
     Default = false
@@ -484,7 +641,6 @@ CombatLeft:AddSlider('HitboxSize', {
     Compact = false,
     Callback = function(Value)
         config.hitboxSize = Value
-        -- Cập nhật lại các hitbox đang mở rộng
         if config.hitboxExpander then
             for part, _ in pairs(expandedHitboxes) do
                 if part and part.Parent then
@@ -495,9 +651,110 @@ CombatLeft:AddSlider('HitboxSize', {
     end
 })
 
--- Các ESP và Utility giữ nguyên...
--- (sử dụng code từ bản trước, chỉ thay phần HitboxExpander)
+VisualsLeft:AddToggle('ZombieESP', {
+    Text = 'Zombie ESP',
+    Default = false
+}):OnChanged(function()
+    config.zombieESP = Toggles.ZombieESP.Value
+end)
 
--- ====== ĐOẠN CODE ESP, UTILITY, UNLOAD ... (giữ nguyên) ======
+VisualsLeft:AddToggle('PlayerESP', {
+    Text = 'Player ESP',
+    Default = false
+}):OnChanged(function()
+    config.playerESP = Toggles.PlayerESP.Value
+end)
 
--- ... (bỏ qua để ngắn, nhưng thực tế sẽ đưa full)
+VisualsLeft:AddToggle('ObjectiveESP', {
+    Text = 'Objective ESP',
+    Default = false
+}):OnChanged(function()
+    config.objectiveESP = Toggles.ObjectiveESP.Value
+end)
+
+VisualsLeft:AddToggle('AmmoESP', {
+    Text = 'Ammo ESP',
+    Default = false
+}):OnChanged(function()
+    config.ammoESP = Toggles.AmmoESP.Value
+end)
+
+VisualsLeft:AddToggle('ArmorESP', {
+    Text = 'Armor ESP',
+    Default = false
+}):OnChanged(function()
+    config.armorESP = Toggles.ArmorESP.Value
+end)
+
+VisualsLeft:AddToggle('MedkitESP', {
+    Text = 'Medkit ESP',
+    Default = false
+}):OnChanged(function()
+    config.medkitESP = Toggles.MedkitESP.Value
+end)
+
+VisualsLeft:AddToggle('NameESP', {
+    Text = 'Show ESP Names',
+    Default = false
+}):OnChanged(function()
+    config.nameESP = Toggles.NameESP.Value
+end)
+
+VisualsRight:AddToggle('Fullbright', {
+    Text = 'Fullbright',
+    Default = false
+}):OnChanged(function()
+    config.fullbright = Toggles.Fullbright.Value
+end)
+
+VisualsRight:AddToggle('NoFog', {
+    Text = 'No Fog',
+    Default = false
+}):OnChanged(function()
+    config.nofog = Toggles.NoFog.Value
+end)
+
+UtilityLeft:AddToggle('InfiniteAmmo', {
+    Text = 'Infinite Ammo',
+    Default = false
+}):OnChanged(function()
+    config.infiniteAmmo = Toggles.InfiniteAmmo.Value
+end)
+
+UtilityLeft:AddToggle('InfiniteStamina', {
+    Text = 'Infinite Stamina',
+    Default = false
+}):OnChanged(function()
+    config.infiniteStamina = Toggles.InfiniteStamina.Value
+end)
+
+local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+MenuGroup:AddButton({
+    Text = 'Unload',
+    Func = function()
+        FOVCircle:Remove()
+        revertAllHitboxes()
+        for obj, _ in pairs(highlightObjects) do
+            if obj then
+                local highlight = obj:FindFirstChild("TokaiHighlight")
+                if highlight then highlight:Destroy() end
+                local label = obj:FindFirstChild("TokaiNameESP")
+                if label then label:Destroy() end
+            end
+        end
+        Library:Unload()
+    end
+})
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+ThemeManager:SetFolder('TokaihHub')
+SaveManager:SetFolder('TokaihHub/reign-fall')
+SaveManager:BuildConfigSection(Tabs['UI Settings'])
+ThemeManager:ApplyToTab(Tabs['UI Settings'])
+SaveManager:LoadAutoloadConfig()
+
+Library:OnUnload(function()
+    Library.Unloaded = true
+end)
