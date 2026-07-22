@@ -1,36 +1,4 @@
-local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
-local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local Lighting = game:GetService("Lighting")
-local Workspace = game:GetService("Workspace")
-local lp = Players.LocalPlayer
-local camera = workspace.CurrentCamera
-
-local originalFogEnd = Lighting.FogEnd
-local originalBrightness = Lighting.Brightness
-
-local FOVCircle = Drawing.new("Circle")
-FOVCircle.Thickness = 1.5
-FOVCircle.NumSides = 100
-FOVCircle.Filled = false
-FOVCircle.Visible = false
-FOVCircle.Color = Color3.fromRGB(255, 255, 255)
-
-local config = {
-   aimbot = false,
-   raycasting = false,
-   fovEnabled = false,
-   fovSize = 100,
-   aimbotRange = 1000,
-   wallcheck = false,
-   autoHitĐây là toàn bộ mã hoàn chỉnh đã tích hợp logic FOV khắt khe mới nhất cùng với tất cả các tính năng khác. 
-
-```lua
 local repo = '[https://raw.githubusercontent.com/longhazem/libba/main/](https://raw.githubusercontent.com/longhazem/libba/main/)'
 local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
