@@ -3,6 +3,61 @@ local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local Camera = workspace.CurrentCamera
+local lp = Players.LocalPlayer
+
+local config = {
+    -- Aimbot
+    aimbotEnabled = true,
+    teamCheck = false,
+    wallCheck = false,
+    forceConnect = true,
+    smoothAim = false,
+    predictionEnabled = false,
+    prediction = 0.14,
+    lockPart = "Head",
+    targetMode = "Players",
+    fovAmount = 90,
+    fovVisible = true,
+    maxDistance = 500,
+    distanceCircleVisible = false,
+    thirdPerson = false,
+    thirdPersonSensitivity = 3,
+    sensitivity = 0,
+    triggerKey = "MouseButton2",
+    toggleMode = false,
+    highlightVisible = false,
+    invisibleEnabled = false,
+    invisibleKey = "CapsLock",
+    invisibleOffsetY = 100,
+    silentAim = false,
+    -- ESP
+    playerESP = false,
+    zombieESP = false,
+    objectiveESP = false,
+    ammoESP = false,
+    armorESP = false,
+    medkitESP = false,
+    -- Utility
+    infiniteAmmo = false,
+    infiniteStamina = false,
+    autoHit = false,
+    hitboxExpander = false,
+    hitboxSize = 6,
+    -- Environment
+    nofog = false,
+    fullbright = false,
+}
+
+local originalFogEnd = Lighting.FogEnd
+local originalBrightness = Lighting.Brightness
+
 local Window = Library:CreateWindow({
     Title = 'tokaihub',
     Center = true,
@@ -12,38 +67,23 @@ local Window = Library:CreateWindow({
 })
 
 local Tabs = {
-    Main = Window:AddTab('Aimbot'),
+    Aimbot = Window:AddTab('Aimbot'),
     ESP = Window:AddTab('ESP'),
     Combat = Window:AddTab('Combat'),
-    Misc = Window:AddTab('Misc'),
-    UI = Window:AddTab('UI Settings'),
+    Utility = Window:AddTab('Utility'),
+    ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
+local AimbotGroup = Tabs.Aimbot:AddLeftGroupbox('Aimbot Settings')
+local ESPGroup = Tabs.ESP:AddLeftGroupbox('ESP Elements')
+local EnvGroup = Tabs.ESP:AddRightGroupbox('Environment')
+local CombatGroup = Tabs.Combat:AddLeftGroupbox('Combat Features')
+local UtilityGroup = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
+local UIGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+
+-- ===== AIMBOT CORE =====
 local Environment = getgenv().Aimbot or {}
 getgenv().Aimbot = Environment
-
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local Players = game:GetService("Players")
-local Camera = workspace.CurrentCamera
-local LocalPlayer = Players.LocalPlayer
-
-local RequiredDistance, Typing, Running, Animation, ServiceConnections = 2000, false, false, nil, {}
-local cachedNPCFolder, cachedNPCFolderTime = nil, 0
-local NPC_FOLDER_CACHE_INTERVAL = 2
-
-local invisibleActive = false
-local invisibleHBConnection, invisibleCharAddedConnection = nil, nil
-local invisibleParts, invisibleChar, invisibleHumanoid, invisibleRootPart = {}, nil, nil, nil
-
-local bodyParts = {
-    "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart",
-    "LeftUpperArm", "LeftLowerArm", "LeftHand",
-    "RightUpperArm", "RightLowerArm", "RightHand",
-    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-    "RightUpperLeg", "RightLowerLeg", "RightFoot"
-}
 
 Environment.Settings = {
     Enabled = true,
@@ -67,15 +107,6 @@ Environment.Settings = {
     InvisibleEnabled = false,
     InvisibleKey = "CapsLock",
     InvisibleOffsetY = 100,
-    InfiniteAmmo = false,
-    InfiniteStamina = false,
-    playerESP = false,
-    zombieESP = false,
-    objectiveESP = false,
-    ammoESP = false,
-    armorESP = false,
-    medkitESP = false,
-    AutoHit = false,
     SilentAim = false
 }
 
@@ -108,6 +139,22 @@ Environment.StatusText.Color = Color3.fromRGB(0,0,0)
 Environment.StatusText.Transparency = 0.9
 Environment.StatusText.Visible = true
 
+local RequiredDistance, Typing, Running, Animation, ServiceConnections = 2000, false, false, nil, {}
+local cachedNPCFolder, cachedNPCFolderTime = nil, 0
+local NPC_FOLDER_CACHE_INTERVAL = 2
+
+local invisibleActive = false
+local invisibleHBConnection, invisibleCharAddedConnection = nil, nil
+local invisibleParts, invisibleChar, invisibleHumanoid, invisibleRootPart = {}, nil, nil, nil
+
+local bodyParts = {
+    "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart",
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot"
+}
+
 local HighlightInstance = nil
 local DistancePart, DistanceAttachments, DistanceBeams = nil, nil, nil
 
@@ -121,7 +168,7 @@ local function EnsureDistanceRing(segments)
     DistancePart.CanCollide = false
     DistancePart.Transparency = 1
     DistancePart.Size = Vector3.new(1,1,1)
-    DistancePart.Parent = workspace
+    DistancePart.Parent = Workspace
     DistanceAttachments = {}
     DistanceBeams = {}
     for i = 1, segments do
@@ -151,7 +198,7 @@ local function EnsureDistanceRing(segments)
 end
 
 local function GetLocalRoot()
-    local char = LocalPlayer.Character
+    local char = lp.Character
     if not char then return nil end
     return char:FindFirstChild("HumanoidRootPart")
 end
@@ -183,7 +230,7 @@ local function SetHighlight(char)
             HighlightInstance.FillTransparency = 1
             HighlightInstance.OutlineTransparency = 0
             HighlightInstance.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            HighlightInstance.Parent = workspace
+            HighlightInstance.Parent = Workspace
         end)
     end
     if HighlightInstance then
@@ -245,9 +292,9 @@ local function GetClosestPlayer()
         local localRoot = GetLocalRoot()
         local localPos = localRoot and localRoot.Position
         for _, v in next, Players:GetPlayers() do
-            if v ~= LocalPlayer and not Environment.IgnoreList[v] then
+            if v ~= lp and not Environment.IgnoreList[v] then
                 if v.Character and v.Character:FindFirstChildOfClass("Humanoid") then
-                    if Environment.Settings.TeamCheck and v.Team == LocalPlayer.Team then continue end
+                    if Environment.Settings.TeamCheck and v.Team == lp.Team then continue end
                     if Environment.Settings.AliveCheck and v.Character:FindFirstChildOfClass("Humanoid").Health <= 0 then continue end
                     if localPos then
                         local targetRoot = v.Character:FindFirstChild("HumanoidRootPart")
@@ -330,7 +377,7 @@ local function GetClosestZombie()
         local localPos = localRoot and localRoot.Position
         local now = tick()
         if not cachedNPCFolder or (now - cachedNPCFolderTime) > NPC_FOLDER_CACHE_INTERVAL then
-            local gameFolder = workspace:FindFirstChild("Game")
+            local gameFolder = Workspace:FindFirstChild("Game")
             cachedNPCFolder = gameFolder and gameFolder:FindFirstChild("Current") and gameFolder.Current:FindFirstChild("Spawned") and gameFolder.Current.Spawned:FindFirstChild("NPCs")
             cachedNPCFolderTime = now
         end
@@ -424,7 +471,7 @@ local function GetClosestZombie()
 end
 
 local function setupInvisibleCharacter()
-    invisibleChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    invisibleChar = lp.Character or lp.CharacterAdded:Wait()
     invisibleHumanoid = invisibleChar:WaitForChild("Humanoid")
     invisibleRootPart = invisibleChar:WaitForChild("HumanoidRootPart")
     invisibleParts = {}
@@ -459,7 +506,7 @@ local function startInvisible()
             end)
         end
     end)
-    invisibleCharAddedConnection = LocalPlayer.CharacterAdded:Connect(function()
+    invisibleCharAddedConnection = lp.CharacterAdded:Connect(function()
         task.wait(0.5)
         invisibleActive = false
         pcall(setupInvisibleCharacter)
@@ -484,7 +531,7 @@ local function stopInvisible()
     end)
 end
 
-local function Load()
+local function LoadAimbot()
     ServiceConnections.RenderSteppedConnection = RunService.RenderStepped:Connect(function()
         if Environment.FOVSettings.Enabled and Environment.Settings.Enabled then
             Environment.FOVCircle.Radius = Environment.FOVSettings.Amount
@@ -591,7 +638,7 @@ local function Load()
             if visible and root then
                 EnsureDistanceRing(48)
                 local yOffset = -3
-                local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
                 if hum then yOffset = -(hum.HipHeight + 1) end
                 local center = root.Position + Vector3.new(0, yOffset, 0)
                 DistancePart.CFrame = CFrame.new(center)
@@ -646,7 +693,7 @@ local function Load()
             end
         end
     end)
-    LocalPlayer.CharacterAdded:Connect(function() CancelLock() end)
+    lp.CharacterAdded:Connect(function() CancelLock() end)
 end
 
 Environment.Functions = {}
@@ -663,7 +710,7 @@ end
 
 function Environment.Functions:Restart()
     for _, v in next, ServiceConnections do v:Disconnect() end
-    Load()
+    LoadAimbot()
 end
 
 function Environment.Functions:SaveSettings()
@@ -691,16 +738,13 @@ function Environment.Functions:LoadSettings()
 end
 
 pcall(Environment.Functions.LoadSettings, Environment.Functions)
-Load()
+LoadAimbot()
 if Environment.Settings.InvisibleEnabled then
     task.delay(1, function() pcall(startInvisible) end)
 end
 
-local MainTab = Tabs.Main
-local LeftGroup = MainTab:AddLeftGroupbox('Cài đặt chính')
-local RightGroup = MainTab:AddRightGroupbox('Điều khiển')
-
-LeftGroup:AddToggle('AimbotEnable', {
+-- ===== UI AIMBOT =====
+AimbotGroup:AddToggle('AimbotEnable', {
     Text = 'Bật Aimbot',
     Default = Environment.Settings.Enabled,
     Tooltip = 'Bật hoặc tắt toàn bộ aimbot',
@@ -708,7 +752,7 @@ LeftGroup:AddToggle('AimbotEnable', {
 })
 Toggles.AimbotEnable:OnChanged(function() Environment.Settings.Enabled = Toggles.AimbotEnable.Value end)
 
-LeftGroup:AddToggle('TeamCheck', {
+AimbotGroup:AddToggle('TeamCheck', {
     Text = 'Team Check',
     Default = Environment.Settings.TeamCheck,
     Tooltip = 'Không nhắm vào đồng đội',
@@ -716,7 +760,7 @@ LeftGroup:AddToggle('TeamCheck', {
 })
 Toggles.TeamCheck:OnChanged(function() Environment.Settings.TeamCheck = Toggles.TeamCheck.Value end)
 
-LeftGroup:AddToggle('WallCheck', {
+AimbotGroup:AddToggle('WallCheck', {
     Text = 'Wall Check',
     Default = Environment.Settings.WallCheck,
     Tooltip = 'Kiểm tra vật cản',
@@ -724,7 +768,7 @@ LeftGroup:AddToggle('WallCheck', {
 })
 Toggles.WallCheck:OnChanged(function() Environment.Settings.WallCheck = Toggles.WallCheck.Value end)
 
-LeftGroup:AddToggle('ForceConnect', {
+AimbotGroup:AddToggle('ForceConnect', {
     Text = 'Force Connect',
     Default = Environment.Settings.ForceConnect,
     Tooltip = 'Giữ khóa ngay cả khi mất FOV',
@@ -732,7 +776,7 @@ LeftGroup:AddToggle('ForceConnect', {
 })
 Toggles.ForceConnect:OnChanged(function() Environment.Settings.ForceConnect = Toggles.ForceConnect.Value end)
 
-LeftGroup:AddToggle('Highlight', {
+AimbotGroup:AddToggle('Highlight', {
     Text = 'Highlight',
     Default = Environment.Settings.HighlightVisible,
     Tooltip = 'Hiển thị viền cho mục tiêu',
@@ -740,7 +784,7 @@ LeftGroup:AddToggle('Highlight', {
 })
 Toggles.Highlight:OnChanged(function() Environment.Settings.HighlightVisible = Toggles.Highlight.Value end)
 
-LeftGroup:AddToggle('SmoothAim', {
+AimbotGroup:AddToggle('SmoothAim', {
     Text = 'Smooth Aim',
     Default = Environment.Settings.SmoothAim,
     Tooltip = 'Làm mượt di chuyển ngắm',
@@ -748,7 +792,7 @@ LeftGroup:AddToggle('SmoothAim', {
 })
 Toggles.SmoothAim:OnChanged(function() Environment.Settings.SmoothAim = Toggles.SmoothAim.Value end)
 
-LeftGroup:AddToggle('Prediction', {
+AimbotGroup:AddToggle('Prediction', {
     Text = 'Dự đoán chuyển động',
     Default = Environment.Settings.PredictionEnabled,
     Tooltip = 'Dự đoán vị trí mục tiêu',
@@ -756,7 +800,7 @@ LeftGroup:AddToggle('Prediction', {
 })
 Toggles.Prediction:OnChanged(function() Environment.Settings.PredictionEnabled = Toggles.Prediction.Value end)
 
-local PredSlider = LeftGroup:AddSlider('PredictionValue', {
+local PredSlider = AimbotGroup:AddSlider('PredictionValue', {
     Text = 'Hệ số dự đoán',
     Default = Environment.Settings.Prediction,
     Min = 0,
@@ -770,7 +814,7 @@ PredSlider:SetVisible(Toggles.Prediction.Value)
 Toggles.Prediction:OnChanged(function() PredSlider:SetVisible(Toggles.Prediction.Value) end)
 Options.PredictionValue:OnChanged(function() Environment.Settings.Prediction = Options.PredictionValue.Value end)
 
-LeftGroup:AddSlider('FOV', {
+AimbotGroup:AddSlider('FOV', {
     Text = 'FOV (bán kính)',
     Default = Environment.FOVSettings.Amount,
     Min = 10,
@@ -781,7 +825,7 @@ LeftGroup:AddSlider('FOV', {
 })
 Options.FOV:OnChanged(function() Environment.FOVSettings.Amount = Options.FOV.Value end)
 
-LeftGroup:AddSlider('MaxDist', {
+AimbotGroup:AddSlider('MaxDist', {
     Text = 'Khoảng cách tối đa',
     Default = Environment.Settings.MaxDistance,
     Min = 50,
@@ -792,7 +836,7 @@ LeftGroup:AddSlider('MaxDist', {
 })
 Options.MaxDist:OnChanged(function() Environment.Settings.MaxDistance = Options.MaxDist.Value end)
 
-LeftGroup:AddSlider('Sensitivity', {
+AimbotGroup:AddSlider('Sensitivity', {
     Text = 'Tốc độ khóa (giây)',
     Default = Environment.Settings.Sensitivity,
     Min = 0,
@@ -803,7 +847,7 @@ LeftGroup:AddSlider('Sensitivity', {
 })
 Options.Sensitivity:OnChanged(function() Environment.Settings.Sensitivity = Options.Sensitivity.Value end)
 
-LeftGroup:AddDropdown('LockPart', {
+AimbotGroup:AddDropdown('LockPart', {
     Values = {'Head', 'HumanoidRootPart', 'DirectTouch'},
     Default = Environment.Settings.LockPart,
     Multi = false,
@@ -813,7 +857,7 @@ LeftGroup:AddDropdown('LockPart', {
 })
 Options.LockPart:OnChanged(function() Environment.Settings.LockPart = Options.LockPart.Value end)
 
-LeftGroup:AddDropdown('TargetMode', {
+AimbotGroup:AddDropdown('TargetMode', {
     Values = {'Players', 'Zombies'},
     Default = Environment.Settings.TargetMode,
     Multi = false,
@@ -823,7 +867,7 @@ LeftGroup:AddDropdown('TargetMode', {
 })
 Options.TargetMode:OnChanged(function() Environment.Settings.TargetMode = Options.TargetMode.Value; CancelLock() end)
 
-LeftGroup:AddLabel('Phím kích hoạt'):AddKeyPicker('TriggerKey', {
+AimbotGroup:AddLabel('Phím kích hoạt'):AddKeyPicker('TriggerKey', {
     Default = Environment.Settings.TriggerKey,
     SyncToggleState = false,
     Mode = 'Always',
@@ -834,7 +878,7 @@ LeftGroup:AddLabel('Phím kích hoạt'):AddKeyPicker('TriggerKey', {
 })
 Options.TriggerKey:OnChanged(function() Environment.Settings.TriggerKey = Options.TriggerKey.Value end)
 
-LeftGroup:AddToggle('ToggleMode', {
+AimbotGroup:AddToggle('ToggleMode', {
     Text = 'Chế độ Toggle (giữ/bấm)',
     Default = Environment.Settings.Toggle,
     Tooltip = 'Bật để nhấn một lần giữ, tắt để giữ phím',
@@ -842,7 +886,7 @@ LeftGroup:AddToggle('ToggleMode', {
 })
 Toggles.ToggleMode:OnChanged(function() Environment.Settings.Toggle = Toggles.ToggleMode.Value; if not Toggles.ToggleMode.Value then Running = false; CancelLock() end end)
 
-LeftGroup:AddToggle('InvisibleToggle', {
+AimbotGroup:AddToggle('InvisibleToggle', {
     Text = 'Bật vô hình (CFrame)',
     Default = Environment.Settings.InvisibleEnabled,
     Tooltip = 'Dịch chuyển nhân vật lên cao (hiệu ứng vô hình)',
@@ -854,7 +898,7 @@ Toggles.InvisibleToggle:OnChanged(function()
     if v then startInvisible() else stopInvisible() end
 end)
 
-LeftGroup:AddSlider('InvisibleOffset', {
+AimbotGroup:AddSlider('InvisibleOffset', {
     Text = 'Độ cao dịch chuyển (Y)',
     Default = Environment.Settings.InvisibleOffsetY,
     Min = 10,
@@ -865,7 +909,7 @@ LeftGroup:AddSlider('InvisibleOffset', {
 })
 Options.InvisibleOffset:OnChanged(function() Environment.Settings.InvisibleOffsetY = Options.InvisibleOffset.Value end)
 
-LeftGroup:AddLabel('Phím bật vô hình'):AddKeyPicker('InvisibleKey', {
+AimbotGroup:AddLabel('Phím bật vô hình'):AddKeyPicker('InvisibleKey', {
     Default = Environment.Settings.InvisibleKey,
     SyncToggleState = false,
     Mode = 'Always',
@@ -876,7 +920,7 @@ LeftGroup:AddLabel('Phím bật vô hình'):AddKeyPicker('InvisibleKey', {
 })
 Options.InvisibleKey:OnChanged(function() Environment.Settings.InvisibleKey = Options.InvisibleKey.Value end)
 
-LeftGroup:AddToggle('DistCircle', {
+AimbotGroup:AddToggle('DistCircle', {
     Text = 'Hiển thị vòng tròn khoảng cách',
     Default = Environment.Settings.DistanceCircleVisible,
     Tooltip = 'Vẽ vòng tròn xung quanh nhân vật',
@@ -884,7 +928,7 @@ LeftGroup:AddToggle('DistCircle', {
 })
 Toggles.DistCircle:OnChanged(function() Environment.Settings.DistanceCircleVisible = Toggles.DistCircle.Value end)
 
-LeftGroup:AddToggle('FOVVisible', {
+AimbotGroup:AddToggle('FOVVisible', {
     Text = 'Hiển thị vòng tròn FOV',
     Default = Environment.FOVSettings.Visible,
     Tooltip = 'Vẽ vòng tròn FOV trên màn hình',
@@ -892,7 +936,7 @@ LeftGroup:AddToggle('FOVVisible', {
 })
 Toggles.FOVVisible:OnChanged(function() Environment.FOVSettings.Visible = Toggles.FOVVisible.Value end)
 
-LeftGroup:AddToggle('ThirdPerson', {
+AimbotGroup:AddToggle('ThirdPerson', {
     Text = 'Chế độ Third Person',
     Default = Environment.Settings.ThirdPerson,
     Tooltip = 'Ngắm từ xa (cần mousemoverel)',
@@ -900,19 +944,27 @@ LeftGroup:AddToggle('ThirdPerson', {
 })
 Toggles.ThirdPerson:OnChanged(function() Environment.Settings.ThirdPerson = Toggles.ThirdPerson.Value end)
 
-LeftGroup:AddButton({
+AimbotGroup:AddToggle('SilentAim', {
+    Text = 'Silent Aim',
+    Default = Environment.Settings.SilentAim,
+    Tooltip = 'Không xoay camera, chỉ thay đổi hướng bắn',
+    Callback = function(v) Environment.Settings.SilentAim = v end
+})
+Toggles.SilentAim:OnChanged(function() Environment.Settings.SilentAim = Toggles.SilentAim.Value end)
+
+AimbotGroup:AddButton({
     Text = 'Lưu cài đặt',
     Func = function() Environment.Functions:SaveSettings() end,
     Tooltip = 'Lưu cài đặt ra file Aimbot_Settings.json'
 })
 
-LeftGroup:AddButton({
+AimbotGroup:AddButton({
     Text = 'Tải cài đặt',
     Func = function() pcall(Environment.Functions.LoadSettings, Environment.Functions) end,
     Tooltip = 'Tải lại cài đặt từ file'
 })
 
-LeftGroup:AddButton({
+AimbotGroup:AddButton({
     Text = 'Reset cài đặt',
     Func = function()
         Environment.Settings = {
@@ -923,10 +975,7 @@ LeftGroup:AddButton({
             ForceConnect = true, TargetMode = "Players", HighlightVisible = false,
             MaxDistance = 500, DistanceCircleVisible = false,
             InvisibleEnabled = false, InvisibleKey = "CapsLock", InvisibleOffsetY = 100,
-            InfiniteAmmo = false, InfiniteStamina = false,
-            playerESP = false, zombieESP = false, objectiveESP = false,
-            ammoESP = false, armorESP = false, medkitESP = false,
-            AutoHit = false, SilentAim = false
+            SilentAim = false
         }
         Environment.FOVSettings = {
             Enabled = true, Visible = true, Amount = 90,
@@ -938,103 +987,125 @@ LeftGroup:AddButton({
     Tooltip = 'Đưa về cài đặt mặc định'
 })
 
-LeftGroup:AddButton({
+AimbotGroup:AddButton({
     Text = 'Thoát (gỡ bỏ)',
     Func = function() Environment.Functions:Exit(); Library:Unload() end,
     Tooltip = 'Dừng toàn bộ và đóng UI'
 })
 
-local ESPTab = Tabs.ESP
-local ESPGroup = ESPTab:AddLeftGroupbox('ESP Settings')
-
+-- ===== ESP =====
 ESPGroup:AddToggle('PlayerESP', {
     Text = 'ESP Người chơi',
-    Default = Environment.Settings.playerESP,
+    Default = config.playerESP,
     Tooltip = 'Hiển thị highlight cho người chơi khác',
-    Callback = function(v) Environment.Settings.playerESP = v end
+    Callback = function(v) config.playerESP = v end
 })
-Toggles.PlayerESP:OnChanged(function() Environment.Settings.playerESP = Toggles.PlayerESP.Value end)
+Toggles.PlayerESP:OnChanged(function() config.playerESP = Toggles.PlayerESP.Value end)
 
 ESPGroup:AddToggle('ZombieESP', {
     Text = 'ESP Zombie',
-    Default = Environment.Settings.zombieESP,
+    Default = config.zombieESP,
     Tooltip = 'Hiển thị highlight cho zombie',
-    Callback = function(v) Environment.Settings.zombieESP = v end
+    Callback = function(v) config.zombieESP = v end
 })
-Toggles.ZombieESP:OnChanged(function() Environment.Settings.zombieESP = Toggles.ZombieESP.Value end)
+Toggles.ZombieESP:OnChanged(function() config.zombieESP = Toggles.ZombieESP.Value end)
 
 ESPGroup:AddToggle('ObjectiveESP', {
     Text = 'ESP Nhiệm vụ',
-    Default = Environment.Settings.objectiveESP,
+    Default = config.objectiveESP,
     Tooltip = 'Hiển thị highlight cho mission và phone',
-    Callback = function(v) Environment.Settings.objectiveESP = v end
+    Callback = function(v) config.objectiveESP = v end
 })
-Toggles.ObjectiveESP:OnChanged(function() Environment.Settings.objectiveESP = Toggles.ObjectiveESP.Value end)
+Toggles.ObjectiveESP:OnChanged(function() config.objectiveESP = Toggles.ObjectiveESP.Value end)
 
 ESPGroup:AddToggle('AmmoESP', {
     Text = 'ESP Đạn',
-    Default = Environment.Settings.ammoESP,
+    Default = config.ammoESP,
     Tooltip = 'Hiển thị highlight cho pickup đạn',
-    Callback = function(v) Environment.Settings.ammoESP = v end
+    Callback = function(v) config.ammoESP = v end
 })
-Toggles.AmmoESP:OnChanged(function() Environment.Settings.ammoESP = Toggles.AmmoESP.Value end)
+Toggles.AmmoESP:OnChanged(function() config.ammoESP = Toggles.AmmoESP.Value end)
 
 ESPGroup:AddToggle('ArmorESP', {
     Text = 'ESP Giáp',
-    Default = Environment.Settings.armorESP,
+    Default = config.armorESP,
     Tooltip = 'Hiển thị highlight cho pickup giáp',
-    Callback = function(v) Environment.Settings.armorESP = v end
+    Callback = function(v) config.armorESP = v end
 })
-Toggles.ArmorESP:OnChanged(function() Environment.Settings.armorESP = Toggles.ArmorESP.Value end)
+Toggles.ArmorESP:OnChanged(function() config.armorESP = Toggles.ArmorESP.Value end)
 
 ESPGroup:AddToggle('MedkitESP', {
     Text = 'ESP Medkit',
-    Default = Environment.Settings.medkitESP,
+    Default = config.medkitESP,
     Tooltip = 'Hiển thị highlight cho pickup medkit',
-    Callback = function(v) Environment.Settings.medkitESP = v end
+    Callback = function(v) config.medkitESP = v end
 })
-Toggles.MedkitESP:OnChanged(function() Environment.Settings.medkitESP = Toggles.MedkitESP.Value end)
+Toggles.MedkitESP:OnChanged(function() config.medkitESP = Toggles.MedkitESP.Value end)
 
-local CombatTab = Tabs.Combat
-local CombatGroup = CombatTab:AddLeftGroupbox('Tự động tấn công')
+EnvGroup:AddToggle('Fullbright', {
+    Text = 'Fullbright',
+    Default = config.fullbright,
+    Tooltip = 'Tăng độ sáng toàn bộ',
+    Callback = function(v) config.fullbright = v end
+})
+Toggles.Fullbright:OnChanged(function() config.fullbright = Toggles.Fullbright.Value end)
 
-CombatGroup:AddToggle('AutoHitToggle', {
-    Text = 'Bật Auto Hit',
-    Default = Environment.Settings.AutoHit,
+EnvGroup:AddToggle('NoFog', {
+    Text = 'No Fog',
+    Default = config.nofog,
+    Tooltip = 'Xóa sương mù',
+    Callback = function(v) config.nofog = v end
+})
+Toggles.NoFog:OnChanged(function() config.nofog = Toggles.NoFog.Value end)
+
+-- ===== COMBAT =====
+CombatGroup:AddToggle('AutoHit', {
+    Text = 'Auto Hit',
+    Default = config.autoHit,
     Tooltip = 'Tự động gửi RegisterHit đến tất cả mục tiêu',
-    Callback = function(v) Environment.Settings.AutoHit = v end
+    Callback = function(v) config.autoHit = v end
 })
-Toggles.AutoHitToggle:OnChanged(function() Environment.Settings.AutoHit = Toggles.AutoHitToggle.Value end)
+Toggles.AutoHit:OnChanged(function() config.autoHit = Toggles.AutoHit.Value end)
 
-CombatGroup:AddToggle('SilentAim', {
-    Text = 'Silent Aim',
-    Default = Environment.Settings.SilentAim,
-    Tooltip = 'Bật chế độ aim không xoay camera (chỉ thay đổi hướng bắn)',
-    Callback = function(v) Environment.Settings.SilentAim = v end
+CombatGroup:AddToggle('HitboxExpander', {
+    Text = 'Hitbox Expander',
+    Default = config.hitboxExpander,
+    Tooltip = 'Mở rộng hitbox của zombie',
+    Callback = function(v) config.hitboxExpander = v end
 })
-Toggles.SilentAim:OnChanged(function() Environment.Settings.SilentAim = Toggles.SilentAim.Value end)
+Toggles.HitboxExpander:OnChanged(function() config.hitboxExpander = Toggles.HitboxExpander.Value end)
 
-local MiscTab = Tabs.Misc
-local MiscGroup = MiscTab:AddLeftGroupbox('Tiện ích')
+CombatGroup:AddSlider('HitboxSize', {
+    Text = 'Kích thước hitbox',
+    Default = config.hitboxSize,
+    Min = 0,
+    Max = 20,
+    Rounding = 1,
+    Compact = false,
+    Tooltip = 'Kích thước hitbox khi mở rộng',
+    Callback = function(v) config.hitboxSize = v end
+})
+Options.HitboxSize:OnChanged(function() config.hitboxSize = Options.HitboxSize.Value end)
 
-MiscGroup:AddToggle('InfiniteAmmo', {
+-- ===== UTILITY =====
+UtilityGroup:AddToggle('InfiniteAmmo', {
     Text = 'Đạn vô hạn',
-    Default = Environment.Settings.InfiniteAmmo,
+    Default = config.infiniteAmmo,
     Tooltip = 'Vô hạn đạn cho tất cả vũ khí',
-    Callback = function(v) Environment.Settings.InfiniteAmmo = v end
+    Callback = function(v) config.infiniteAmmo = v end
 })
-Toggles.InfiniteAmmo:OnChanged(function() Environment.Settings.InfiniteAmmo = Toggles.InfiniteAmmo.Value end)
+Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.InfiniteAmmo.Value end)
 
-MiscGroup:AddToggle('InfiniteStamina', {
+UtilityGroup:AddToggle('InfiniteStamina', {
     Text = 'Thể lực vô hạn',
-    Default = Environment.Settings.InfiniteStamina,
+    Default = config.infiniteStamina,
     Tooltip = 'Giữ thể lực luôn đầy',
-    Callback = function(v) Environment.Settings.InfiniteStamina = v end
+    Callback = function(v) config.infiniteStamina = v end
 })
-Toggles.InfiniteStamina:OnChanged(function() Environment.Settings.InfiniteStamina = Toggles.InfiniteStamina.Value end)
+Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
 
-local UIGroup = Tabs.UI:AddLeftGroupbox('Giao diện')
-UIGroup:AddButton('Unload (thoát)', function() Environment.Functions:Exit(); Library:Unload() end)
+-- ===== UI SETTINGS =====
+UIGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
 UIGroup:AddLabel('Phím mở menu'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
 Library.ToggleKeybind = Options.MenuKeybind
 
@@ -1044,9 +1115,14 @@ SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
 ThemeManager:SetFolder('tokaihub')
 SaveManager:SetFolder('tokaihub/configs')
-SaveManager:BuildConfigSection(Tabs.UI)
-ThemeManager:ApplyToTab(Tabs.UI)
+SaveManager:BuildConfigSection(Tabs['UI Settings'])
+ThemeManager:ApplyToTab(Tabs['UI Settings'])
 SaveManager:LoadAutoloadConfig()
+
+Library:OnUnload(function()
+    Environment.Functions:Exit()
+    Library.Unloaded = true
+end)
 
 local AltDown = false
 UserInputService.InputBegan:Connect(function(input, gpe)
@@ -1072,12 +1148,13 @@ UserInputService.InputEnded:Connect(function(input, gpe)
     end
 end)
 
+-- ===== BACKGROUND LOOPS =====
 local originalAmmoValues = {}
 local originalStaminaValue = nil
 
 task.spawn(function()
     while task.wait(0.1) do
-        local char = LocalPlayer.Character
+        local char = lp.Character
         if char then
             local hum = char:FindFirstChild("Humanoid")
             if hum then
@@ -1085,7 +1162,7 @@ task.spawn(function()
                 if values then
                     local stamina = values:FindFirstChild("Stamina")
                     if stamina and stamina:IsA("NumberValue") then
-                        if Environment.Settings.InfiniteStamina then
+                        if config.infiniteStamina then
                             if originalStaminaValue == nil then
                                 originalStaminaValue = stamina.Value
                             end
@@ -1099,7 +1176,7 @@ task.spawn(function()
                     end
                 end
             end
-            local backpack = LocalPlayer:FindFirstChild("Backpack")
+            local backpack = lp:FindFirstChild("Backpack")
             local items = {}
             for _, v in ipairs(char:GetChildren()) do table.insert(items, v) end
             if backpack then
@@ -1113,7 +1190,7 @@ task.spawn(function()
                         if essentials then
                             local ammo = essentials:FindFirstChild("Ammo")
                             if ammo and ammo:IsA("NumberValue") then
-                                if Environment.Settings.InfiniteAmmo then
+                                if config.infiniteAmmo then
                                     if originalAmmoValues[item] == nil then
                                         originalAmmoValues[item] = ammo.Value
                                     end
@@ -1169,13 +1246,13 @@ task.spawn(function()
         for obj, _ in pairs(highlightObjects) do
             if obj and obj.Parent then
                 local name = obj.Name
-                if (name:sub(1, 8) == "mission_" or name == "scenery_phone_ringing") and not Environment.Settings.objectiveESP then
+                if (name:sub(1, 8) == "mission_" or name == "scenery_phone_ringing") and not config.objectiveESP then
                     RemoveHighlight(obj)
-                elseif name == "pickup_ammo" and not Environment.Settings.ammoESP then
+                elseif name == "pickup_ammo" and not config.ammoESP then
                     RemoveHighlight(obj)
-                elseif name == "pickup_armor" and not Environment.Settings.armorESP then
+                elseif name == "pickup_armor" and not config.armorESP then
                     RemoveHighlight(obj)
-                elseif name == "pickup_medkit" and not Environment.Settings.medkitESP then
+                elseif name == "pickup_medkit" and not config.medkitESP then
                     RemoveHighlight(obj)
                 end
             end
@@ -1183,23 +1260,35 @@ task.spawn(function()
         for obj, _ in pairs(highlightObjects) do
             if obj and obj.Parent and obj:FindFirstChild("Humanoid") then
                 local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
-                if isPlayer and not Environment.Settings.playerESP then
+                if isPlayer and not config.playerESP then
                     RemoveHighlight(obj)
-                elseif not isPlayer and not Environment.Settings.zombieESP then
+                elseif not isPlayer and not config.zombieESP then
                     RemoveHighlight(obj)
                 end
             end
         end
-        if Environment.Settings.playerESP then
+        if config.playerESP then
             for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") then
+                if player ~= lp and player.Character and player.Character:FindFirstChild("Humanoid") then
                     if not player.Character:FindFirstChild("TokaiHighlight") then
                         AddHighlight(player.Character, Color3.fromRGB(0, 255, 255), 0.3)
                     end
                 end
             end
         end
-        local game_workspace = workspace:FindFirstChild("Game")
+        if config.zombieESP then
+            local npcContainer = Workspace.Game and Workspace.Game.Current and Workspace.Game.Current.Spawned and Workspace.Game.Current.Spawned.NPCs
+            if npcContainer and npcContainer:FindFirstChild("enemies") then
+                for _, zombie in ipairs(npcContainer.enemies:GetChildren()) do
+                    if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+                        if not zombie:FindFirstChild("TokaiHighlight") then
+                            AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
+                        end
+                    end
+                end
+            end
+        end
+        local game_workspace = Workspace:FindFirstChild("Game")
         if game_workspace then
             local current = game_workspace:FindFirstChild("Current")
             if current then
@@ -1217,16 +1306,16 @@ task.spawn(function()
                             if isMission or isPhone or isAmmo or isArmor or isMedkit then
                                 local shouldHighlight = false
                                 local color = nil
-                                if (isMission or isPhone) and Environment.Settings.objectiveESP then
+                                if (isMission or isPhone) and config.objectiveESP then
                                     shouldHighlight = true
                                     color = isMission and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 255, 255)
-                                elseif isAmmo and Environment.Settings.ammoESP then
+                                elseif isAmmo and config.ammoESP then
                                     shouldHighlight = true
                                     color = Color3.fromRGB(255, 255, 0)
-                                elseif isArmor and Environment.Settings.armorESP then
+                                elseif isArmor and config.armorESP then
                                     shouldHighlight = true
                                     color = Color3.fromRGB(0, 0, 255)
-                                elseif isMedkit and Environment.Settings.medkitESP then
+                                elseif isMedkit and config.medkitESP then
                                     shouldHighlight = true
                                     color = Color3.fromRGB(255, 0, 0)
                                 end
@@ -1244,54 +1333,118 @@ task.spawn(function()
     end
 end)
 
+local expandedHitboxes = {}
+
+local function applyHitboxExpander(part)
+    if not part or not part:IsA("BasePart") then return end
+    if not config.hitboxExpander then return end
+    if part.Name ~= "Head" then return end
+    local model = part.Parent
+    if model and model:IsA("Model") and model:FindFirstChildWhichIsA("Humanoid") then
+        if Players:GetPlayerFromCharacter(model) == nil then
+            pcall(function()
+                if not expandedHitboxes[part] then
+                    part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                    part.CanCollide = false
+                    part.Transparency = 0.7
+                    expandedHitboxes[part] = true
+                else
+                    part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                    part.Transparency = 0.7
+                end
+            end)
+        end
+    end
+end
+
+local function UpdateHitboxExpander()
+    if config.hitboxExpander then
+        for _, desc in ipairs(Workspace:GetDescendants()) do
+            applyHitboxExpander(desc)
+        end
+    else
+        for part, _ in pairs(expandedHitboxes) do
+            if part and part.Parent then
+                part.Size = Vector3.new(1, 1, 1)
+                part.Transparency = 0
+            end
+            expandedHitboxes[part] = nil
+        end
+        expandedHitboxes = {}
+    end
+end
+
+Workspace.DescendantAdded:Connect(function(desc)
+    if config.hitboxExpander and desc:IsA("BasePart") then
+        task.wait(0.05)
+        applyHitboxExpander(desc)
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
+    if config.fullbright then
+        Lighting.Brightness = 3
+        Lighting.GlobalShadows = false
+    else
+        Lighting.Brightness = originalBrightness
+        Lighting.GlobalShadows = true
+    end
+    UpdateHitboxExpander()
+end)
+
+local function findRegisterHitEvent()
+    local char = lp.Character
+    if not char then return nil end
+    for _, child in ipairs(char:GetChildren()) do
+        local serverEvents = child:FindFirstChild("ServerEvents")
+        if serverEvents then
+            local rh = serverEvents:FindFirstChild("RegisterHit")
+            if rh and rh:IsA("RemoteEvent") then
+                return rh
+            end
+        end
+    end
+    return nil
+end
+
+local function getTargets()
+    local targets = {}
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj ~= lp.Character then
+            local part = obj:FindFirstChild("Torso") or obj:FindFirstChild("HumanoidRootPart")
+            if part then
+                table.insert(targets, {model = obj, part = part})
+            end
+        end
+    end
+    if #targets == 0 and typeof(getnilinstances) == "function" then
+        for _, obj in ipairs(getnilinstances()) do
+            if obj:IsA("Model") then
+                local part = obj:FindFirstChild("Torso") or obj:FindFirstChild("HumanoidRootPart")
+                if part then
+                    table.insert(targets, {model = obj, part = part})
+                end
+            end
+        end
+    end
+    return targets
+end
+
 task.spawn(function()
     while task.wait(0.2) do
-        if Environment.Settings.AutoHit then
-            local char = LocalPlayer.Character
-            if not char then continue end
-            local registerHit = nil
-            for _, child in ipairs(char:GetChildren()) do
-                local serverEvents = child:FindFirstChild("ServerEvents")
-                if serverEvents then
-                    local rh = serverEvents:FindFirstChild("RegisterHit")
-                    if rh and rh:IsA("RemoteEvent") then
-                        registerHit = rh
-                        break
+        if config.autoHit then
+            local registerHit = findRegisterHitEvent()
+            if registerHit then
+                local targets = getTargets()
+                if #targets > 0 then
+                    local hitData = {}
+                    for _, t in ipairs(targets) do
+                        table.insert(hitData, {amount = 1, target = t.model, is_friendly = false, part = t.part})
                     end
-                end
-            end
-            if not registerHit then continue end
-            local targets = {}
-            for _, obj in ipairs(workspace:GetDescendants()) do
-                if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj ~= char then
-                    local part = obj:FindFirstChild("Torso") or obj:FindFirstChild("HumanoidRootPart")
-                    if part then
-                        table.insert(targets, {model = obj, part = part})
+                    if #hitData > 0 then
+                        registerHit:FireServer(hitData, {})
                     end
-                end
-            end
-            if #targets == 0 and typeof(getnilinstances) == "function" then
-                for _, obj in ipairs(getnilinstances()) do
-                    if obj:IsA("Model") then
-                        local part = obj:FindFirstChild("Torso") or obj:FindFirstChild("HumanoidRootPart")
-                        if part then
-                            table.insert(targets, {model = obj, part = part})
-                        end
-                    end
-                end
-            end
-            if #targets > 0 then
-                local hitData = {}
-                for _, t in ipairs(targets) do
-                    table.insert(hitData, {
-                        amount = 1,
-                        target = t.model,
-                        is_friendly = false,
-                        part = t.part
-                    })
-                end
-                if #hitData > 0 then
-                    registerHit:FireServer(hitData, {})
                 end
             end
         end
