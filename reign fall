@@ -75,71 +75,35 @@ local Tabs = {
 }
 
 local AimbotGroup = Tabs.Aimbot:AddLeftGroupbox('Aimbot Settings')
+local AimbotGroup2 = Tabs.Aimbot:AddRightGroupbox('Advanced')
 local ESPGroup = Tabs.ESP:AddLeftGroupbox('ESP Elements')
 local EnvGroup = Tabs.ESP:AddRightGroupbox('Environment')
 local CombatGroup = Tabs.Combat:AddLeftGroupbox('Combat Features')
 local UtilityGroup = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
 local UIGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 
--- ===== AIMBOT CORE =====
-local Environment = getgenv().Aimbot or {}
-getgenv().Aimbot = Environment
+-- ===== AIMBOT CORE VARIABLES =====
+local RequiredDistance, Typing, Running, Animation = 2000, false, false, nil
+local ServiceConnections = {}
+local LockedTarget = nil
+local FOVCircle = Drawing.new("Circle")
+local StatusCircle = Drawing.new("Circle")
+StatusCircle.Radius = 15
+StatusCircle.Thickness = 2
+StatusCircle.Filled = true
+StatusCircle.NumSides = 60
+StatusCircle.Transparency = 0.6
+StatusCircle.Visible = true
+local StatusText = Drawing.new("Text")
+StatusText.Size = 14
+StatusText.Center = true
+StatusText.Outline = false
+StatusText.Color = Color3.fromRGB(0,0,0)
+StatusText.Transparency = 0.9
+StatusText.Visible = true
 
-Environment.Settings = {
-    Enabled = true,
-    TeamCheck = false,
-    AliveCheck = true,
-    WallCheck = false,
-    Sensitivity = 0,
-    ThirdPerson = false,
-    ThirdPersonSensitivity = 3,
-    TriggerKey = "MouseButton2",
-    Toggle = false,
-    LockPart = "Head",
-    SmoothAim = false,
-    PredictionEnabled = false,
-    Prediction = 0.14,
-    TargetMode = "Players",
-    ForceConnect = true,
-    HighlightVisible = false,
-    MaxDistance = 500,
-    DistanceCircleVisible = false,
-    InvisibleEnabled = false,
-    InvisibleKey = "CapsLock",
-    InvisibleOffsetY = 100,
-    SilentAim = false
-}
-
-Environment.IgnoreList = {}
-Environment.FOVSettings = {
-    Enabled = true,
-    Visible = true,
-    Amount = 90,
-    Color = Color3.fromRGB(255,255,255),
-    LockedColor = Color3.fromRGB(255,70,70),
-    Transparency = 0.5,
-    Sides = 60,
-    Thickness = 1,
-    Filled = false
-}
-
-Environment.FOVCircle = Drawing.new("Circle")
-Environment.StatusCircle = Drawing.new("Circle")
-Environment.StatusCircle.Radius = 15
-Environment.StatusCircle.Thickness = 2
-Environment.StatusCircle.Filled = true
-Environment.StatusCircle.NumSides = 60
-Environment.StatusCircle.Transparency = 0.6
-Environment.StatusCircle.Visible = true
-Environment.StatusText = Drawing.new("Text")
-Environment.StatusText.Size = 14
-Environment.StatusText.Center = true
-Environment.StatusText.Outline = false
-Environment.StatusText.Color = Color3.fromRGB(0,0,0)
-Environment.StatusText.Transparency = 0.9
-Environment.StatusText.Visible = true
-
-local RequiredDistance, Typing, Running, Animation, ServiceConnections = 2000, false, false, nil, {}
+local HighlightInstance = nil
+local DistancePart, DistanceAttachments, DistanceBeams = nil, nil, nil
 local cachedNPCFolder, cachedNPCFolderTime = nil, 0
 local NPC_FOLDER_CACHE_INTERVAL = 2
 
@@ -155,9 +119,7 @@ local bodyParts = {
     "RightUpperLeg", "RightLowerLeg", "RightFoot"
 }
 
-local HighlightInstance = nil
-local DistancePart, DistanceAttachments, DistanceBeams = nil, nil, nil
-
+-- ===== HELPER FUNCTIONS =====
 local function EnsureDistanceRing(segments)
     segments = segments or 48
     if DistancePart and DistanceAttachments and DistanceBeams and #DistanceAttachments == segments and #DistanceBeams == segments then return end
@@ -204,18 +166,18 @@ local function GetLocalRoot()
 end
 
 local function GetLockedCharacter()
-    if Environment.Locked then
-        if Environment.Settings.TargetMode == "Zombies" then
-            return Environment.Locked
+    if LockedTarget then
+        if config.targetMode == "Zombies" then
+            return LockedTarget
         else
-            return Environment.Locked.Character
+            return LockedTarget.Character
         end
     end
     return nil
 end
 
 local function SetHighlight(char)
-    if not Environment.Settings.HighlightVisible then
+    if not config.highlightVisible then
         if HighlightInstance then HighlightInstance.Enabled = false end
         return
     end
@@ -235,20 +197,20 @@ local function SetHighlight(char)
     end
     if HighlightInstance then
         HighlightInstance.Adornee = char
-        HighlightInstance.OutlineColor = Environment.FOVSettings.LockedColor
+        HighlightInstance.OutlineColor = Color3.fromRGB(255,70,70)
         HighlightInstance.Enabled = true
     end
 end
 
 local function CancelLock()
-    Environment.Locked = nil
+    LockedTarget = nil
     if Animation then Animation:Cancel() end
-    Environment.FOVCircle.Color = Environment.FOVSettings.Color
+    FOVCircle.Color = Color3.fromRGB(255,255,255)
     SetHighlight(nil)
 end
 
 local function PredictPosition(char, mul)
-    if not Environment.Settings.PredictionEnabled then return nil end
+    if not config.predictionEnabled then return nil end
     local root = char:FindFirstChild("HumanoidRootPart")
     if root and type(mul)=="number" and mul>0 then
         local vel = root.Velocity
@@ -263,11 +225,11 @@ local function GetClosestPartPos(char)
     local closestPos = nil
     local rootPart = char:FindFirstChild("HumanoidRootPart")
     if not rootPart then return nil end
-    local predRoot = PredictPosition(char, Environment.Settings.Prediction)
+    local predRoot = PredictPosition(char, config.prediction)
     for _, partName in ipairs(bodyParts) do
         local part = char:FindFirstChild(partName)
         if part then
-            if Environment.Settings.WallCheck and #(Camera:GetPartsObscuringTarget({part.Position}, char:GetDescendants())) > 0 then continue end
+            if config.wallCheck and #(Camera:GetPartsObscuringTarget({part.Position}, char:GetDescendants())) > 0 then continue end
             local pos = part.Position
             if predRoot then
                 local offset = pos - rootPart.Position
@@ -287,78 +249,78 @@ local function GetClosestPartPos(char)
 end
 
 local function GetClosestPlayer()
-    if not Environment.Locked then
-        RequiredDistance = (Environment.FOVSettings.Enabled and Environment.FOVSettings.Amount or 2000)
+    if not LockedTarget then
+        RequiredDistance = (config.fovAmount or 2000)
         local localRoot = GetLocalRoot()
         local localPos = localRoot and localRoot.Position
         for _, v in next, Players:GetPlayers() do
-            if v ~= lp and not Environment.IgnoreList[v] then
+            if v ~= lp then
                 if v.Character and v.Character:FindFirstChildOfClass("Humanoid") then
-                    if Environment.Settings.TeamCheck and v.Team == lp.Team then continue end
-                    if Environment.Settings.AliveCheck and v.Character:FindFirstChildOfClass("Humanoid").Health <= 0 then continue end
+                    if config.teamCheck and v.Team == lp.Team then continue end
+                    if v.Character:FindFirstChildOfClass("Humanoid").Health <= 0 then continue end
                     if localPos then
                         local targetRoot = v.Character:FindFirstChild("HumanoidRootPart")
-                        if targetRoot and type(Environment.Settings.MaxDistance) == "number" and Environment.Settings.MaxDistance > 0 then
-                            if (targetRoot.Position - localPos).Magnitude > Environment.Settings.MaxDistance then continue end
+                        if targetRoot and config.maxDistance > 0 then
+                            if (targetRoot.Position - localPos).Magnitude > config.maxDistance then continue end
                         end
                     end
                     local aimPos
-                    if Environment.Settings.LockPart == "DirectTouch" then
+                    if config.lockPart == "DirectTouch" then
                         aimPos = GetClosestPartPos(v.Character)
                         if not aimPos then continue end
                     else
-                        if not v.Character:FindFirstChild(Environment.Settings.LockPart) then continue end
-                        local part = v.Character[Environment.Settings.LockPart]
+                        if not v.Character:FindFirstChild(config.lockPart) then continue end
+                        local part = v.Character[config.lockPart]
                         aimPos = part.Position
                         local root = v.Character:FindFirstChild("HumanoidRootPart")
-                        local predRoot = PredictPosition(v.Character, Environment.Settings.Prediction)
+                        local predRoot = PredictPosition(v.Character, config.prediction)
                         if root and predRoot then
                             local offset = aimPos - root.Position
                             aimPos = predRoot + offset
                         end
-                        if Environment.Settings.WallCheck and #(Camera:GetPartsObscuringTarget({aimPos}, v.Character:GetDescendants())) > 0 then continue end
+                        if config.wallCheck and #(Camera:GetPartsObscuringTarget({aimPos}, v.Character:GetDescendants())) > 0 then continue end
                     end
                     local Vector, OnScreen = Camera:WorldToViewportPoint(aimPos)
                     local Distance = (Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y) - Vector2.new(Vector.X, Vector.Y)).Magnitude
                     if Distance < RequiredDistance and OnScreen then
                         RequiredDistance = Distance
-                        Environment.Locked = v
+                        LockedTarget = v
                     end
                 end
             end
         end
-    elseif Environment.Locked then
-        if not Environment.Locked.Character or not Environment.Locked.Character:FindFirstChildOfClass("Humanoid") then
+    elseif LockedTarget then
+        if not LockedTarget.Character or not LockedTarget.Character:FindFirstChildOfClass("Humanoid") then
             CancelLock()
             return
         end
-        if not Environment.Settings.ForceConnect then
+        if not config.forceConnect then
             local localRoot = GetLocalRoot()
-            local targetRoot = Environment.Locked.Character:FindFirstChild("HumanoidRootPart")
-            if localRoot and targetRoot and type(Environment.Settings.MaxDistance) == "number" and Environment.Settings.MaxDistance > 0 then
-                if (targetRoot.Position - localRoot.Position).Magnitude > Environment.Settings.MaxDistance then
+            local targetRoot = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
+            if localRoot and targetRoot and config.maxDistance > 0 then
+                if (targetRoot.Position - localRoot.Position).Magnitude > config.maxDistance then
                     CancelLock()
                     return
                 end
             end
         end
-        if Environment.Settings.ForceConnect then
-            if Environment.Settings.AliveCheck and Environment.Locked.Character:FindFirstChildOfClass("Humanoid").Health <= 0 then
+        if config.forceConnect then
+            if LockedTarget.Character:FindFirstChildOfClass("Humanoid").Health <= 0 then
                 CancelLock()
                 return
             end
             return
         end
         local checkPos
-        if Environment.Settings.LockPart == "DirectTouch" then
-            checkPos = GetClosestPartPos(Environment.Locked.Character)
+        if config.lockPart == "DirectTouch" then
+            checkPos = GetClosestPartPos(LockedTarget.Character)
             if not checkPos then CancelLock(); return end
         else
-            local part = Environment.Locked.Character:FindFirstChild(Environment.Settings.LockPart)
+            local part = LockedTarget.Character:FindFirstChild(config.lockPart)
             if not part then CancelLock(); return end
             checkPos = part.Position
-            local root = Environment.Locked.Character:FindFirstChild("HumanoidRootPart")
-            local predRoot = PredictPosition(Environment.Locked.Character, Environment.Settings.Prediction)
+            local root = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
+            local predRoot = PredictPosition(LockedTarget.Character, config.prediction)
             if root and predRoot then
                 local offset = checkPos - root.Position
                 checkPos = predRoot + offset
@@ -371,8 +333,8 @@ local function GetClosestPlayer()
 end
 
 local function GetClosestZombie()
-    if not Environment.Locked then
-        RequiredDistance = (Environment.FOVSettings.Enabled and Environment.FOVSettings.Amount or 2000)
+    if not LockedTarget then
+        RequiredDistance = (config.fovAmount or 2000)
         local localRoot = GetLocalRoot()
         local localPos = localRoot and localRoot.Position
         local now = tick()
@@ -386,79 +348,73 @@ local function GetClosestZombie()
             return
         end
         local mouseLoc = UserInputService:GetMouseLocation()
-        local maxDist = type(Environment.Settings.MaxDistance) == "number" and Environment.Settings.MaxDistance > 0 and Environment.Settings.MaxDistance or nil
-        local predEnabled = Environment.Settings.PredictionEnabled
-        local predValue = Environment.Settings.Prediction
-        local lockPartName = Environment.Settings.LockPart
-        local aliveCheck = Environment.Settings.AliveCheck
-        local wallCheck = Environment.Settings.WallCheck
+        local maxDist = config.maxDistance > 0 and config.maxDistance or nil
         for _, folder in ipairs(cachedNPCFolder:GetChildren()) do
             if folder.Name == "friendlies" then continue end
             for _, zombie in ipairs(folder:GetChildren()) do
                 if not zombie:IsA("Model") then continue end
                 if not zombie:FindFirstChild("HumanoidRootPart") then continue end
                 if not zombie:FindFirstChildOfClass("Humanoid") then continue end
-                if Environment.IgnoreList[zombie] then continue end
-                if aliveCheck and zombie:FindFirstChildOfClass("Humanoid").Health <= 0 then continue end
+                if zombie:FindFirstChildOfClass("Humanoid").Health <= 0 then continue end
                 local targetRoot = zombie:FindFirstChild("HumanoidRootPart")
                 if maxDist and localPos then
                     if (targetRoot.Position - localPos).Magnitude > maxDist then continue end
                 end
                 local aimPos
-                if lockPartName == "DirectTouch" then
+                if config.lockPart == "DirectTouch" then
                     aimPos = GetClosestPartPos(zombie)
                     if not aimPos then continue end
                 else
-                    local part = zombie:FindFirstChild(lockPartName)
+                    local part = zombie:FindFirstChild(config.lockPart)
                     if not part then continue end
                     aimPos = part.Position
-                    if predEnabled then
+                    if config.predictionEnabled then
                         local root = zombie:FindFirstChild("HumanoidRootPart")
-                        local predRoot = PredictPosition(zombie, predValue)
+                        local predRoot = PredictPosition(zombie, config.prediction)
                         if root and predRoot then
                             aimPos = predRoot + (aimPos - root.Position)
                         end
                     end
-                    if wallCheck and #(Camera:GetPartsObscuringTarget({aimPos}, zombie:GetDescendants())) > 0 then continue end
+                    if config.wallCheck and #(Camera:GetPartsObscuringTarget({aimPos}, zombie:GetDescendants())) > 0 then continue end
                 end
                 local Vector, OnScreen = Camera:WorldToViewportPoint(aimPos)
                 local Distance = (mouseLoc - Vector2.new(Vector.X, Vector.Y)).Magnitude
                 if Distance < RequiredDistance and OnScreen then
                     RequiredDistance = Distance
-                    Environment.Locked = zombie
+                    LockedTarget = zombie
                 end
             end
         end
-    elseif Environment.Locked then
-        if not Environment.Locked.Parent or not Environment.Locked:FindFirstChildOfClass("Humanoid") then
+    elseif LockedTarget then
+        if not LockedTarget.Parent or not LockedTarget:FindFirstChildOfClass("Humanoid") then
             CancelLock()
             return
         end
-        if Environment.Settings.AliveCheck and Environment.Locked:FindFirstChildOfClass("Humanoid").Health <= 0 then
+        if LockedTarget:FindFirstChildOfClass("Humanoid").Health <= 0 then
             CancelLock()
             return
         end
-        if not Environment.Settings.ForceConnect then
+        if not config.forceConnect then
             local localRoot = GetLocalRoot()
-            local targetRoot = Environment.Locked:FindFirstChild("HumanoidRootPart")
-            if localRoot and targetRoot and type(Environment.Settings.MaxDistance) == "number" and Environment.Settings.MaxDistance > 0 then
-                if (targetRoot.Position - localRoot.Position).Magnitude > Environment.Settings.MaxDistance then
+            local targetRoot = LockedTarget:FindFirstChild("HumanoidRootPart")
+            if localRoot and targetRoot and config.maxDistance > 0 then
+                if (targetRoot.Position - localRoot.Position).Magnitude > config.maxDistance then
                     CancelLock()
                     return
                 end
             end
         end
-        if Environment.Settings.ForceConnect then return end
+        if config.forceConnect then return end
         local checkPos
-        if Environment.Settings.LockPart == "DirectTouch" then
-            checkPos = GetClosestPartPos(Environment.Locked)
+        if config.lockPart == "DirectTouch" then
+            checkPos = GetClosestPartPos(LockedTarget)
             if not checkPos then CancelLock(); return end
         else
-            local part = Environment.Locked:FindFirstChild(Environment.Settings.LockPart)
+            local part = LockedTarget:FindFirstChild(config.lockPart)
             if not part then CancelLock(); return end
             checkPos = part.Position
-            local root = Environment.Locked:FindFirstChild("HumanoidRootPart")
-            local predRoot = PredictPosition(Environment.Locked, Environment.Settings.Prediction)
+            local root = LockedTarget:FindFirstChild("HumanoidRootPart")
+            local predRoot = PredictPosition(LockedTarget, config.prediction)
             if root and predRoot then
                 local offset = checkPos - root.Position
                 checkPos = predRoot + offset
@@ -470,6 +426,7 @@ local function GetClosestZombie()
     end
 end
 
+-- ===== INVISIBLE FUNCTIONS =====
 local function setupInvisibleCharacter()
     invisibleChar = lp.Character or lp.CharacterAdded:Wait()
     invisibleHumanoid = invisibleChar:WaitForChild("Humanoid")
@@ -496,7 +453,7 @@ local function startInvisible()
             pcall(function()
                 local cf = invisibleRootPart.CFrame
                 local camOffset = invisibleHumanoid.CameraOffset
-                local offset = Environment.Settings.InvisibleOffsetY or 100
+                local offset = config.invisibleOffsetY or 100
                 local hidden = cf * CFrame.new(0, offset, 0)
                 invisibleRootPart.CFrame = hidden
                 invisibleHumanoid.CameraOffset = hidden:ToObjectSpace(CFrame.new(cf.Position)).Position
@@ -531,92 +488,93 @@ local function stopInvisible()
     end)
 end
 
+-- ===== LOAD AIMBOT LOOP =====
 local function LoadAimbot()
     ServiceConnections.RenderSteppedConnection = RunService.RenderStepped:Connect(function()
-        if Environment.FOVSettings.Enabled and Environment.Settings.Enabled then
-            Environment.FOVCircle.Radius = Environment.FOVSettings.Amount
-            Environment.FOVCircle.Thickness = Environment.FOVSettings.Thickness
-            Environment.FOVCircle.Filled = Environment.FOVSettings.Filled
-            Environment.FOVCircle.NumSides = Environment.FOVSettings.Sides
-            Environment.FOVCircle.Color = Environment.FOVSettings.Color
-            Environment.FOVCircle.Transparency = Environment.FOVSettings.Transparency
-            Environment.FOVCircle.Visible = Environment.FOVSettings.Visible
-            Environment.FOVCircle.Position = Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y)
+        if config.aimbotEnabled then
+            FOVCircle.Radius = config.fovAmount
+            FOVCircle.Thickness = 1
+            FOVCircle.Filled = false
+            FOVCircle.NumSides = 60
+            FOVCircle.Color = config.fovVisible and Color3.fromRGB(255,255,255) or Color3.fromRGB(255,255,255,0)
+            FOVCircle.Transparency = 0.5
+            FOVCircle.Visible = config.fovVisible
+            FOVCircle.Position = Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y)
         else
-            Environment.FOVCircle.Visible = false
+            FOVCircle.Visible = false
         end
-        if Environment.StatusCircle then
+        if StatusCircle then
             local cameraView = Camera.ViewportSize
-            Environment.StatusCircle.Position = Vector2.new(cameraView.X - 20, cameraView.Y - 20)
-            Environment.StatusCircle.Color = Environment.Settings.Enabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
-            if Environment.StatusText then
-                Environment.StatusText.Position = Environment.StatusCircle.Position
-                if Environment.Locked then
+            StatusCircle.Position = Vector2.new(cameraView.X - 20, cameraView.Y - 20)
+            StatusCircle.Color = config.aimbotEnabled and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
+            if StatusText then
+                StatusText.Position = StatusCircle.Position
+                if LockedTarget then
                     local lockedChar = GetLockedCharacter()
                     if lockedChar then
                         local localRoot = GetLocalRoot()
                         local targetRoot = lockedChar:FindFirstChild("HumanoidRootPart")
                         if localRoot and targetRoot then
                             local dist = (targetRoot.Position - localRoot.Position).Magnitude
-                            Environment.StatusText.Text = tostring(math.floor(dist))
+                            StatusText.Text = tostring(math.floor(dist))
                         else
-                            Environment.StatusText.Text = "-"
+                            StatusText.Text = "-"
                         end
                     else
-                        Environment.StatusText.Text = "-"
+                        StatusText.Text = "-"
                     end
                 else
-                    Environment.StatusText.Text = Environment.Settings.Enabled and "ON" or "OFF"
+                    StatusText.Text = config.aimbotEnabled and "ON" or "OFF"
                 end
-                Environment.StatusText.Visible = true
+                StatusText.Visible = true
             end
         end
-        if Running and Environment.Settings.Enabled then
-            if Environment.Settings.TargetMode == "Zombies" then
+        if Running and config.aimbotEnabled then
+            if config.targetMode == "Zombies" then
                 GetClosestZombie()
             else
                 GetClosestPlayer()
             end
-            if Environment.Locked then
+            if LockedTarget then
                 local lockedChar = GetLockedCharacter()
                 if not lockedChar then
                     SetHighlight(nil)
                 else
-                    if Environment.Settings.HighlightVisible then
+                    if config.highlightVisible then
                         SetHighlight(lockedChar)
                     else
                         SetHighlight(nil)
                     end
                     local aimPosition
-                    if Environment.Settings.LockPart == "DirectTouch" then
+                    if config.lockPart == "DirectTouch" then
                         aimPosition = GetClosestPartPos(lockedChar)
                     else
-                        local part = lockedChar:FindFirstChild(Environment.Settings.LockPart)
+                        local part = lockedChar:FindFirstChild(config.lockPart)
                         if not part then CancelLock(); SetHighlight(nil); return end
                         aimPosition = part.Position
                         local root = lockedChar:FindFirstChild("HumanoidRootPart")
-                        local predRoot = PredictPosition(lockedChar, Environment.Settings.Prediction)
+                        local predRoot = PredictPosition(lockedChar, config.prediction)
                         if root and predRoot then
                             local offset = aimPosition - root.Position
                             aimPosition = predRoot + offset
                         end
                     end
-                    if not Environment.Settings.SilentAim then
-                        if Environment.Settings.ThirdPerson then
-                            Environment.Settings.ThirdPersonSensitivity = math.clamp(Environment.Settings.ThirdPersonSensitivity, 0.1, 5)
+                    if not config.silentAim then
+                        if config.thirdPerson then
+                            config.thirdPersonSensitivity = math.clamp(config.thirdPersonSensitivity, 0.1, 5)
                             local Vector = Camera:WorldToViewportPoint(aimPosition)
                             local mousemoverel = mousemoverel or (Input and Input.MouseMove)
                             if mousemoverel then
-                                mousemoverel((Vector.X - UserInputService:GetMouseLocation().X) * Environment.Settings.ThirdPersonSensitivity, (Vector.Y - UserInputService:GetMouseLocation().Y) * Environment.Settings.ThirdPersonSensitivity)
+                                mousemoverel((Vector.X - UserInputService:GetMouseLocation().X) * config.thirdPersonSensitivity, (Vector.Y - UserInputService:GetMouseLocation().Y) * config.thirdPersonSensitivity)
                             end
                         else
-                            if Environment.Settings.Sensitivity > 0 or Environment.Settings.SmoothAim then
-                                if Environment.Settings.SmoothAim and Environment.Settings.Sensitivity==0 then
+                            if config.sensitivity > 0 or config.smoothAim then
+                                if config.smoothAim and config.sensitivity==0 then
                                     local current = Camera.CFrame
                                     local target = CFrame.new(Camera.CFrame.Position, aimPosition)
                                     Camera.CFrame = current:Lerp(target, 0.15)
                                 else
-                                    Animation = TweenService:Create(Camera, TweenInfo.new(Environment.Settings.Sensitivity, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {CFrame = CFrame.new(Camera.CFrame.Position, aimPosition)})
+                                    Animation = TweenService:Create(Camera, TweenInfo.new(config.sensitivity, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {CFrame = CFrame.new(Camera.CFrame.Position, aimPosition)})
                                     Animation:Play()
                                 end
                             else
@@ -624,7 +582,7 @@ local function LoadAimbot()
                             end
                         end
                     end
-                    Environment.FOVCircle.Color = Environment.FOVSettings.LockedColor
+                    FOVCircle.Color = Color3.fromRGB(255,70,70)
                 end
             else
                 SetHighlight(nil)
@@ -634,7 +592,7 @@ local function LoadAimbot()
         end
         do
             local root = GetLocalRoot()
-            local visible = Environment.Settings.DistanceCircleVisible and type(Environment.Settings.MaxDistance) == "number" and Environment.Settings.MaxDistance > 0
+            local visible = config.distanceCircleVisible and config.maxDistance > 0
             if visible and root then
                 EnsureDistanceRing(48)
                 local yOffset = -3
@@ -642,7 +600,7 @@ local function LoadAimbot()
                 if hum then yOffset = -(hum.HipHeight + 1) end
                 local center = root.Position + Vector3.new(0, yOffset, 0)
                 DistancePart.CFrame = CFrame.new(center)
-                local radius = Environment.Settings.MaxDistance
+                local radius = config.maxDistance
                 local seg = #DistanceAttachments
                 for i = 1, seg do
                     local t = (i / seg) * (math.pi * 2)
@@ -663,15 +621,15 @@ local function LoadAimbot()
     ServiceConnections.InputBeganConnection = UserInputService.InputBegan:Connect(function(Input)
         if not Typing then
             pcall(function()
-                local key = Environment.Settings.TriggerKey
+                local key = config.triggerKey
                 if key == "MouseButton1" and Input.UserInputType == Enum.UserInputType.MouseButton1 then
-                    Running = Environment.Settings.Toggle and not Running or true
+                    Running = config.toggleMode and not Running or true
                     if not Running then CancelLock() end
                 elseif key == "MouseButton2" and Input.UserInputType == Enum.UserInputType.MouseButton2 then
-                    Running = Environment.Settings.Toggle and not Running or true
+                    Running = config.toggleMode and not Running or true
                     if not Running then CancelLock() end
                 elseif key == "Q" and Input.KeyCode == Enum.KeyCode.Q then
-                    Running = Environment.Settings.Toggle and not Running or true
+                    Running = config.toggleMode and not Running or true
                     if not Running then CancelLock() end
                 end
             end)
@@ -679,9 +637,9 @@ local function LoadAimbot()
     end)
     ServiceConnections.InputEndedConnection = UserInputService.InputEnded:Connect(function(Input)
         if not Typing then
-            if not Environment.Settings.Toggle then
+            if not config.toggleMode then
                 pcall(function()
-                    local key = Environment.Settings.TriggerKey
+                    local key = config.triggerKey
                     if key == "MouseButton1" and Input.UserInputType == Enum.UserInputType.MouseButton1 then
                         Running = false; CancelLock()
                     elseif key == "MouseButton2" and Input.UserInputType == Enum.UserInputType.MouseButton2 then
@@ -696,292 +654,269 @@ local function LoadAimbot()
     lp.CharacterAdded:Connect(function() CancelLock() end)
 end
 
-Environment.Functions = {}
-function Environment.Functions:Exit()
-    stopInvisible()
-    for _, v in next, ServiceConnections do v:Disconnect() end
-    if Environment.FOVCircle.Remove then Environment.FOVCircle:Remove() end
-    if Environment.StatusCircle.Remove then Environment.StatusCircle:Remove() end
-    if Environment.StatusText and Environment.StatusText.Remove then Environment.StatusText:Remove() end
-    pcall(function() if DistancePart then DistancePart:Destroy() end end)
-    DistancePart, DistanceAttachments, DistanceBeams = nil, nil, nil
-    getgenv().Aimbot = nil
-end
-
-function Environment.Functions:Restart()
-    for _, v in next, ServiceConnections do v:Disconnect() end
-    LoadAimbot()
-end
-
-function Environment.Functions:SaveSettings()
-    local success = pcall(function()
-        local data = { Settings = Environment.Settings, FOVSettings = Environment.FOVSettings }
-        local json = game:GetService("HttpService"):JSONEncode(data)
-        writefile("Aimbot_Settings.json", json)
-    end)
-    return success
-end
-
-function Environment.Functions:LoadSettings()
-    pcall(function()
-        local json = readfile("Aimbot_Settings.json")
-        if json and #json > 0 then
-            local data = game:GetService("HttpService"):JSONDecode(json)
-            if type(data.Settings) == "table" then
-                for k, v in pairs(data.Settings) do Environment.Settings[k] = v end
-            end
-            if type(data.FOVSettings) == "table" then
-                for k, v in pairs(data.FOVSettings) do Environment.FOVSettings[k] = v end
-            end
-        end
-    end)
-end
-
-pcall(Environment.Functions.LoadSettings, Environment.Functions)
 LoadAimbot()
-if Environment.Settings.InvisibleEnabled then
-    task.delay(1, function() pcall(startInvisible) end)
-end
 
 -- ===== UI AIMBOT =====
 AimbotGroup:AddToggle('AimbotEnable', {
     Text = 'Bật Aimbot',
-    Default = Environment.Settings.Enabled,
+    Default = config.aimbotEnabled,
     Tooltip = 'Bật hoặc tắt toàn bộ aimbot',
-    Callback = function(v) Environment.Settings.Enabled = v end
+    Callback = function(v) config.aimbotEnabled = v end
 })
-Toggles.AimbotEnable:OnChanged(function() Environment.Settings.Enabled = Toggles.AimbotEnable.Value end)
+Toggles.AimbotEnable:OnChanged(function() config.aimbotEnabled = Toggles.AimbotEnable.Value end)
 
 AimbotGroup:AddToggle('TeamCheck', {
     Text = 'Team Check',
-    Default = Environment.Settings.TeamCheck,
+    Default = config.teamCheck,
     Tooltip = 'Không nhắm vào đồng đội',
-    Callback = function(v) Environment.Settings.TeamCheck = v end
+    Callback = function(v) config.teamCheck = v end
 })
-Toggles.TeamCheck:OnChanged(function() Environment.Settings.TeamCheck = Toggles.TeamCheck.Value end)
+Toggles.TeamCheck:OnChanged(function() config.teamCheck = Toggles.TeamCheck.Value end)
 
 AimbotGroup:AddToggle('WallCheck', {
     Text = 'Wall Check',
-    Default = Environment.Settings.WallCheck,
+    Default = config.wallCheck,
     Tooltip = 'Kiểm tra vật cản',
-    Callback = function(v) Environment.Settings.WallCheck = v end
+    Callback = function(v) config.wallCheck = v end
 })
-Toggles.WallCheck:OnChanged(function() Environment.Settings.WallCheck = Toggles.WallCheck.Value end)
+Toggles.WallCheck:OnChanged(function() config.wallCheck = Toggles.WallCheck.Value end)
 
 AimbotGroup:AddToggle('ForceConnect', {
     Text = 'Force Connect',
-    Default = Environment.Settings.ForceConnect,
+    Default = config.forceConnect,
     Tooltip = 'Giữ khóa ngay cả khi mất FOV',
-    Callback = function(v) Environment.Settings.ForceConnect = v end
+    Callback = function(v) config.forceConnect = v end
 })
-Toggles.ForceConnect:OnChanged(function() Environment.Settings.ForceConnect = Toggles.ForceConnect.Value end)
+Toggles.ForceConnect:OnChanged(function() config.forceConnect = Toggles.ForceConnect.Value end)
 
 AimbotGroup:AddToggle('Highlight', {
     Text = 'Highlight',
-    Default = Environment.Settings.HighlightVisible,
+    Default = config.highlightVisible,
     Tooltip = 'Hiển thị viền cho mục tiêu',
-    Callback = function(v) Environment.Settings.HighlightVisible = v end
+    Callback = function(v) config.highlightVisible = v end
 })
-Toggles.Highlight:OnChanged(function() Environment.Settings.HighlightVisible = Toggles.Highlight.Value end)
+Toggles.Highlight:OnChanged(function() config.highlightVisible = Toggles.Highlight.Value end)
 
 AimbotGroup:AddToggle('SmoothAim', {
     Text = 'Smooth Aim',
-    Default = Environment.Settings.SmoothAim,
+    Default = config.smoothAim,
     Tooltip = 'Làm mượt di chuyển ngắm',
-    Callback = function(v) Environment.Settings.SmoothAim = v end
+    Callback = function(v) config.smoothAim = v end
 })
-Toggles.SmoothAim:OnChanged(function() Environment.Settings.SmoothAim = Toggles.SmoothAim.Value end)
+Toggles.SmoothAim:OnChanged(function() config.smoothAim = Toggles.SmoothAim.Value end)
 
 AimbotGroup:AddToggle('Prediction', {
     Text = 'Dự đoán chuyển động',
-    Default = Environment.Settings.PredictionEnabled,
+    Default = config.predictionEnabled,
     Tooltip = 'Dự đoán vị trí mục tiêu',
-    Callback = function(v) Environment.Settings.PredictionEnabled = v end
+    Callback = function(v) config.predictionEnabled = v end
 })
-Toggles.Prediction:OnChanged(function() Environment.Settings.PredictionEnabled = Toggles.Prediction.Value end)
+Toggles.Prediction:OnChanged(function() config.predictionEnabled = Toggles.Prediction.Value end)
 
-local PredSlider = AimbotGroup:AddSlider('PredictionValue', {
+local PredSlider = AimbotGroup2:AddSlider('PredictionValue', {
     Text = 'Hệ số dự đoán',
-    Default = Environment.Settings.Prediction,
+    Default = config.prediction,
     Min = 0,
     Max = 0.3,
     Rounding = 2,
     Compact = false,
     Tooltip = 'Giá trị dự đoán (0-0.3)',
-    Callback = function(v) Environment.Settings.Prediction = v end
+    Callback = function(v) config.prediction = v end
 })
 PredSlider:SetVisible(Toggles.Prediction.Value)
 Toggles.Prediction:OnChanged(function() PredSlider:SetVisible(Toggles.Prediction.Value) end)
-Options.PredictionValue:OnChanged(function() Environment.Settings.Prediction = Options.PredictionValue.Value end)
+Options.PredictionValue:OnChanged(function() config.prediction = Options.PredictionValue.Value end)
 
 AimbotGroup:AddSlider('FOV', {
     Text = 'FOV (bán kính)',
-    Default = Environment.FOVSettings.Amount,
+    Default = config.fovAmount,
     Min = 10,
     Max = 1000,
     Rounding = 0,
     Tooltip = 'Phạm vi tìm mục tiêu',
-    Callback = function(v) Environment.FOVSettings.Amount = v end
+    Callback = function(v) config.fovAmount = v end
 })
-Options.FOV:OnChanged(function() Environment.FOVSettings.Amount = Options.FOV.Value end)
+Options.FOV:OnChanged(function() config.fovAmount = Options.FOV.Value end)
 
 AimbotGroup:AddSlider('MaxDist', {
     Text = 'Khoảng cách tối đa',
-    Default = Environment.Settings.MaxDistance,
+    Default = config.maxDistance,
     Min = 50,
     Max = 2000,
     Rounding = 0,
     Tooltip = 'Khoảng cách xa nhất để nhắm',
-    Callback = function(v) Environment.Settings.MaxDistance = v end
+    Callback = function(v) config.maxDistance = v end
 })
-Options.MaxDist:OnChanged(function() Environment.Settings.MaxDistance = Options.MaxDist.Value end)
+Options.MaxDist:OnChanged(function() config.maxDistance = Options.MaxDist.Value end)
 
 AimbotGroup:AddSlider('Sensitivity', {
     Text = 'Tốc độ khóa (giây)',
-    Default = Environment.Settings.Sensitivity,
+    Default = config.sensitivity,
     Min = 0,
     Max = 5,
     Rounding = 2,
     Tooltip = 'Thời gian để khóa mục tiêu (0 = tức thì)',
-    Callback = function(v) Environment.Settings.Sensitivity = v end
+    Callback = function(v) config.sensitivity = v end
 })
-Options.Sensitivity:OnChanged(function() Environment.Settings.Sensitivity = Options.Sensitivity.Value end)
+Options.Sensitivity:OnChanged(function() config.sensitivity = Options.Sensitivity.Value end)
 
 AimbotGroup:AddDropdown('LockPart', {
     Values = {'Head', 'HumanoidRootPart', 'DirectTouch'},
-    Default = Environment.Settings.LockPart,
+    Default = config.lockPart,
     Multi = false,
     Text = 'Bộ phận khóa',
     Tooltip = 'Chọn bộ phận để nhắm',
-    Callback = function(v) Environment.Settings.LockPart = v end
+    Callback = function(v) config.lockPart = v end
 })
-Options.LockPart:OnChanged(function() Environment.Settings.LockPart = Options.LockPart.Value end)
+Options.LockPart:OnChanged(function() config.lockPart = Options.LockPart.Value end)
 
 AimbotGroup:AddDropdown('TargetMode', {
     Values = {'Players', 'Zombies'},
-    Default = Environment.Settings.TargetMode,
+    Default = config.targetMode,
     Multi = false,
     Text = 'Loại mục tiêu',
     Tooltip = 'Nhắm vào người chơi hay zombie',
-    Callback = function(v) Environment.Settings.TargetMode = v; CancelLock() end
+    Callback = function(v) config.targetMode = v; CancelLock() end
 })
-Options.TargetMode:OnChanged(function() Environment.Settings.TargetMode = Options.TargetMode.Value; CancelLock() end)
+Options.TargetMode:OnChanged(function() config.targetMode = Options.TargetMode.Value; CancelLock() end)
 
 AimbotGroup:AddLabel('Phím kích hoạt'):AddKeyPicker('TriggerKey', {
-    Default = Environment.Settings.TriggerKey,
+    Default = config.triggerKey,
     SyncToggleState = false,
     Mode = 'Always',
     Text = 'Phím để bắt đầu aimbot',
     NoUI = false,
     Callback = function(v) end,
-    ChangedCallback = function(New) Environment.Settings.TriggerKey = New end
+    ChangedCallback = function(New) config.triggerKey = New end
 })
-Options.TriggerKey:OnChanged(function() Environment.Settings.TriggerKey = Options.TriggerKey.Value end)
+Options.TriggerKey:OnChanged(function() config.triggerKey = Options.TriggerKey.Value end)
 
 AimbotGroup:AddToggle('ToggleMode', {
     Text = 'Chế độ Toggle (giữ/bấm)',
-    Default = Environment.Settings.Toggle,
+    Default = config.toggleMode,
     Tooltip = 'Bật để nhấn một lần giữ, tắt để giữ phím',
-    Callback = function(v) Environment.Settings.Toggle = v; if not v then Running = false; CancelLock() end end
+    Callback = function(v) config.toggleMode = v; if not v then Running = false; CancelLock() end end
 })
-Toggles.ToggleMode:OnChanged(function() Environment.Settings.Toggle = Toggles.ToggleMode.Value; if not Toggles.ToggleMode.Value then Running = false; CancelLock() end end)
+Toggles.ToggleMode:OnChanged(function() config.toggleMode = Toggles.ToggleMode.Value; if not Toggles.ToggleMode.Value then Running = false; CancelLock() end end)
 
 AimbotGroup:AddToggle('InvisibleToggle', {
     Text = 'Bật vô hình (CFrame)',
-    Default = Environment.Settings.InvisibleEnabled,
+    Default = config.invisibleEnabled,
     Tooltip = 'Dịch chuyển nhân vật lên cao (hiệu ứng vô hình)',
-    Callback = function(v) Environment.Settings.InvisibleEnabled = v; if v then startInvisible() else stopInvisible() end end
+    Callback = function(v) config.invisibleEnabled = v; if v then startInvisible() else stopInvisible() end end
 })
 Toggles.InvisibleToggle:OnChanged(function()
     local v = Toggles.InvisibleToggle.Value
-    Environment.Settings.InvisibleEnabled = v
+    config.invisibleEnabled = v
     if v then startInvisible() else stopInvisible() end
 end)
 
 AimbotGroup:AddSlider('InvisibleOffset', {
     Text = 'Độ cao dịch chuyển (Y)',
-    Default = Environment.Settings.InvisibleOffsetY,
+    Default = config.invisibleOffsetY,
     Min = 10,
     Max = 500,
     Rounding = 0,
     Tooltip = 'Khoảng cách dịch lên trên để tạo hiệu ứng vô hình',
-    Callback = function(v) Environment.Settings.InvisibleOffsetY = v end
+    Callback = function(v) config.invisibleOffsetY = v end
 })
-Options.InvisibleOffset:OnChanged(function() Environment.Settings.InvisibleOffsetY = Options.InvisibleOffset.Value end)
+Options.InvisibleOffset:OnChanged(function() config.invisibleOffsetY = Options.InvisibleOffset.Value end)
 
 AimbotGroup:AddLabel('Phím bật vô hình'):AddKeyPicker('InvisibleKey', {
-    Default = Environment.Settings.InvisibleKey,
+    Default = config.invisibleKey,
     SyncToggleState = false,
     Mode = 'Always',
     Text = 'Phím chuyển đổi vô hình',
     NoUI = false,
     Callback = function(v) end,
-    ChangedCallback = function(New) Environment.Settings.InvisibleKey = New end
+    ChangedCallback = function(New) config.invisibleKey = New end
 })
-Options.InvisibleKey:OnChanged(function() Environment.Settings.InvisibleKey = Options.InvisibleKey.Value end)
+Options.InvisibleKey:OnChanged(function() config.invisibleKey = Options.InvisibleKey.Value end)
 
 AimbotGroup:AddToggle('DistCircle', {
     Text = 'Hiển thị vòng tròn khoảng cách',
-    Default = Environment.Settings.DistanceCircleVisible,
+    Default = config.distanceCircleVisible,
     Tooltip = 'Vẽ vòng tròn xung quanh nhân vật',
-    Callback = function(v) Environment.Settings.DistanceCircleVisible = v end
+    Callback = function(v) config.distanceCircleVisible = v end
 })
-Toggles.DistCircle:OnChanged(function() Environment.Settings.DistanceCircleVisible = Toggles.DistCircle.Value end)
+Toggles.DistCircle:OnChanged(function() config.distanceCircleVisible = Toggles.DistCircle.Value end)
 
 AimbotGroup:AddToggle('FOVVisible', {
     Text = 'Hiển thị vòng tròn FOV',
-    Default = Environment.FOVSettings.Visible,
+    Default = config.fovVisible,
     Tooltip = 'Vẽ vòng tròn FOV trên màn hình',
-    Callback = function(v) Environment.FOVSettings.Visible = v end
+    Callback = function(v) config.fovVisible = v end
 })
-Toggles.FOVVisible:OnChanged(function() Environment.FOVSettings.Visible = Toggles.FOVVisible.Value end)
+Toggles.FOVVisible:OnChanged(function() config.fovVisible = Toggles.FOVVisible.Value end)
 
 AimbotGroup:AddToggle('ThirdPerson', {
     Text = 'Chế độ Third Person',
-    Default = Environment.Settings.ThirdPerson,
+    Default = config.thirdPerson,
     Tooltip = 'Ngắm từ xa (cần mousemoverel)',
-    Callback = function(v) Environment.Settings.ThirdPerson = v end
+    Callback = function(v) config.thirdPerson = v end
 })
-Toggles.ThirdPerson:OnChanged(function() Environment.Settings.ThirdPerson = Toggles.ThirdPerson.Value end)
+Toggles.ThirdPerson:OnChanged(function() config.thirdPerson = Toggles.ThirdPerson.Value end)
 
 AimbotGroup:AddToggle('SilentAim', {
     Text = 'Silent Aim',
-    Default = Environment.Settings.SilentAim,
+    Default = config.silentAim,
     Tooltip = 'Không xoay camera, chỉ thay đổi hướng bắn',
-    Callback = function(v) Environment.Settings.SilentAim = v end
+    Callback = function(v) config.silentAim = v end
 })
-Toggles.SilentAim:OnChanged(function() Environment.Settings.SilentAim = Toggles.SilentAim.Value end)
+Toggles.SilentAim:OnChanged(function() config.silentAim = Toggles.SilentAim.Value end)
 
 AimbotGroup:AddButton({
     Text = 'Lưu cài đặt',
-    Func = function() Environment.Functions:SaveSettings() end,
-    Tooltip = 'Lưu cài đặt ra file Aimbot_Settings.json'
+    Func = function()
+        local data = { config = config }
+        local json = game:GetService("HttpService"):JSONEncode(data)
+        writefile("tokaihub_config.json", json)
+    end,
+    Tooltip = 'Lưu cài đặt ra file'
 })
 
 AimbotGroup:AddButton({
     Text = 'Tải cài đặt',
-    Func = function() pcall(Environment.Functions.LoadSettings, Environment.Functions) end,
+    Func = function()
+        pcall(function()
+            local json = readfile("tokaihub_config.json")
+            if json and #json > 0 then
+                local data = game:GetService("HttpService"):JSONDecode(json)
+                if data.config then
+                    for k, v in pairs(data.config) do config[k] = v end
+                end
+            end
+        end)
+    end,
     Tooltip = 'Tải lại cài đặt từ file'
 })
 
 AimbotGroup:AddButton({
     Text = 'Reset cài đặt',
     Func = function()
-        Environment.Settings = {
-            Enabled = true, TeamCheck = false, AliveCheck = true, WallCheck = false,
-            Sensitivity = 0, ThirdPerson = false, ThirdPersonSensitivity = 3,
-            TriggerKey = "MouseButton2", Toggle = false, LockPart = "Head",
-            SmoothAim = false, PredictionEnabled = false, Prediction = 0.14,
-            ForceConnect = true, TargetMode = "Players", HighlightVisible = false,
-            MaxDistance = 500, DistanceCircleVisible = false,
-            InvisibleEnabled = false, InvisibleKey = "CapsLock", InvisibleOffsetY = 100,
-            SilentAim = false
-        }
-        Environment.FOVSettings = {
-            Enabled = true, Visible = true, Amount = 90,
-            Color = Color3.fromRGB(255,255,255), LockedColor = Color3.fromRGB(255,70,70),
-            Transparency = 0.5, Sides = 60, Thickness = 1, Filled = false
-        }
+        config.aimbotEnabled = true
+        config.teamCheck = false
+        config.wallCheck = false
+        config.forceConnect = true
+        config.smoothAim = false
+        config.predictionEnabled = false
+        config.prediction = 0.14
+        config.lockPart = "Head"
+        config.targetMode = "Players"
+        config.fovAmount = 90
+        config.fovVisible = true
+        config.maxDistance = 500
+        config.distanceCircleVisible = false
+        config.thirdPerson = false
+        config.thirdPersonSensitivity = 3
+        config.sensitivity = 0
+        config.triggerKey = "MouseButton2"
+        config.toggleMode = false
+        config.highlightVisible = false
+        config.invisibleEnabled = false
+        config.invisibleKey = "CapsLock"
+        config.invisibleOffsetY = 100
+        config.silentAim = false
         CancelLock()
     end,
     Tooltip = 'Đưa về cài đặt mặc định'
@@ -989,7 +924,14 @@ AimbotGroup:AddButton({
 
 AimbotGroup:AddButton({
     Text = 'Thoát (gỡ bỏ)',
-    Func = function() Environment.Functions:Exit(); Library:Unload() end,
+    Func = function()
+        for _, v in pairs(ServiceConnections) do v:Disconnect() end
+        if FOVCircle.Remove then FOVCircle:Remove() end
+        if StatusCircle.Remove then StatusCircle:Remove() end
+        if StatusText and StatusText.Remove then StatusText:Remove() end
+        pcall(function() if DistancePart then DistancePart:Destroy() end end)
+        Library:Unload()
+    end,
     Tooltip = 'Dừng toàn bộ và đóng UI'
 })
 
@@ -1120,7 +1062,11 @@ ThemeManager:ApplyToTab(Tabs['UI Settings'])
 SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
-    Environment.Functions:Exit()
+    for _, v in pairs(ServiceConnections) do v:Disconnect() end
+    if FOVCircle.Remove then FOVCircle:Remove() end
+    if StatusCircle.Remove then StatusCircle:Remove() end
+    if StatusText and StatusText.Remove then StatusText:Remove() end
+    pcall(function() if DistancePart then DistancePart:Destroy() end end)
     Library.Unloaded = true
 end)
 
@@ -1130,14 +1076,19 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     if input.KeyCode == Enum.KeyCode.LeftAlt or input.KeyCode == Enum.KeyCode.RightAlt then
         if not AltDown then
             AltDown = true
-            Environment.Settings.Enabled = not Environment.Settings.Enabled
-            Toggles.AimbotEnable:SetValue(Environment.Settings.Enabled)
+            config.aimbotEnabled = not config.aimbotEnabled
+            Toggles.AimbotEnable:SetValue(config.aimbotEnabled)
         end
     end
     if input.KeyCode == Enum.KeyCode.Backquote and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then
-        if Environment.Locked then
-            Environment.IgnoreList[Environment.Locked] = true
-            CancelLock()
+        if LockedTarget then
+            if config.targetMode == "Players" then
+                -- ignore player
+                -- không có ignore list, ta sẽ reset lock
+                CancelLock()
+            else
+                CancelLock()
+            end
         end
     end
 end)
