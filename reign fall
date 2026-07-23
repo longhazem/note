@@ -15,6 +15,7 @@ local Tabs = {
     Main = Window:AddTab('Aimbot'),
     ESP = Window:AddTab('ESP'),
     Combat = Window:AddTab('Combat'),
+    Misc = Window:AddTab('Misc'),
     UI = Window:AddTab('UI Settings'),
 }
 
@@ -539,7 +540,6 @@ local function Load()
                     else
                         SetHighlight(nil)
                     end
-                    -- Silent Aim: chỉ tính toán vị trí nhưng không di chuyển camera
                     local aimPosition
                     if Environment.Settings.LockPart == "DirectTouch" then
                         aimPosition = GetClosestPartPos(lockedChar)
@@ -554,7 +554,6 @@ local function Load()
                             aimPosition = predRoot + offset
                         end
                     end
-                    -- Nếu Silent Aim được bật, bỏ qua mọi thay đổi camera
                     if not Environment.Settings.SilentAim then
                         if Environment.Settings.ThirdPerson then
                             Environment.Settings.ThirdPersonSensitivity = math.clamp(Environment.Settings.ThirdPersonSensitivity, 0.1, 5)
@@ -901,22 +900,6 @@ LeftGroup:AddToggle('ThirdPerson', {
 })
 Toggles.ThirdPerson:OnChanged(function() Environment.Settings.ThirdPerson = Toggles.ThirdPerson.Value end)
 
-LeftGroup:AddToggle('InfiniteAmmo', {
-    Text = 'Đạn vô hạn',
-    Default = Environment.Settings.InfiniteAmmo,
-    Tooltip = 'Vô hạn đạn cho tất cả vũ khí',
-    Callback = function(v) Environment.Settings.InfiniteAmmo = v end
-})
-Toggles.InfiniteAmmo:OnChanged(function() Environment.Settings.InfiniteAmmo = Toggles.InfiniteAmmo.Value end)
-
-LeftGroup:AddToggle('InfiniteStamina', {
-    Text = 'Thể lực vô hạn',
-    Default = Environment.Settings.InfiniteStamina,
-    Tooltip = 'Giữ thể lực luôn đầy',
-    Callback = function(v) Environment.Settings.InfiniteStamina = v end
-})
-Toggles.InfiniteStamina:OnChanged(function() Environment.Settings.InfiniteStamina = Toggles.InfiniteStamina.Value end)
-
 LeftGroup:AddButton({
     Text = 'Lưu cài đặt',
     Func = function() Environment.Functions:SaveSettings() end,
@@ -1030,6 +1013,25 @@ CombatGroup:AddToggle('SilentAim', {
     Callback = function(v) Environment.Settings.SilentAim = v end
 })
 Toggles.SilentAim:OnChanged(function() Environment.Settings.SilentAim = Toggles.SilentAim.Value end)
+
+local MiscTab = Tabs.Misc
+local MiscGroup = MiscTab:AddLeftGroupbox('Tiện ích')
+
+MiscGroup:AddToggle('InfiniteAmmo', {
+    Text = 'Đạn vô hạn',
+    Default = Environment.Settings.InfiniteAmmo,
+    Tooltip = 'Vô hạn đạn cho tất cả vũ khí',
+    Callback = function(v) Environment.Settings.InfiniteAmmo = v end
+})
+Toggles.InfiniteAmmo:OnChanged(function() Environment.Settings.InfiniteAmmo = Toggles.InfiniteAmmo.Value end)
+
+MiscGroup:AddToggle('InfiniteStamina', {
+    Text = 'Thể lực vô hạn',
+    Default = Environment.Settings.InfiniteStamina,
+    Tooltip = 'Giữ thể lực luôn đầy',
+    Callback = function(v) Environment.Settings.InfiniteStamina = v end
+})
+Toggles.InfiniteStamina:OnChanged(function() Environment.Settings.InfiniteStamina = Toggles.InfiniteStamina.Value end)
 
 local UIGroup = Tabs.UI:AddLeftGroupbox('Giao diện')
 UIGroup:AddButton('Unload (thoát)', function() Environment.Functions:Exit(); Library:Unload() end)
