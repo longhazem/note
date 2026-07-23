@@ -456,6 +456,11 @@ local Config = {
 	TurretNoRecoil = false,
 	TurretNoSpread = false,
 	AlwaysDay = false,
+	BulletTrace = false,
+	BulletTraceColor = Color3.fromRGB(255, 220, 0),
+	BulletTraceThickness = 1,
+	BulletTraceLength = 300,
+	BulletTraceLifetime = 0.3,
 	NoFog = false,
 	ThermalVision = false,
 	NightVision = false,
@@ -502,7 +507,14 @@ local Config = {
 	VehicleFly_Speed = 100,
 	VehicleFly_ToggleKey = Enum.KeyCode.X,
 	VehicleFly_UpKey = Enum.KeyCode.E,
-	VehicleFly_DownKey = Enum.KeyCode.Q
+	VehicleFly_DownKey = Enum.KeyCode.Q,
+
+	-- Bullet Trace
+	BulletTrace = false,
+	BulletTraceColor = Color3.fromRGB(255, 255, 0),
+	BulletTraceThickness = 1,
+	BulletTraceLength = 300,
+	BulletTraceLifetime = 0.3,
 }
 
 -- ==========================================
@@ -831,6 +843,51 @@ local function InitializeServices()
 			BulletService._originalDischarge = BulletService.Discharge
 		end
 
+		-- Bullet Trace pool — reuse lines to avoid GC pressure
+		local _traceLines = {}
+		local _traceMax = 30
+		local function GetTraceLine()
+			for _, t in ipairs(_traceLines) do
+				if not t.active then
+					t.active = true
+					return t
+				end
+			end
+			if #_traceLines < _traceMax then
+				local line = Drawing.new("Line")
+				line.Thickness = 1
+				line.Transparency = 1
+				line.Visible = false
+				local t = { line = line, active = false, born = 0, from = Vector2_new(0,0), to = Vector2_new(0,0) }
+				table.insert(_traceLines, t)
+				return t
+			end
+			return nil
+		end
+
+		-- Fade traces every frame
+		local _traceFadeConn = RunService.RenderStepped:Connect(function()
+			if #_traceLines == 0 then return end
+			local now = tick()
+			for _, t in ipairs(_traceLines) do
+				if t.active then
+					local age = now - t.born
+					local lifetime = Config.BulletTraceLifetime or 0.3
+					if age >= lifetime then
+						t.line.Visible = false
+						t.active = false
+					else
+						local alpha = 1 - (age / lifetime)
+						pcall(function()
+							t.line.Transparency = alpha
+							t.line.Visible = true
+						end)
+					end
+				end
+			end
+		end)
+		table.insert(getgenv().Moon_Connections, _traceFadeConn)
+
 		local lastUsedCaliber, lastUsedVelocity = nil, 2000
 		BulletService.Discharge = function(self, originCF, p49, p50, p51, p52, p53, p54, p55, p56, p57)
 			local muzzlePos 
@@ -878,6 +935,32 @@ local function InitializeServices()
 					end
 				end
 			end
+
+			-- Bullet Trace
+			if Config.BulletTrace and originCF then
+				pcall(function()
+					local from3D = originCF.Position
+					local to3D   = from3D + originCF.LookVector * (Config.BulletTraceLength or 300)
+
+					local fromScreen, fromOn = Camera:WorldToViewportPoint(from3D)
+					local toScreen,   toOn   = Camera:WorldToViewportPoint(to3D)
+
+					if fromOn or toOn then
+						local t = GetTraceLine()
+						if t then
+							t.line.From  = Vector2_new(fromScreen.X, fromScreen.Y)
+							t.line.To    = Vector2_new(toScreen.X,   toScreen.Y)
+							t.line.Color = Config.BulletTraceColor or Color3.fromRGB(255, 255, 0)
+							t.line.Thickness = Config.BulletTraceThickness or 1
+							t.line.Transparency = 1
+							t.line.Visible = true
+							t.born = tick()
+							t.active = true
+						end
+					end
+				end)
+			end
+
 			return BulletService._originalDischarge(self, originCF, p49, p50, p51, p52, p53, p54, p55, p56, p57)
 		end
 		getgenv()._BulletServiceHooked = true
@@ -4426,6 +4509,205 @@ S_Atmosphere:AddToggle({
 	Default = false,
 	Callback = function(v)
 		Config.NoFog = v
+	end
+})
+
+local S_BulletTrace = MiscTab:DrawSection({ Name = "Bullet Trace", Position = "left" })
+
+S_BulletTrace:AddToggle({
+	Name = "Bullet Trace",
+	Flag = "Misc_BulletTrace",
+	Default = false,
+	Tooltip = "Hiển thị đường đạn khi bắn",
+	Callback = function(v) Config.BulletTrace = v end
+})
+
+S_BulletTrace:AddColorPicker({
+	Name = "Trace Color",
+	Flag = "Misc_BulletTraceColor",
+	Default = Color3.fromRGB(255, 220, 0),
+	Callback = function(v) Config.BulletTraceColor = v end
+})
+
+S_BulletTrace:AddSlider({
+	Name = "Thickness",
+	Flag = "Misc_BulletTraceThick",
+	Min = 1, Max = 5, Default = 1,
+	Callback = function(v) Config.BulletTraceThickness = v end
+})
+
+S_BulletTrace:AddSlider({
+	Name = "Length (studs)",
+	Flag = "Misc_BulletTraceLen",
+	Min = 50, Max = 1000, Default = 300,
+	Callback = function(v) Config.BulletTraceLength = v end
+})
+
+S_BulletTrace:AddSlider({
+	Name = "Lifetime (x0.1s)",
+	Flag = "Misc_BulletTraceLife",
+	Min = 1, Max = 20, Default = 3,
+	Callback = function(v) Config.BulletTraceLifetime = v / 10 end
+})
+
+-- Rainbow Gun Section
+local S_Rainbow = MiscTab:DrawSection({ Name = "Rainbow Gun", Position = "right" })
+
+Config.RainbowGun = false
+Config.RainbowGunTransparency = 0.5
+Config.RainbowGunSpeed = 1.0
+
+S_Rainbow:AddToggle({
+	Name = "Rainbow Gun",
+	Flag = "Misc_RainbowGun",
+	Default = false,
+	Callback = function(v)
+		Config.RainbowGun = v
+		if not v then
+			-- Restore original colors when disabled
+			local char = LocalPlayer.Character
+			if char then
+				for _, part in ipairs(char:GetDescendants()) do
+					if part:IsA("BasePart") and part:GetAttribute("_rbOrigColor") then
+						pcall(function()
+							part.Color = Color3.fromHex(part:GetAttribute("_rbOrigColor"))
+							part.Transparency = part:GetAttribute("_rbOrigTrans") or part.Transparency
+							part:SetAttribute("_rbOrigColor", nil)
+							part:SetAttribute("_rbOrigTrans", nil)
+						end)
+					end
+				end
+			end
+		end
+	end
+})
+
+S_Rainbow:AddSlider({
+	Name = "Transparency",
+	Flag = "Misc_RainbowTrans",
+	Min = 0,
+	Max = 100,
+	Default = 50,
+	Tooltip = "0 = đục, 100 = trong suốt",
+	Callback = function(v)
+		Config.RainbowGunTransparency = v / 100
+	end
+})
+
+S_Rainbow:AddSlider({
+	Name = "Speed",
+	Flag = "Misc_RainbowSpeed",
+	Min = 1,
+	Max = 10,
+	Default = 3,
+	Callback = function(v)
+		Config.RainbowGunSpeed = v
+	end
+})
+
+-- Rainbow Gun Heartbeat loop
+local _rainbowHue = 0
+local _rainbowConn = RunService.Heartbeat:Connect(function(dt)
+	if not Config.RainbowGun then return end
+
+	_rainbowHue = (_rainbowHue + dt * Config.RainbowGunSpeed * 0.1) % 1
+	local rainbowColor = Color3.fromHSV(_rainbowHue, 1, 1)
+	local trans = Config.RainbowGunTransparency or 0.5
+
+	local char = LocalPlayer.Character
+	if not char then return end
+
+	-- Find equipped weapon model — parts welded to character arms/tool
+	local toolModel = char:FindFirstChildOfClass("Tool")
+	local targets = {}
+
+	if toolModel then
+		-- Tool parts (gun held in hand)
+		for _, part in ipairs(toolModel:GetDescendants()) do
+			if part:IsA("BasePart") then
+				table.insert(targets, part)
+			end
+		end
+		-- Also check tool itself
+		if toolModel:IsA("BasePart") then
+			table.insert(targets, toolModel)
+		end
+	end
+
+	-- Also try ViewModel from equipped handler (first-person arms)
+	if WeaponManager.Equipped then
+		local handler = WeaponManager.Equipped
+		local vm = handler and handler._viewModel or handler and handler.ViewModel
+		if vm and typeof(vm) == "Instance" then
+			for _, part in ipairs(vm:GetDescendants()) do
+				if part:IsA("BasePart") then
+					table.insert(targets, part)
+				end
+			end
+		end
+	end
+
+	for _, part in ipairs(targets) do
+		pcall(function()
+			-- Store original color/transparency once
+			if not part:GetAttribute("_rbOrigColor") then
+				part:SetAttribute("_rbOrigColor", part.Color:ToHex())
+				part:SetAttribute("_rbOrigTrans", part.Transparency)
+			end
+			part.Color = rainbowColor
+			part.Transparency = trans
+		end)
+	end
+end)
+table.insert(getgenv().Moon_Connections, _rainbowConn)
+
+-- Bullet Trace UI
+local S_BulletTrace = MiscTab:DrawSection({ Name = "Bullet Trace", Position = "left" })
+
+S_BulletTrace:AddToggle({
+	Name = "Bullet Trace",
+	Flag = "Misc_BulletTrace",
+	Default = false,
+	Tooltip = "Hiển thị đường đạn khi bắn",
+	Callback = function(v)
+		Config.BulletTrace = v
+	end
+})
+
+S_BulletTrace:AddColorPicker({
+	Name = "Trace Color",
+	Flag = "Misc_BulletTraceColor",
+	Default = Color3.fromRGB(255, 255, 0),
+	Callback = function(v)
+		Config.BulletTraceColor = v
+	end
+})
+
+S_BulletTrace:AddSlider({
+	Name = "Thickness",
+	Flag = "Misc_BulletTraceThick",
+	Min = 1, Max = 5, Default = 1,
+	Callback = function(v)
+		Config.BulletTraceThickness = v
+	end
+})
+
+S_BulletTrace:AddSlider({
+	Name = "Length (studs)",
+	Flag = "Misc_BulletTraceLen",
+	Min = 50, Max = 1000, Default = 300,
+	Callback = function(v)
+		Config.BulletTraceLength = v
+	end
+})
+
+S_BulletTrace:AddSlider({
+	Name = "Lifetime (ms)",
+	Flag = "Misc_BulletTraceLife",
+	Min = 1, Max = 20, Default = 3,
+	Tooltip = "Thời gian đường đạn tồn tại (x100ms)",
+	Callback = function(v)
+		Config.BulletTraceLifetime = v * 0.1
 	end
 })
 
