@@ -18,38 +18,42 @@ local originalBrightness = Lighting.Brightness
 
 -- ─── CONFIG ───────────────────────────────────────────────────────────────────
 local config = {
-    raycasting        = false,
-    autoHit           = false,
-    infiniteAmmo      = false,
-    infiniteStamina   = false,
-    objectiveESP      = false,
-    ammoESP           = false,
-    armorESP          = false,
-    medkitESP         = false,
-    zombieESP         = false,
-    playerESP         = false,
-    hitboxExpander    = false,
-    hitboxSize        = 6,
-    nofog             = false,
-    fullbright        = false,
-    -- Zombie aimbot
-    zombieAim         = false,
-    zombieAimRunning  = false,
-    zombieAimFOV      = 150,
-    zombieAimPart     = "Head",
-    zombieAimSmooth   = 0,        -- 0 = instant, >0 = TweenService seconds
-    zombieAimKey      = "MouseButton2",
-    zombieAimToggle   = false,
+    -- existing
+    raycasting          = false,
+    autoHit             = false,
+    infiniteAmmo        = false,
+    infiniteStamina     = false,
+    objectiveESP        = false,
+    ammoESP             = false,
+    armorESP            = false,
+    medkitESP           = false,
+    zombieESP           = false,
+    playerESP           = false,
+    hitboxExpander      = false,
+    hitboxSize          = 6,
+    nofog               = false,
+    fullbright          = false,
+    -- zombie aimbot
+    zombieAim           = false,
+    zombieAimRunning    = false,
+    zombieAimFOV        = 150,
+    zombieAimPart       = "Head",
+    zombieAimSmooth     = 0,
+    zombieAimKey        = "MouseButton2",
+    zombieAimToggle     = false,
+    zombieAimWallCheck  = false,
+    -- auto reload
+    autoReload          = false,
+    autoReloadInterval  = 2,
 }
 
 -- ─── AIMBOT STATE ─────────────────────────────────────────────────────────────
-local aimLocked       = nil   -- currently locked zombie Model
-local aimAnimation    = nil
-local cachedNPCFolder = nil
-local cachedNPCTime   = 0
-local NPC_CACHE_TTL   = 2
+local aimLocked        = nil
+local aimAnimation     = nil
+local cachedNPCFolder  = nil
+local cachedNPCTime    = 0
+local NPC_CACHE_TTL    = 2
 
--- FOV circle (Drawing API)
 local fovCircle = Drawing.new("Circle")
 fovCircle.Thickness    = 1
 fovCircle.NumSides     = 60
@@ -59,25 +63,22 @@ fovCircle.Visible      = false
 fovCircle.Color        = Color3.fromRGB(255, 255, 255)
 fovCircle.Transparency = 0.6
 
--- ─── HIGHLIGHT / ESP ──────────────────────────────────────────────────────────
-local highlightObjects  = {}
-local expandedHitboxes  = {}
-local originalAmmoValues = {}
+-- ─── HIGHLIGHT / ESP STATE ────────────────────────────────────────────────────
+local highlightObjects     = {}
+local expandedHitboxes     = {}
+local originalAmmoValues   = {}
 local originalStaminaValue = nil
 
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
     pcall(function()
-        if obj:FindFirstChild("TokaiHighlight") then
-            obj:FindFirstChild("TokaiHighlight"):Destroy()
-        end
+        if obj:FindFirstChild("TokaiHighlight") then obj:FindFirstChild("TokaiHighlight"):Destroy() end
         local h = Instance.new("Highlight")
-        h.Name                = "TokaiHighlight"
-        h.FillColor           = color
-        h.OutlineColor        = color
-        h.FillTransparency    = transparency or 0.3
+        h.Name = "TokaiHighlight"
+        h.FillColor = color; h.OutlineColor = color
+        h.FillTransparency = transparency or 0.3
         h.OutlineTransparency = 0
-        h.Parent              = obj
+        h.Parent = obj
         highlightObjects[obj] = true
     end)
 end
@@ -89,18 +90,34 @@ local function RemoveHighlight(obj)
     end)
 end
 
--- ─── NPC FOLDER HELPER ────────────────────────────────────────────────────────
+-- ─── NPC FOLDER ───────────────────────────────────────────────────────────────
 local function getNPCFolder()
     local now = tick()
     if cachedNPCFolder and cachedNPCFolder.Parent and (now - cachedNPCTime) < NPC_CACHE_TTL then
         return cachedNPCFolder
     end
     local g = workspace:FindFirstChild("Game")
-    cachedNPCFolder = g and g:FindFirstChild("Current")
+    cachedNPCFolder = g
+        and g:FindFirstChild("Current")
         and g.Current:FindFirstChild("Spawned")
         and g.Current.Spawned:FindFirstChild("NPCs")
     cachedNPCTime = now
     return cachedNPCFolder
+end
+
+-- ─── WALL CHECK ───────────────────────────────────────────────────────────────
+local function isVisible(pos, ignoreList)
+    local origin = camera.CFrame.Position
+    local dir = pos - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = ignoreList or {}
+    local result = workspace:Raycast(origin, dir, params)
+    -- visible if ray hits nothing or travels nearly full distance
+    if not result then return true end
+    local hitDist = (result.Position - origin).Magnitude
+    local targetDist = dir.Magnitude
+    return hitDist >= targetDist - 0.5
 end
 
 -- ─── AIMBOT CORE ──────────────────────────────────────────────────────────────
@@ -121,9 +138,7 @@ local function getClosestZombie()
     if not npcs then return nil end
 
     local mouseLoc = UserInputService:GetMouseLocation()
-    local fovLimit = config.zombieAimFOV
-    local bestDist = fovLimit
-    local bestZombie = nil
+    local bestDist, bestZombie = config.zombieAimFOV, nil
 
     for _, folder in ipairs(npcs:GetChildren()) do
         if folder.Name == "friendlies" then continue end
@@ -135,12 +150,23 @@ local function getClosestZombie()
             local aimPos = getZombieAimPos(zombie)
             if not aimPos then continue end
 
+            -- wall check
+            if config.zombieAimWallCheck then
+                local ignoreList = {lp.Character}
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p.Character then table.insert(ignoreList, p.Character) end
+                end
+                -- also ignore the zombie itself so ray isn't blocked by its own parts
+                table.insert(ignoreList, zombie)
+                if not isVisible(aimPos, ignoreList) then continue end
+            end
+
             local vec, onScreen = camera:WorldToViewportPoint(aimPos)
             if not onScreen then continue end
 
             local dist = (Vector2.new(mouseLoc.X, mouseLoc.Y) - Vector2.new(vec.X, vec.Y)).Magnitude
             if dist < bestDist then
-                bestDist  = dist
+                bestDist = dist
                 bestZombie = zombie
             end
         end
@@ -157,24 +183,19 @@ local function validateLocked()
 end
 
 local function tickAimbot()
-    -- Update FOV circle position
     if config.zombieAim then
         local ml = UserInputService:GetMouseLocation()
-        fovCircle.Position  = Vector2.new(ml.X, ml.Y)
-        fovCircle.Radius    = config.zombieAimFOV
-        fovCircle.Visible   = true
+        fovCircle.Position = Vector2.new(ml.X, ml.Y)
+        fovCircle.Radius   = config.zombieAimFOV
+        fovCircle.Visible  = true
     else
-        fovCircle.Visible   = false
+        fovCircle.Visible = false
         cancelAimLock()
         return
     end
 
-    if not config.zombieAimRunning then
-        cancelAimLock()
-        return
-    end
+    if not config.zombieAimRunning then cancelAimLock(); return end
 
-    -- Reacquire if lost
     if not validateLocked() then
         aimLocked = getClosestZombie()
         if not aimLocked then return end
@@ -198,7 +219,7 @@ local function tickAimbot()
     end
 end
 
--- ─── INPUT HANDLING FOR AIMBOT ────────────────────────────────────────────────
+-- ─── INPUT ────────────────────────────────────────────────────────────────────
 local function keyMatchesInput(input)
     local k = config.zombieAimKey
     if k == "MouseButton1" and input.UserInputType == Enum.UserInputType.MouseButton1 then return true end
@@ -228,6 +249,40 @@ UserInputService.InputEnded:Connect(function(input, gpe)
     end
 end)
 
+-- ─── AUTO RELOAD ──────────────────────────────────────────────────────────────
+local autoReloadThread = nil
+
+local function findReloadEvent()
+    local char = lp.Character
+    if not char then return nil end
+    for _, child in ipairs(char:GetChildren()) do
+        local se = child:FindFirstChild("ServerEvents")
+        if se then
+            local ev = se:FindFirstChild("ReloadAmmo")
+            if ev then return ev end
+        end
+    end
+    return nil
+end
+
+local function startAutoReload()
+    if autoReloadThread then pcall(function() task.cancel(autoReloadThread) end) end
+    autoReloadThread = task.spawn(function()
+        while config.autoReload do
+            task.wait(config.autoReloadInterval)
+            local ev = findReloadEvent()
+            if ev then pcall(function() ev:FireServer(false) end) end
+        end
+    end)
+end
+
+local function stopAutoReload()
+    if autoReloadThread then
+        pcall(function() task.cancel(autoReloadThread) end)
+        autoReloadThread = nil
+    end
+end
+
 -- ─── ESP UPDATES ──────────────────────────────────────────────────────────────
 local function UpdateObjectiveESP()
     for obj in pairs(highlightObjects) do
@@ -239,23 +294,20 @@ local function UpdateObjectiveESP()
             if n == "pickup_medkit" and not config.medkitESP then RemoveHighlight(obj) end
         end
     end
-
     local spawned = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned
     local gObjects = spawned and spawned:FindFirstChild("GameObjects")
     if not gObjects then return end
-
     for _, obj in ipairs(gObjects:GetChildren()) do
         local n = obj.Name
         local shouldHL, color = false, nil
         if (n:sub(1,8) == "mission_" or n == "scenery_phone_ringing") and config.objectiveESP then
-            shouldHL = true; color = n == "scenery_phone_ringing" and Color3.fromRGB(255,255,255) or Color3.fromRGB(0,255,0)
+            shouldHL = true
+            color = n == "scenery_phone_ringing" and Color3.fromRGB(255,255,255) or Color3.fromRGB(0,255,0)
         elseif n == "pickup_ammo"   and config.ammoESP   then shouldHL = true; color = Color3.fromRGB(255,255,0)
         elseif n == "pickup_armor"  and config.armorESP  then shouldHL = true; color = Color3.fromRGB(0,0,255)
         elseif n == "pickup_medkit" and config.medkitESP then shouldHL = true; color = Color3.fromRGB(255,0,0)
         end
-        if shouldHL and not obj:FindFirstChild("TokaiHighlight") then
-            AddHighlight(obj, color, 0.3)
-        end
+        if shouldHL and not obj:FindFirstChild("TokaiHighlight") then AddHighlight(obj, color, 0.3) end
     end
 end
 
@@ -267,7 +319,6 @@ local function UpdateESP()
             if not isPlayer and not config.zombieESP  then RemoveHighlight(obj) end
         end
     end
-
     if config.playerESP then
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= lp and p.Character and p.Character:FindFirstChild("Humanoid") then
@@ -277,7 +328,6 @@ local function UpdateESP()
             end
         end
     end
-
     if config.zombieESP then
         local npcs = getNPCFolder()
         if npcs then
@@ -395,12 +445,10 @@ task.spawn(function()
                     end
                 end
             end
-
             local items = {}
             for _, v in ipairs(char:GetChildren()) do table.insert(items, v) end
             local bp = lp:FindFirstChild("Backpack")
             if bp then for _, v in ipairs(bp:GetChildren()) do table.insert(items, v) end end
-
             for _, item in ipairs(items) do
                 if item:IsA("Tool") then
                     local wd = item:FindFirstChild("WeaponData")
@@ -423,23 +471,7 @@ task.spawn(function()
     end
 end)
 
--- ─── HEARTBEAT ────────────────────────────────────────────────────────────────
-RunService.Heartbeat:Connect(function()
-    -- Environment
-    Lighting.FogEnd        = config.nofog      and 100000          or originalFogEnd
-    Lighting.Brightness    = config.fullbright  and 3               or originalBrightness
-    Lighting.GlobalShadows = not config.fullbright
-
-    UpdateHitboxExpander()
-    UpdateObjectiveESP()
-    UpdateESP()
-end)
-
-RunService.RenderStepped:Connect(function()
-    tickAimbot()
-end)
-
--- ─── SILENT AIM (RAYCAST HOOK) ────────────────────────────────────────────────
+-- ─── SILENT AIM RAYCAST HOOK ─────────────────────────────────────────────────
 local function getClosestHead()
     local npcs = getNPCFolder()
     if not npcs then return nil end
@@ -462,23 +494,21 @@ local function getClosestHead()
     return best
 end
 
-local targetPos = nil
+local silentAimTarget = nil
 RunService.Heartbeat:Connect(function()
-    targetPos = config.raycasting and getClosestHead() or nil
+    silentAimTarget = config.raycasting and getClosestHead() or nil
 end)
 
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
-    if config.raycasting and targetPos and method:lower() == "raycast" and self == Workspace then
+    if config.raycasting and silentAimTarget and method:lower() == "raycast" and self == Workspace then
         local args = {...}
         if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
             local rp = args[3]
             if rp and rp.CollisionGroup == "raycast_npc_neutral" then
-                local dir = targetPos - args[1]
-                if dir.Magnitude > 0.001 then
-                    args[2] = dir.Unit * args[2].Magnitude
-                end
+                local dir = silentAimTarget - args[1]
+                if dir.Magnitude > 0.001 then args[2] = dir.Unit * args[2].Magnitude end
             end
         end
         return oldNamecall(self, unpack(args))
@@ -486,19 +516,28 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     return oldNamecall(self, ...)
 end))
 
+-- ─── HEARTBEAT / RENDER ───────────────────────────────────────────────────────
+RunService.Heartbeat:Connect(function()
+    Lighting.FogEnd        = config.nofog     and 100000         or originalFogEnd
+    Lighting.Brightness    = config.fullbright and 3              or originalBrightness
+    Lighting.GlobalShadows = not config.fullbright
+    UpdateHitboxExpander()
+    UpdateObjectiveESP()
+    UpdateESP()
+end)
+
+RunService.RenderStepped:Connect(tickAimbot)
+
 -- ─── UI ───────────────────────────────────────────────────────────────────────
 local Window = Library:CreateWindow({
-    Title        = 'Tokai HUB - Reign Fall',
-    Center       = true,
-    AutoShow     = true,
-    TabPadding   = 8,
-    MenuFadeTime = 0.2
+    Title = 'Tokai HUB - Reign Fall',
+    Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2
 })
 
 local Tabs = {
-    Combat        = Window:AddTab('Combat'),
-    Visuals       = Window:AddTab('Visuals'),
-    Utility       = Window:AddTab('Utility'),
+    Combat          = Window:AddTab('Combat'),
+    Visuals         = Window:AddTab('Visuals'),
+    Utility         = Window:AddTab('Utility'),
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
@@ -507,8 +546,9 @@ local CombatRight  = Tabs.Combat:AddRightGroupbox('Zombie Aimbot')
 local VisualsLeft  = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
 local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
+local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
 
--- Combat Left (existing)
+-- Combat Left
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
 Toggles.SilentAim:OnChanged(function() config.raycasting = Toggles.SilentAim.Value end)
 
@@ -520,43 +560,41 @@ Toggles.HitboxExpander:OnChanged(function() config.hitboxExpander = Toggles.Hitb
 
 CombatLeft:AddSlider('HitboxSize', {
     Text = 'Hitbox Size', Default = 6, Min = 0, Max = 20, Rounding = 1,
-    Compact = false,
-    Callback = function(v) config.hitboxSize = v end
+    Compact = false, Callback = function(v) config.hitboxSize = v end
 })
 
--- Combat Right — Zombie Aimbot panel
+-- Combat Right — Zombie Aimbot
 CombatRight:AddToggle('ZombieAim', { Text = 'Zombie Aimbot', Default = false })
 Toggles.ZombieAim:OnChanged(function()
     config.zombieAim = Toggles.ZombieAim.Value
     if not config.zombieAim then cancelAimLock() end
 end)
 
-CombatRight:AddToggle('ZombieAimToggleMode', { Text = 'Toggle Mode (hold/toggle)', Default = false })
+CombatRight:AddToggle('ZombieAimToggleMode', { Text = 'Toggle Mode', Default = false })
 Toggles.ZombieAimToggleMode:OnChanged(function() config.zombieAimToggle = Toggles.ZombieAimToggleMode.Value end)
+
+CombatRight:AddToggle('ZombieAimWallCheck', { Text = 'Wall Check', Default = false })
+Toggles.ZombieAimWallCheck:OnChanged(function() config.zombieAimWallCheck = Toggles.ZombieAimWallCheck.Value end)
 
 CombatRight:AddSlider('ZombieAimFOV', {
     Text = 'FOV Radius', Default = 150, Min = 20, Max = 600, Rounding = 1,
-    Compact = false,
-    Callback = function(v) config.zombieAimFOV = v end
+    Compact = false, Callback = function(v) config.zombieAimFOV = v end
 })
 
 CombatRight:AddSlider('ZombieAimSmooth', {
-    Text = 'Smooth (0 = instant)', Default = 0, Min = 0, Max = 1, Rounding = 2,
-    Compact = false,
-    Callback = function(v) config.zombieAimSmooth = v end
+    Text = 'Smooth (0=instant)', Default = 0, Min = 0, Max = 1, Rounding = 2,
+    Compact = false, Callback = function(v) config.zombieAimSmooth = v end
 })
 
 CombatRight:AddDropdown('ZombieAimPart', {
-    Text    = 'Lock Part',
-    Default = 'Head',
-    Values  = { 'Head', 'HumanoidRootPart', 'UpperTorso' },
+    Text = 'Lock Part', Default = 'Head',
+    Values = { 'Head', 'HumanoidRootPart', 'UpperTorso' },
     Callback = function(v) config.zombieAimPart = v; cancelAimLock() end
 })
 
 CombatRight:AddDropdown('ZombieAimKey', {
-    Text    = 'Hold Key',
-    Default = 'MouseButton2',
-    Values  = { 'MouseButton1', 'MouseButton2', 'Q', 'E', 'F' },
+    Text = 'Hold Key', Default = 'MouseButton2',
+    Values = { 'MouseButton1', 'MouseButton2', 'Q', 'E', 'F' },
     Callback = function(v) config.zombieAimKey = v end
 })
 
@@ -593,10 +631,28 @@ Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.Infinite
 UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
 Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
 
+-- Utility Right — Auto Reload
+UtilityRight:AddToggle('AutoReload', { Text = 'Auto Reload', Default = false })
+Toggles.AutoReload:OnChanged(function()
+    config.autoReload = Toggles.AutoReload.Value
+    if config.autoReload then startAutoReload() else stopAutoReload() end
+end)
+
+UtilityRight:AddSlider('AutoReloadInterval', {
+    Text = 'Interval (s)', Default = 2, Min = 0.5, Max = 10, Rounding = 1,
+    Compact = false,
+    Callback = function(v)
+        config.autoReloadInterval = v
+        -- restart loop với interval mới nếu đang chạy
+        if config.autoReload then startAutoReload() end
+    end
+})
+
 -- UI Settings
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function()
     fovCircle:Remove()
+    stopAutoReload()
     Library:Unload()
 end })
 
@@ -611,5 +667,6 @@ SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
     fovCircle:Remove()
+    stopAutoReload()
     Library.Unloaded = true
 end)
