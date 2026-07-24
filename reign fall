@@ -16,8 +16,15 @@ local isMobile = UserInputService.TouchEnabled and not UserInputService.Keyboard
 local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
+-- Prevent double-execute crash
+pcall(function()
+    if getgenv().TokaiHubLoaded and getgenv().TokaiHubCleanup then
+        getgenv().TokaiHubCleanup()
+    end
+end)
+getgenv().TokaiHubLoaded = true
+
 local config = {
-    -- ESP
     raycasting         = false,
     autoHit            = false,
     infiniteAmmo       = false,
@@ -32,7 +39,6 @@ local config = {
     hitboxSize         = 6,
     nofog              = false,
     fullbright         = false,
-    -- Zombie Aimbot
     zombieAim          = false,
     zombieAimRunning   = false,
     zombieAimFOV       = 150,
@@ -42,10 +48,9 @@ local config = {
     zombieAimToggle    = false,
     zombieAimAlways    = false,
     zombieAimWallCheck = false,
-    zombieAimMaxRange  = 500,   -- studs, 0 = unlimited
+    zombieAimMaxRange  = 500,
     zombieAimAliveOnly = true,
     zombieAimShowFOV   = true,
-    -- Auto Reload
     autoReload         = false,
     autoReloadInterval = 2,
 }
@@ -55,18 +60,38 @@ local highlightObjects   = {}
 local expandedHitboxes   = {}
 local originalAmmoValues = {}
 local originalStaminaValue = nil
-
 local aimLocked    = nil
 local aimAnimation = nil
 
-local fovCircle = Drawing.new("Circle")
-fovCircle.Thickness    = 1
-fovCircle.NumSides     = 60
-fovCircle.Radius       = config.zombieAimFOV
-fovCircle.Filled       = false
-fovCircle.Visible      = false
-fovCircle.Color        = Color3.fromRGB(255, 255, 255)
-fovCircle.Transparency = 0.6
+-- Drawing API — safe fallback nếu executor không support
+local supportsDrawing = false
+local fovCircle = nil
+pcall(function()
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness    = 1
+    fovCircle.NumSides     = 60
+    fovCircle.Radius       = config.zombieAimFOV
+    fovCircle.Filled       = false
+    fovCircle.Visible      = false
+    fovCircle.Color        = Color3.fromRGB(255, 255, 255)
+    fovCircle.Transparency = 0.6
+    supportsDrawing = true
+end)
+
+local function setFOVCircle(prop, val)
+    if not supportsDrawing or not fovCircle then return end
+    pcall(function() fovCircle[prop] = val end)
+end
+
+local function removeFOVCircle()
+    if not supportsDrawing or not fovCircle then return end
+    pcall(function() fovCircle:Remove() end)
+end
+
+-- hookmetamethod — safe fallback nếu executor không support
+local supportsHook = typeof(hookmetamethod) == "function"
+    and typeof(newcclosure) == "function"
+    and typeof(getnamecallmethod) == "function"
 
 -- ─── WINDOW ───────────────────────────────────────────────────────────────────
 local Window = Library:CreateWindow({
@@ -128,10 +153,9 @@ local function UpdateObjectiveESP()
         end
     end
 
-    local gw = workspace:FindFirstChild("Game")
-    if not gw then return end
-    local current     = gw:FindFirstChild("Current"); if not current then return end
-    local spawned     = current:FindFirstChild("Spawned"); if not spawned then return end
+    local gw = workspace:FindFirstChild("Game"); if not gw then return end
+    local current = gw:FindFirstChild("Current"); if not current then return end
+    local spawned = current:FindFirstChild("Spawned"); if not spawned then return end
     local gameObjects = spawned:FindFirstChild("GameObjects"); if not gameObjects then return end
 
     for _, obj in ipairs(gameObjects:GetChildren()) do
@@ -228,7 +252,9 @@ local function UpdateHitboxExpander()
         for _, desc in ipairs(Workspace:GetDescendants()) do applyHitboxExpander(desc) end
     else
         for part, _ in pairs(expandedHitboxes) do
-            if part and part.Parent then part.Size = Vector3.new(1,1,1); part.Transparency = 0 end
+            if part and part.Parent then
+                pcall(function() part.Size = Vector3.new(1,1,1); part.Transparency = 0 end)
+            end
             expandedHitboxes[part] = nil
         end
         expandedHitboxes = {}
@@ -260,11 +286,13 @@ local function getClosestHead()
     for _, enemy in ipairs(container:GetChildren()) do
         local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
         if head then
-            local sp, onScreen = camera:WorldToScreenPoint(head.Position)
-            if onScreen then
-                local dist = (Vector2.new(sp.X, sp.Y) - referencePos).Magnitude
-                if dist < bestDist then bestDist = dist; bestHeadPos = head.Position end
-            end
+            pcall(function()
+                local sp, onScreen = camera:WorldToScreenPoint(head.Position)
+                if onScreen then
+                    local dist = (Vector2.new(sp.X, sp.Y) - referencePos).Magnitude
+                    if dist < bestDist then bestDist = dist; bestHeadPos = head.Position end
+                end
+            end)
         end
     end
     return bestHeadPos
@@ -274,28 +302,32 @@ RunService.Heartbeat:Connect(function()
     target.position = (config.raycasting and target.enabled) and getClosestHead() or nil
 end)
 
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if config.raycasting and target.position and method:lower() == "raycast" and self == Workspace then
-        local args = {...}
-        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
-            local rp = args[3]
-            if rp and rp.CollisionGroup == "raycast_npc_neutral" then
-                local dir = target.position - args[1]
-                if dir.Magnitude > 0.001 then args[2] = dir.Unit * args[2].Magnitude end
+-- hookmetamethod — chỉ hook nếu executor support
+if supportsHook then
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local ok, method = pcall(getnamecallmethod)
+        if not ok then return oldNamecall(self, ...) end
+        if config.raycasting and target.position and method:lower() == "raycast" and self == Workspace then
+            local args = {...}
+            if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+                local rp = args[3]
+                if rp and rp.CollisionGroup == "raycast_npc_neutral" then
+                    local dir = target.position - args[1]
+                    if dir.Magnitude > 0.001 then args[2] = dir.Unit * args[2].Magnitude end
+                end
             end
+            return oldNamecall(self, unpack(args))
         end
-        return oldNamecall(self, unpack(args))
-    end
-    return oldNamecall(self, ...)
-end))
+        return oldNamecall(self, ...)
+    end))
+end
 
 -- ─── ZOMBIE AIMBOT ────────────────────────────────────────────────────────────
 local function cancelAimLock()
     aimLocked = nil
-    if aimAnimation then aimAnimation:Cancel() end
-    fovCircle.Color = Color3.fromRGB(255, 255, 255)
+    pcall(function() if aimAnimation then aimAnimation:Cancel() end end)
+    setFOVCircle("Color", Color3.fromRGB(255, 255, 255))
 end
 
 local function getLocalRootPos()
@@ -312,7 +344,10 @@ end
 
 local function zombiePassesWallCheck(zombie, aimPos)
     if not config.zombieAimWallCheck then return true end
-    return #camera:GetPartsObscuringTarget({aimPos}, zombie:GetDescendants()) == 0
+    local ok, result = pcall(function()
+        return #camera:GetPartsObscuringTarget({aimPos}, zombie:GetDescendants()) == 0
+    end)
+    return ok and result or true
 end
 
 local function zombieInRange(zombie)
@@ -339,7 +374,10 @@ local function getClosestZombie()
         local aimPos = getZombieAimPos(zombie)
         if not aimPos then continue end
         if not zombiePassesWallCheck(zombie, aimPos) then continue end
-        local vec, onScreen = camera:WorldToViewportPoint(aimPos)
+        local ok, vec, onScreen = pcall(function()
+            return camera:WorldToViewportPoint(aimPos)
+        end)
+        if not ok then continue end
         if not onScreen then continue end
         local dist = (Vector2.new(mouseLoc.X, mouseLoc.Y) - Vector2.new(vec.X, vec.Y)).Magnitude
         if dist < bestDist then bestDist = dist; bestTarget = zombie end
@@ -365,13 +403,17 @@ end)
 
 RunService.RenderStepped:Connect(function()
     if not config.zombieAim then
-        fovCircle.Visible = false; cancelAimLock(); return
+        setFOVCircle("Visible", false)
+        cancelAimLock()
+        return
     end
 
-    local ml = UserInputService:GetMouseLocation()
-    fovCircle.Position = Vector2.new(ml.X, ml.Y)
-    fovCircle.Radius   = config.zombieAimFOV
-    fovCircle.Visible  = config.zombieAimShowFOV
+    pcall(function()
+        local ml = UserInputService:GetMouseLocation()
+        setFOVCircle("Position", Vector2.new(ml.X, ml.Y))
+        setFOVCircle("Radius", config.zombieAimFOV)
+        setFOVCircle("Visible", config.zombieAimShowFOV)
+    end)
 
     if not config.zombieAimRunning then cancelAimLock(); return end
 
@@ -385,19 +427,21 @@ RunService.RenderStepped:Connect(function()
     if not zombiePassesWallCheck(aimLocked, aimPos) then cancelAimLock(); return end
     if not zombieInRange(aimLocked) then cancelAimLock(); return end
 
-    fovCircle.Color = Color3.fromRGB(255, 70, 70)
+    setFOVCircle("Color", Color3.fromRGB(255, 70, 70))
 
-    if config.zombieAimSmooth > 0 then
-        if aimAnimation then aimAnimation:Cancel() end
-        aimAnimation = TweenService:Create(
-            camera,
-            TweenInfo.new(config.zombieAimSmooth, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
-            { CFrame = CFrame.new(camera.CFrame.Position, aimPos) }
-        )
-        aimAnimation:Play()
-    else
-        camera.CFrame = CFrame.new(camera.CFrame.Position, aimPos)
-    end
+    pcall(function()
+        if config.zombieAimSmooth > 0 then
+            if aimAnimation then aimAnimation:Cancel() end
+            aimAnimation = TweenService:Create(
+                camera,
+                TweenInfo.new(config.zombieAimSmooth, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+                { CFrame = CFrame.new(camera.CFrame.Position, aimPos) }
+            )
+            aimAnimation:Play()
+        else
+            camera.CFrame = CFrame.new(camera.CFrame.Position, aimPos)
+        end
+    end)
 end)
 
 local function keyMatchesInput(input)
@@ -461,17 +505,19 @@ end
 task.spawn(function()
     while task.wait(0.2) do
         if config.autoHit then
-            local v5 = findRegisterHitEvent()
-            if v5 then
-                local v11 = getTargets()
-                if #v11 > 0 then
-                    local v6 = {}
-                    for _, v10 in ipairs(v11) do
-                        table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
+            pcall(function()
+                local v5 = findRegisterHitEvent()
+                if v5 then
+                    local v11 = getTargets()
+                    if #v11 > 0 then
+                        local v6 = {}
+                        for _, v10 in ipairs(v11) do
+                            table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
+                        end
+                        v5:FireServer(v6, {})
                     end
-                    v5:FireServer(v6, {})
                 end
-            end
+            end)
         end
     end
 end)
@@ -493,8 +539,10 @@ end
 task.spawn(function()
     while task.wait(config.autoReloadInterval) do
         if config.autoReload then
-            local re = findReloadEvent()
-            if re then pcall(function() re:FireServer(false) end) end
+            pcall(function()
+                local re = findReloadEvent()
+                if re then re:FireServer(false) end
+            end)
         end
     end
 end)
@@ -502,8 +550,10 @@ end)
 -- ─── INFINITE AMMO / STAMINA ──────────────────────────────────────────────────
 task.spawn(function()
     while task.wait(0.1) do
-        local Character = lp.Character
-        if Character then
+        pcall(function()
+            local Character = lp.Character
+            if not Character then return end
+
             local Humanoid = Character:FindFirstChild("Humanoid")
             if Humanoid then
                 local Values = Humanoid:FindFirstChild("Values")
@@ -545,22 +595,32 @@ task.spawn(function()
                     end
                 end
             end
-        end
+        end)
     end
 end)
 
 -- ─── HEARTBEAT ────────────────────────────────────────────────────────────────
 RunService.Heartbeat:Connect(function()
-    if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
-    if config.fullbright then
-        Lighting.Brightness = 3; Lighting.GlobalShadows = false
-    else
-        Lighting.Brightness = originalBrightness; Lighting.GlobalShadows = true
-    end
+    pcall(function()
+        if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
+        if config.fullbright then
+            Lighting.Brightness = 3; Lighting.GlobalShadows = false
+        else
+            Lighting.Brightness = originalBrightness; Lighting.GlobalShadows = true
+        end
+    end)
     UpdateHitboxExpander()
     UpdateObjectiveESP()
     UpdateESP()
 end)
+
+-- cleanup cho getgenv
+getgenv().TokaiHubCleanup = function()
+    removeFOVCircle()
+    pcall(function() Library:Unload() end)
+    getgenv().TokaiHubLoaded = false
+    getgenv().TokaiHubCleanup = nil
+end
 
 -- ─── UI ───────────────────────────────────────────────────────────────────────
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
@@ -578,7 +638,6 @@ CombatLeft:AddSlider('HitboxSize', {
     Callback = function(Value) config.hitboxSize = Value end
 })
 
--- Zombie Aimbot
 CombatRight:AddToggle('ZombieAim', { Text = 'Zombie Aimbot', Default = false })
 Toggles.ZombieAim:OnChanged(function()
     config.zombieAim = Toggles.ZombieAim.Value
@@ -681,7 +740,7 @@ UtilityRight:AddSlider('AutoReloadInterval', {
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function()
-    fovCircle:Remove()
+    removeFOVCircle()
     Library:Unload()
 end })
 
@@ -695,6 +754,6 @@ ThemeManager:ApplyToTab(Tabs['UI Settings'])
 SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
-    fovCircle:Remove()
+    removeFOVCircle()
     Library.Unloaded = true
 end)
