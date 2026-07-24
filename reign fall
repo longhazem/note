@@ -16,44 +16,42 @@ local isMobile = UserInputService.TouchEnabled and not UserInputService.Keyboard
 local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
--- ─── CONFIG ───────────────────────────────────────────────────────────────────
 local config = {
-    -- existing
-    raycasting          = false,
-    autoHit             = false,
-    infiniteAmmo        = false,
-    infiniteStamina     = false,
-    objectiveESP        = false,
-    ammoESP             = false,
-    armorESP            = false,
-    medkitESP           = false,
-    zombieESP           = false,
-    playerESP           = false,
-    hitboxExpander      = false,
-    hitboxSize          = 6,
-    nofog               = false,
-    fullbright          = false,
-    -- zombie aimbot
-    zombieAim           = false,
-    zombieAimRunning    = false,
-    zombieAimFOV        = 150,
-    zombieAimPart       = "Head",
-    zombieAimSmooth     = 0,
-    zombieAimKey        = "MouseButton2",
-    zombieAimToggle     = false,
-    zombieAimWallCheck  = false,
-    -- auto reload
-    autoReload          = false,
-    autoReloadInterval  = 2,
+    raycasting       = false,
+    autoHit          = false,
+    infiniteAmmo     = false,
+    infiniteStamina  = false,
+    objectiveESP     = false,
+    ammoESP          = false,
+    armorESP         = false,
+    medkitESP        = false,
+    zombieESP        = false,
+    playerESP        = false,
+    hitboxExpander   = false,
+    hitboxSize       = 6,
+    nofog            = false,
+    fullbright       = false,
+    -- Zombie aimbot
+    zombieAim        = false,
+    zombieAimRunning = false,
+    zombieAimFOV     = 150,
+    zombieAimPart    = "Head",
+    zombieAimSmooth  = 0,
+    zombieAimKey     = "MouseButton2",
+    zombieAimToggle  = false,
 }
 
--- ─── AIMBOT STATE ─────────────────────────────────────────────────────────────
-local aimLocked        = nil
-local aimAnimation     = nil
-local cachedNPCFolder  = nil
-local cachedNPCTime    = 0
-local NPC_CACHE_TTL    = 2
+local target = {enabled = true, position = nil}
+local highlightObjects  = {}
+local expandedHitboxes  = {}
+local originalAmmoValues = {}
+local originalStaminaValue = nil
 
+-- Aimbot state
+local aimLocked    = nil
+local aimAnimation = nil
+
+-- FOV circle
 local fovCircle = Drawing.new("Circle")
 fovCircle.Thickness    = 1
 fovCircle.NumSides     = 60
@@ -63,64 +61,258 @@ fovCircle.Visible      = false
 fovCircle.Color        = Color3.fromRGB(255, 255, 255)
 fovCircle.Transparency = 0.6
 
--- ─── HIGHLIGHT / ESP STATE ────────────────────────────────────────────────────
-local highlightObjects     = {}
-local expandedHitboxes     = {}
-local originalAmmoValues   = {}
-local originalStaminaValue = nil
+-- ─── WINDOW ───────────────────────────────────────────────────────────────────
+local Window = Library:CreateWindow({
+    Title        = 'Tokai HUB - Reign Fall',
+    Center       = true,
+    AutoShow     = true,
+    TabPadding   = 8,
+    MenuFadeTime = 0.2
+})
 
+local Tabs = {
+    Combat          = Window:AddTab('Combat'),
+    Visuals         = Window:AddTab('Visuals'),
+    Utility         = Window:AddTab('Utility'),
+    ['UI Settings'] = Window:AddTab('UI Settings'),
+}
+
+local CombatLeft   = Tabs.Combat:AddLeftGroupbox('Combat Features')
+local CombatRight  = Tabs.Combat:AddRightGroupbox('Zombie Aimbot')
+local VisualsLeft  = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
+local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
+local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
+
+-- ─── HIGHLIGHT ────────────────────────────────────────────────────────────────
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
     pcall(function()
-        if obj:FindFirstChild("TokaiHighlight") then obj:FindFirstChild("TokaiHighlight"):Destroy() end
-        local h = Instance.new("Highlight")
-        h.Name = "TokaiHighlight"
-        h.FillColor = color; h.OutlineColor = color
-        h.FillTransparency = transparency or 0.3
-        h.OutlineTransparency = 0
-        h.Parent = obj
-        highlightObjects[obj] = true
+        if obj:FindFirstChild("TokaiHighlight") then
+            obj:FindFirstChild("TokaiHighlight"):Destroy()
+        end
+        local highlight = Instance.new("Highlight")
+        highlight.Name                = "TokaiHighlight"
+        highlight.FillColor           = color
+        highlight.OutlineColor        = color
+        highlight.FillTransparency    = transparency or 0.3
+        highlight.OutlineTransparency = 0
+        highlight.Parent              = obj
+        highlightObjects[obj]         = true
     end)
 end
 
 local function RemoveHighlight(obj)
     pcall(function()
-        local h = obj:FindFirstChild("TokaiHighlight")
-        if h then h:Destroy(); highlightObjects[obj] = nil end
+        local highlight = obj:FindFirstChild("TokaiHighlight")
+        if highlight then
+            highlight:Destroy()
+            highlightObjects[obj] = nil
+        end
     end)
 end
 
--- ─── NPC FOLDER ───────────────────────────────────────────────────────────────
-local function getNPCFolder()
-    local now = tick()
-    if cachedNPCFolder and cachedNPCFolder.Parent and (now - cachedNPCTime) < NPC_CACHE_TTL then
-        return cachedNPCFolder
+-- ─── ESP ──────────────────────────────────────────────────────────────────────
+local function UpdateObjectiveESP()
+    for obj, _ in pairs(highlightObjects) do
+        if obj and obj.Parent then
+            local name = obj.Name
+            if (name:sub(1,8) == "mission_" or name == "scenery_phone_ringing") and not config.objectiveESP then RemoveHighlight(obj) end
+            if name == "pickup_ammo"   and not config.ammoESP   then RemoveHighlight(obj) end
+            if name == "pickup_armor"  and not config.armorESP  then RemoveHighlight(obj) end
+            if name == "pickup_medkit" and not config.medkitESP then RemoveHighlight(obj) end
+        end
     end
-    local g = workspace:FindFirstChild("Game")
-    cachedNPCFolder = g
-        and g:FindFirstChild("Current")
-        and g.Current:FindFirstChild("Spawned")
-        and g.Current.Spawned:FindFirstChild("NPCs")
-    cachedNPCTime = now
-    return cachedNPCFolder
+
+    local game_workspace = workspace:FindFirstChild("Game")
+    if not game_workspace then return end
+    local current = game_workspace:FindFirstChild("Current")
+    if not current then return end
+    local spawned = current:FindFirstChild("Spawned")
+    if not spawned then return end
+    local gameObjects = spawned:FindFirstChild("GameObjects")
+    if not gameObjects then return end
+
+    for _, obj in ipairs(gameObjects:GetChildren()) do
+        local name     = obj.Name
+        local isMission = name:sub(1,8) == "mission_"
+        local isPhone   = name == "scenery_phone_ringing"
+        local isAmmo    = name == "pickup_ammo"
+        local isArmor   = name == "pickup_armor"
+        local isMedkit  = name == "pickup_medkit"
+
+        if isMission or isPhone or isAmmo or isArmor or isMedkit then
+            local shouldHighlight = false
+            local color = nil
+
+            if (isMission or isPhone) and config.objectiveESP then
+                shouldHighlight = true
+                color = isMission and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,255,255)
+            elseif isAmmo   and config.ammoESP   then shouldHighlight = true; color = Color3.fromRGB(255,255,0)
+            elseif isArmor  and config.armorESP  then shouldHighlight = true; color = Color3.fromRGB(0,0,255)
+            elseif isMedkit and config.medkitESP then shouldHighlight = true; color = Color3.fromRGB(255,0,0)
+            end
+
+            if shouldHighlight and not obj:FindFirstChild("TokaiHighlight") then
+                AddHighlight(obj, color, 0.3)
+            end
+        end
+    end
 end
 
--- ─── WALL CHECK ───────────────────────────────────────────────────────────────
-local function isVisible(pos, ignoreList)
-    local origin = camera.CFrame.Position
-    local dir = pos - origin
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = ignoreList or {}
-    local result = workspace:Raycast(origin, dir, params)
-    -- visible if ray hits nothing or travels nearly full distance
-    if not result then return true end
-    local hitDist = (result.Position - origin).Magnitude
-    local targetDist = dir.Magnitude
-    return hitDist >= targetDist - 0.5
+local function UpdateESP()
+    for obj, _ in pairs(highlightObjects) do
+        if obj and obj.Parent and obj:FindFirstChild("Humanoid") then
+            local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
+            if isPlayer     and not config.playerESP then RemoveHighlight(obj) end
+            if not isPlayer and not config.zombieESP  then RemoveHighlight(obj) end
+        end
+    end
+
+    if config.playerESP then
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= lp and player.Character and player.Character:FindFirstChild("Humanoid") then
+                if not player.Character:FindFirstChild("TokaiHighlight") then
+                    AddHighlight(player.Character, Color3.fromRGB(0,255,255), 0.3)
+                end
+            end
+        end
+    end
+
+    -- zombie ESP dùng đúng getEnemyContainer() của mày
+    if config.zombieESP then
+        local npcContainer = workspace.Game and workspace.Game.Current
+            and workspace.Game.Current.Spawned
+            and workspace.Game.Current.Spawned.NPCs
+        if npcContainer and npcContainer:FindFirstChild("enemies") then
+            for _, zombie in ipairs(npcContainer.enemies:GetChildren()) do
+                if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+                    if not zombie:FindFirstChild("TokaiHighlight") then
+                        AddHighlight(zombie, Color3.fromRGB(255,0,0), 0.3)
+                    end
+                end
+            end
+        end
+    end
 end
 
--- ─── AIMBOT CORE ──────────────────────────────────────────────────────────────
+-- ─── HITBOX EXPANDER ──────────────────────────────────────────────────────────
+local function isPlayerCharacter(model)
+    if not model or not model:IsA("Model") then return false end
+    return Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function isHumanoidModel(model)
+    if not model or not model:IsA("Model") then return false end
+    return model:FindFirstChildWhichIsA("Humanoid") ~= nil
+end
+
+local function applyHitboxExpander(part)
+    if not part or not part:IsA("BasePart") then return end
+    if not config.hitboxExpander then return end
+    if part.Name ~= "Head" then return end
+    local model = part.Parent
+    if isHumanoidModel(model) and not isPlayerCharacter(model) then
+        pcall(function()
+            if not expandedHitboxes[part] then
+                part.Size        = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                part.CanCollide  = false
+                part.Transparency = 0.7
+                expandedHitboxes[part] = true
+            else
+                part.Size        = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                part.Transparency = 0.7
+            end
+        end)
+    end
+end
+
+local function UpdateHitboxExpander()
+    if config.hitboxExpander then
+        for _, desc in ipairs(Workspace:GetDescendants()) do
+            applyHitboxExpander(desc)
+        end
+    else
+        for part, _ in pairs(expandedHitboxes) do
+            if part and part.Parent then
+                part.Size        = Vector3.new(1,1,1)
+                part.Transparency = 0
+            end
+            expandedHitboxes[part] = nil
+        end
+        expandedHitboxes = {}
+    end
+end
+
+Workspace.DescendantAdded:Connect(function(desc)
+    if config.hitboxExpander and desc:IsA("BasePart") then
+        task.wait(0.05)
+        applyHitboxExpander(desc)
+    end
+end)
+
+-- ─── SILENT AIM (giữ nguyên getEnemyContainer gốc) ───────────────────────────
+local function getEnemyContainer()
+    local container = workspace.Game and workspace.Game.Current
+        and workspace.Game.Current.Spawned
+        and workspace.Game.Current.Spawned.NPCs
+    if container then
+        return container:FindFirstChild("enemies")
+    end
+    return nil
+end
+
+local function getClosestHead()
+    local container = getEnemyContainer()
+    if not container then return nil end
+    local referencePos
+    if isMobile then
+        local vp = camera.ViewportSize
+        referencePos = Vector2.new(vp.X/2, vp.Y/2)
+    else
+        referencePos = UserInputService:GetMouseLocation()
+    end
+    local bestHeadPos = nil
+    local bestDist    = math.huge
+    for _, enemy in ipairs(container:GetChildren()) do
+        local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
+        if head then
+            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
+            if onScreen then
+                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+                if dist < bestDist then
+                    bestDist    = dist
+                    bestHeadPos = head.Position
+                end
+            end
+        end
+    end
+    return bestHeadPos
+end
+
+RunService.Heartbeat:Connect(function()
+    target.position = (config.raycasting and target.enabled) and getClosestHead() or nil
+end)
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if config.raycasting and target.position and method:lower() == "raycast" and self == Workspace then
+        local args = {...}
+        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+            local raycastParams = args[3]
+            if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
+                local dir = target.position - args[1]
+                if dir.Magnitude > 0.001 then
+                    args[2] = dir.Unit * args[2].Magnitude
+                end
+            end
+        end
+        return oldNamecall(self, unpack(args))
+    end
+    return oldNamecall(self, ...)
+end))
+
+-- ─── ZOMBIE AIMBOT ────────────────────────────────────────────────────────────
 local function cancelAimLock()
     aimLocked = nil
     if aimAnimation then aimAnimation:Cancel() end
@@ -134,44 +326,26 @@ local function getZombieAimPos(zombie)
 end
 
 local function getClosestZombie()
-    local npcs = getNPCFolder()
-    if not npcs then return nil end
-
+    local container = getEnemyContainer() -- dùng đúng container gốc
+    if not container then return nil end
     local mouseLoc = UserInputService:GetMouseLocation()
-    local bestDist, bestZombie = config.zombieAimFOV, nil
-
-    for _, folder in ipairs(npcs:GetChildren()) do
-        if folder.Name == "friendlies" then continue end
-        for _, zombie in ipairs(folder:GetChildren()) do
-            if not zombie:IsA("Model") then continue end
-            local hum = zombie:FindFirstChildOfClass("Humanoid")
-            if not hum or hum.Health <= 0 then continue end
-
-            local aimPos = getZombieAimPos(zombie)
-            if not aimPos then continue end
-
-            -- wall check
-            if config.zombieAimWallCheck then
-                local ignoreList = {lp.Character}
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p.Character then table.insert(ignoreList, p.Character) end
-                end
-                -- also ignore the zombie itself so ray isn't blocked by its own parts
-                table.insert(ignoreList, zombie)
-                if not isVisible(aimPos, ignoreList) then continue end
-            end
-
-            local vec, onScreen = camera:WorldToViewportPoint(aimPos)
-            if not onScreen then continue end
-
-            local dist = (Vector2.new(mouseLoc.X, mouseLoc.Y) - Vector2.new(vec.X, vec.Y)).Magnitude
-            if dist < bestDist then
-                bestDist = dist
-                bestZombie = zombie
-            end
+    local bestDist  = config.zombieAimFOV
+    local bestTarget = nil
+    for _, zombie in ipairs(container:GetChildren()) do
+        if not zombie:IsA("Model") then continue end
+        local hum = zombie:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+        local aimPos = getZombieAimPos(zombie)
+        if not aimPos then continue end
+        local vec, onScreen = camera:WorldToViewportPoint(aimPos)
+        if not onScreen then continue end
+        local dist = (Vector2.new(mouseLoc.X, mouseLoc.Y) - Vector2.new(vec.X, vec.Y)).Magnitude
+        if dist < bestDist then
+            bestDist   = dist
+            bestTarget = zombie
         end
     end
-    return bestZombie
+    return bestTarget
 end
 
 local function validateLocked()
@@ -182,19 +356,22 @@ local function validateLocked()
     return true
 end
 
-local function tickAimbot()
-    if config.zombieAim then
-        local ml = UserInputService:GetMouseLocation()
-        fovCircle.Position = Vector2.new(ml.X, ml.Y)
-        fovCircle.Radius   = config.zombieAimFOV
-        fovCircle.Visible  = true
-    else
+RunService.RenderStepped:Connect(function()
+    if not config.zombieAim then
         fovCircle.Visible = false
         cancelAimLock()
         return
     end
 
-    if not config.zombieAimRunning then cancelAimLock(); return end
+    local ml = UserInputService:GetMouseLocation()
+    fovCircle.Position  = Vector2.new(ml.X, ml.Y)
+    fovCircle.Radius    = config.zombieAimFOV
+    fovCircle.Visible   = true
+
+    if not config.zombieAimRunning then
+        cancelAimLock()
+        return
+    end
 
     if not validateLocked() then
         aimLocked = getClosestZombie()
@@ -217,9 +394,8 @@ local function tickAimbot()
     else
         camera.CFrame = CFrame.new(camera.CFrame.Position, aimPos)
     end
-end
+end)
 
--- ─── INPUT ────────────────────────────────────────────────────────────────────
 local function keyMatchesInput(input)
     local k = config.zombieAimKey
     if k == "MouseButton1" and input.UserInputType == Enum.UserInputType.MouseButton1 then return true end
@@ -229,8 +405,7 @@ local function keyMatchesInput(input)
 end
 
 UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if not config.zombieAim then return end
+    if gpe or not config.zombieAim then return end
     if keyMatchesInput(input) then
         if config.zombieAimToggle then
             config.zombieAimRunning = not config.zombieAimRunning
@@ -242,181 +417,57 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 end)
 
 UserInputService.InputEnded:Connect(function(input, gpe)
-    if gpe then return end
-    if not config.zombieAimToggle and keyMatchesInput(input) then
+    if gpe or config.zombieAimToggle then return end
+    if keyMatchesInput(input) then
         config.zombieAimRunning = false
         cancelAimLock()
     end
 end)
 
--- ─── AUTO RELOAD ──────────────────────────────────────────────────────────────
-local autoReloadThread = nil
-
-local function findReloadEvent()
-    local char = lp.Character
-    if not char then return nil end
-    for _, child in ipairs(char:GetChildren()) do
-        local se = child:FindFirstChild("ServerEvents")
-        if se then
-            local ev = se:FindFirstChild("ReloadAmmo")
-            if ev then return ev end
-        end
-    end
-    return nil
-end
-
-local function startAutoReload()
-    if autoReloadThread then pcall(function() task.cancel(autoReloadThread) end) end
-    autoReloadThread = task.spawn(function()
-        while config.autoReload do
-            task.wait(config.autoReloadInterval)
-            local ev = findReloadEvent()
-            if ev then pcall(function() ev:FireServer(false) end) end
-        end
-    end)
-end
-
-local function stopAutoReload()
-    if autoReloadThread then
-        pcall(function() task.cancel(autoReloadThread) end)
-        autoReloadThread = nil
-    end
-end
-
--- ─── ESP UPDATES ──────────────────────────────────────────────────────────────
-local function UpdateObjectiveESP()
-    for obj in pairs(highlightObjects) do
-        if obj and obj.Parent then
-            local n = obj.Name
-            if (n:sub(1,8) == "mission_" or n == "scenery_phone_ringing") and not config.objectiveESP then RemoveHighlight(obj) end
-            if n == "pickup_ammo"   and not config.ammoESP   then RemoveHighlight(obj) end
-            if n == "pickup_armor"  and not config.armorESP  then RemoveHighlight(obj) end
-            if n == "pickup_medkit" and not config.medkitESP then RemoveHighlight(obj) end
-        end
-    end
-    local spawned = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned
-    local gObjects = spawned and spawned:FindFirstChild("GameObjects")
-    if not gObjects then return end
-    for _, obj in ipairs(gObjects:GetChildren()) do
-        local n = obj.Name
-        local shouldHL, color = false, nil
-        if (n:sub(1,8) == "mission_" or n == "scenery_phone_ringing") and config.objectiveESP then
-            shouldHL = true
-            color = n == "scenery_phone_ringing" and Color3.fromRGB(255,255,255) or Color3.fromRGB(0,255,0)
-        elseif n == "pickup_ammo"   and config.ammoESP   then shouldHL = true; color = Color3.fromRGB(255,255,0)
-        elseif n == "pickup_armor"  and config.armorESP  then shouldHL = true; color = Color3.fromRGB(0,0,255)
-        elseif n == "pickup_medkit" and config.medkitESP then shouldHL = true; color = Color3.fromRGB(255,0,0)
-        end
-        if shouldHL and not obj:FindFirstChild("TokaiHighlight") then AddHighlight(obj, color, 0.3) end
-    end
-end
-
-local function UpdateESP()
-    for obj in pairs(highlightObjects) do
-        if obj and obj.Parent and obj:FindFirstChild("Humanoid") then
-            local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
-            if isPlayer     and not config.playerESP then RemoveHighlight(obj) end
-            if not isPlayer and not config.zombieESP  then RemoveHighlight(obj) end
-        end
-    end
-    if config.playerESP then
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= lp and p.Character and p.Character:FindFirstChild("Humanoid") then
-                if not p.Character:FindFirstChild("TokaiHighlight") then
-                    AddHighlight(p.Character, Color3.fromRGB(0,255,255), 0.3)
-                end
-            end
-        end
-    end
-    if config.zombieESP then
-        local npcs = getNPCFolder()
-        if npcs then
-            for _, folder in ipairs(npcs:GetChildren()) do
-                for _, zombie in ipairs(folder:GetChildren()) do
-                    if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
-                        if not zombie:FindFirstChild("TokaiHighlight") then
-                            AddHighlight(zombie, Color3.fromRGB(255,0,0), 0.3)
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
-
--- ─── HITBOX EXPANDER ──────────────────────────────────────────────────────────
-local function isPlayerCharacter(model)
-    return model and model:IsA("Model") and Players:GetPlayerFromCharacter(model) ~= nil
-end
-
-local function applyHitboxExpander(part)
-    if not part or not part:IsA("BasePart") then return end
-    if not config.hitboxExpander or part.Name ~= "Head" then return end
-    local model = part.Parent
-    if model and model:FindFirstChildWhichIsA("Humanoid") and not isPlayerCharacter(model) then
-        pcall(function()
-            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-            part.CanCollide = false
-            part.Transparency = 0.7
-            expandedHitboxes[part] = true
-        end)
-    end
-end
-
-local function UpdateHitboxExpander()
-    if config.hitboxExpander then
-        for _, desc in ipairs(Workspace:GetDescendants()) do applyHitboxExpander(desc) end
-    else
-        for part in pairs(expandedHitboxes) do
-            if part and part.Parent then part.Size = Vector3.new(1,1,1); part.Transparency = 0 end
-            expandedHitboxes[part] = nil
-        end
-        expandedHitboxes = {}
-    end
-end
-
-Workspace.DescendantAdded:Connect(function(desc)
-    if config.hitboxExpander and desc:IsA("BasePart") then
-        task.wait(0.05); applyHitboxExpander(desc)
-    end
-end)
-
 -- ─── AUTO HIT ─────────────────────────────────────────────────────────────────
 local function findRegisterHitEvent()
-    local char = lp.Character
-    if not char then return nil end
-    for _, v in ipairs(char:GetChildren()) do
-        local se = v:FindFirstChild("ServerEvents")
-        if se then
-            local rh = se:FindFirstChild("RegisterHit")
-            if rh and rh:IsA("RemoteEvent") then return rh end
+    local v3 = lp.Character
+    if not v3 then return nil end
+    for _, v4 in ipairs(v3:GetChildren()) do
+        local v9 = v4:FindFirstChild("ServerEvents")
+        if v9 then
+            local v8 = v9:FindFirstChild("RegisterHit")
+            if v8 and v8:IsA("RemoteEvent") then return v8 end
         end
     end
 end
 
 local function getTargets()
-    local out = {}
-    for _, v in ipairs(Workspace:GetDescendants()) do
-        if v:IsA("Model") and v:FindFirstChild("Humanoid") and v ~= lp.Character then
-            local root = v:FindFirstChild("Torso") or v:FindFirstChild("HumanoidRootPart")
-            if root then table.insert(out, {model = v, part = root}) end
+    local v11 = {}
+    for _, v7 in ipairs(Workspace:GetDescendants()) do
+        if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+            local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+            if v12 then table.insert(v11, {model = v7, part = v12}) end
         end
     end
-    return out
+    if #v11 == 0 and typeof(getnilinstances) == "function" then
+        for _, v7 in ipairs(getnilinstances()) do
+            if v7:IsA("Model") then
+                local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+                if v12 then table.insert(v11, {model = v7, part = v12}) end
+            end
+        end
+    end
+    return v11
 end
 
 task.spawn(function()
     while task.wait(0.2) do
         if config.autoHit then
-            local ev = findRegisterHitEvent()
-            if ev then
-                local targets = getTargets()
-                if #targets > 0 then
-                    local payload = {}
-                    for _, t in ipairs(targets) do
-                        table.insert(payload, {amount = 1, target = t.model, is_friendly = false, part = t.part})
+            local v5 = findRegisterHitEvent()
+            if v5 then
+                local v11 = getTargets()
+                if #v11 > 0 then
+                    local v6 = {}
+                    for _, v10 in ipairs(v11) do
+                        table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
                     end
-                    ev:FireServer(payload, {})
+                    v5:FireServer(v6, {})
                 end
             end
         end
@@ -426,42 +477,51 @@ end)
 -- ─── INFINITE AMMO / STAMINA ──────────────────────────────────────────────────
 task.spawn(function()
     while task.wait(0.1) do
-        local char = lp.Character
-        if char then
-            local hum = char:FindFirstChild("Humanoid")
-            if hum then
-                local vals = hum:FindFirstChild("Values")
-                if vals then
-                    local stam = vals:FindFirstChild("Stamina")
-                    if stam and stam:IsA("NumberValue") then
+        local Character = lp.Character
+        if Character then
+            local Humanoid = Character:FindFirstChild("Humanoid")
+            if Humanoid then
+                local Values = Humanoid:FindFirstChild("Values")
+                if Values then
+                    local Stamina = Values:FindFirstChild("Stamina")
+                    if Stamina and Stamina:IsA("NumberValue") then
                         if config.infiniteStamina then
-                            originalStaminaValue = originalStaminaValue or stam.Value
-                            stam.Value = 99999
+                            if not originalStaminaValue then originalStaminaValue = Stamina.Value end
+                            Stamina.Value = 99999
                         else
-                            if originalStaminaValue and stam.Value == 99999 then
-                                stam.Value = originalStaminaValue; originalStaminaValue = nil
+                            if originalStaminaValue and Stamina.Value == 99999 then
+                                Stamina.Value = originalStaminaValue
+                                originalStaminaValue = nil
                             end
                         end
                     end
                 end
             end
+
+            local Backpack = lp:FindFirstChild("Backpack")
             local items = {}
-            for _, v in ipairs(char:GetChildren()) do table.insert(items, v) end
-            local bp = lp:FindFirstChild("Backpack")
-            if bp then for _, v in ipairs(bp:GetChildren()) do table.insert(items, v) end end
+            for _, v in ipairs(Character:GetChildren()) do table.insert(items, v) end
+            if Backpack then
+                for _, v in ipairs(Backpack:GetChildren()) do table.insert(items, v) end
+            end
+
             for _, item in ipairs(items) do
                 if item:IsA("Tool") then
-                    local wd = item:FindFirstChild("WeaponData")
-                    local ess = wd and wd:FindFirstChild("Essentials")
-                    local ammo = ess and ess:FindFirstChild("Ammo")
-                    if ammo and ammo:IsA("NumberValue") then
-                        if config.infiniteAmmo then
-                            if originalAmmoValues[item] == nil then originalAmmoValues[item] = ammo.Value end
-                            ammo.Value = 9999
-                        else
-                            if originalAmmoValues[item] ~= nil then
-                                if ammo.Value == 9999 then ammo.Value = originalAmmoValues[item] end
-                                originalAmmoValues[item] = nil
+                    local WeaponData = item:FindFirstChild("WeaponData")
+                    if WeaponData then
+                        local Essentials = WeaponData:FindFirstChild("Essentials")
+                        if Essentials then
+                            local Ammo = Essentials:FindFirstChild("Ammo")
+                            if Ammo and Ammo:IsA("NumberValue") then
+                                if config.infiniteAmmo then
+                                    if originalAmmoValues[item] == nil then originalAmmoValues[item] = Ammo.Value end
+                                    Ammo.Value = 9999
+                                else
+                                    if originalAmmoValues[item] ~= nil then
+                                        if Ammo.Value == 9999 then Ammo.Value = originalAmmoValues[item] end
+                                        originalAmmoValues[item] = nil
+                                    end
+                                end
                             end
                         end
                     end
@@ -471,84 +531,22 @@ task.spawn(function()
     end
 end)
 
--- ─── SILENT AIM RAYCAST HOOK ─────────────────────────────────────────────────
-local function getClosestHead()
-    local npcs = getNPCFolder()
-    if not npcs then return nil end
-    local ref = isMobile and (function()
-        local vp = camera.ViewportSize; return Vector2.new(vp.X/2, vp.Y/2)
-    end)() or UserInputService:GetMouseLocation()
-    local best, bestDist = nil, math.huge
-    for _, folder in ipairs(npcs:GetChildren()) do
-        for _, zombie in ipairs(folder:GetChildren()) do
-            local head = zombie:FindFirstChild("Head") or zombie:FindFirstChild("HumanoidRootPart")
-            if head then
-                local sp, onScreen = camera:WorldToScreenPoint(head.Position)
-                if onScreen then
-                    local d = (Vector2.new(sp.X, sp.Y) - ref).Magnitude
-                    if d < bestDist then bestDist = d; best = head.Position end
-                end
-            end
-        end
-    end
-    return best
-end
-
-local silentAimTarget = nil
+-- ─── HEARTBEAT ────────────────────────────────────────────────────────────────
 RunService.Heartbeat:Connect(function()
-    silentAimTarget = config.raycasting and getClosestHead() or nil
-end)
-
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if config.raycasting and silentAimTarget and method:lower() == "raycast" and self == Workspace then
-        local args = {...}
-        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
-            local rp = args[3]
-            if rp and rp.CollisionGroup == "raycast_npc_neutral" then
-                local dir = silentAimTarget - args[1]
-                if dir.Magnitude > 0.001 then args[2] = dir.Unit * args[2].Magnitude end
-            end
-        end
-        return oldNamecall(self, unpack(args))
+    if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
+    if config.fullbright then
+        Lighting.Brightness    = 3
+        Lighting.GlobalShadows = false
+    else
+        Lighting.Brightness    = originalBrightness
+        Lighting.GlobalShadows = true
     end
-    return oldNamecall(self, ...)
-end))
-
--- ─── HEARTBEAT / RENDER ───────────────────────────────────────────────────────
-RunService.Heartbeat:Connect(function()
-    Lighting.FogEnd        = config.nofog     and 100000         or originalFogEnd
-    Lighting.Brightness    = config.fullbright and 3              or originalBrightness
-    Lighting.GlobalShadows = not config.fullbright
     UpdateHitboxExpander()
     UpdateObjectiveESP()
     UpdateESP()
 end)
 
-RunService.RenderStepped:Connect(tickAimbot)
-
--- ─── UI ───────────────────────────────────────────────────────────────────────
-local Window = Library:CreateWindow({
-    Title = 'Tokai HUB - Reign Fall',
-    Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2
-})
-
-local Tabs = {
-    Combat          = Window:AddTab('Combat'),
-    Visuals         = Window:AddTab('Visuals'),
-    Utility         = Window:AddTab('Utility'),
-    ['UI Settings'] = Window:AddTab('UI Settings'),
-}
-
-local CombatLeft   = Tabs.Combat:AddLeftGroupbox('Combat Features')
-local CombatRight  = Tabs.Combat:AddRightGroupbox('Zombie Aimbot')
-local VisualsLeft  = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
-local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
-local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
-local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
-
--- Combat Left
+-- ─── UI TOGGLES ───────────────────────────────────────────────────────────────
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
 Toggles.SilentAim:OnChanged(function() config.raycasting = Toggles.SilentAim.Value end)
 
@@ -560,10 +558,11 @@ Toggles.HitboxExpander:OnChanged(function() config.hitboxExpander = Toggles.Hitb
 
 CombatLeft:AddSlider('HitboxSize', {
     Text = 'Hitbox Size', Default = 6, Min = 0, Max = 20, Rounding = 1,
-    Compact = false, Callback = function(v) config.hitboxSize = v end
+    Compact = false,
+    Callback = function(Value) config.hitboxSize = Value end
 })
 
--- Combat Right — Zombie Aimbot
+-- Zombie Aimbot panel
 CombatRight:AddToggle('ZombieAim', { Text = 'Zombie Aimbot', Default = false })
 Toggles.ZombieAim:OnChanged(function()
     config.zombieAim = Toggles.ZombieAim.Value
@@ -573,32 +572,32 @@ end)
 CombatRight:AddToggle('ZombieAimToggleMode', { Text = 'Toggle Mode', Default = false })
 Toggles.ZombieAimToggleMode:OnChanged(function() config.zombieAimToggle = Toggles.ZombieAimToggleMode.Value end)
 
-CombatRight:AddToggle('ZombieAimWallCheck', { Text = 'Wall Check', Default = false })
-Toggles.ZombieAimWallCheck:OnChanged(function() config.zombieAimWallCheck = Toggles.ZombieAimWallCheck.Value end)
-
 CombatRight:AddSlider('ZombieAimFOV', {
     Text = 'FOV Radius', Default = 150, Min = 20, Max = 600, Rounding = 1,
-    Compact = false, Callback = function(v) config.zombieAimFOV = v end
+    Compact = false,
+    Callback = function(v) config.zombieAimFOV = v end
 })
 
 CombatRight:AddSlider('ZombieAimSmooth', {
     Text = 'Smooth (0=instant)', Default = 0, Min = 0, Max = 1, Rounding = 2,
-    Compact = false, Callback = function(v) config.zombieAimSmooth = v end
+    Compact = false,
+    Callback = function(v) config.zombieAimSmooth = v end
 })
 
 CombatRight:AddDropdown('ZombieAimPart', {
-    Text = 'Lock Part', Default = 'Head',
-    Values = { 'Head', 'HumanoidRootPart', 'UpperTorso' },
+    Text     = 'Lock Part',
+    Default  = 'Head',
+    Values   = { 'Head', 'HumanoidRootPart', 'UpperTorso' },
     Callback = function(v) config.zombieAimPart = v; cancelAimLock() end
 })
 
 CombatRight:AddDropdown('ZombieAimKey', {
-    Text = 'Hold Key', Default = 'MouseButton2',
-    Values = { 'MouseButton1', 'MouseButton2', 'Q', 'E', 'F' },
+    Text     = 'Hold Key',
+    Default  = 'MouseButton2',
+    Values   = { 'MouseButton1', 'MouseButton2', 'Q', 'E', 'F' },
     Callback = function(v) config.zombieAimKey = v end
 })
 
--- Visuals Left
 VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
 Toggles.ObjectiveESP:OnChanged(function() config.objectiveESP = Toggles.ObjectiveESP.Value end)
 
@@ -617,42 +616,21 @@ Toggles.ZombieESP:OnChanged(function() config.zombieESP = Toggles.ZombieESP.Valu
 VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
 Toggles.PlayerESP:OnChanged(function() config.playerESP = Toggles.PlayerESP.Value end)
 
--- Visuals Right
 VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
 Toggles.Fullbright:OnChanged(function() config.fullbright = Toggles.Fullbright.Value end)
 
 VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false })
 Toggles.NoFog:OnChanged(function() config.nofog = Toggles.NoFog.Value end)
 
--- Utility Left
 UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false })
 Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.InfiniteAmmo.Value end)
 
 UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
 Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
 
--- Utility Right — Auto Reload
-UtilityRight:AddToggle('AutoReload', { Text = 'Auto Reload', Default = false })
-Toggles.AutoReload:OnChanged(function()
-    config.autoReload = Toggles.AutoReload.Value
-    if config.autoReload then startAutoReload() else stopAutoReload() end
-end)
-
-UtilityRight:AddSlider('AutoReloadInterval', {
-    Text = 'Interval (s)', Default = 2, Min = 0.5, Max = 10, Rounding = 1,
-    Compact = false,
-    Callback = function(v)
-        config.autoReloadInterval = v
-        -- restart loop với interval mới nếu đang chạy
-        if config.autoReload then startAutoReload() end
-    end
-})
-
--- UI Settings
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function()
     fovCircle:Remove()
-    stopAutoReload()
     Library:Unload()
 end })
 
@@ -667,6 +645,5 @@ SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
     fovCircle:Remove()
-    stopAutoReload()
     Library.Unloaded = true
 end)
