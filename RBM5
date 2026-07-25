@@ -1,21 +1,245 @@
--- Executor compat guards
-local getgenv = getgenv or function() return _G end
-local filtergc = filtergc or function() return {} end
-local getgc    = getgc    or function() return {} end
-local setreadonly = setreadonly or function() end
-local make_writeable = make_writeable or function() end
-local newcclosure = newcclosure or function(f) return f end
+local Repository = "https://raw.githubusercontent.com/longhazem/libba/main/"
+
+-- Executor compat: Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
+local function GetLoadstringSource(Url)
+	local function tryRequest(fn, args)
+		if not fn then return nil end
+		local ok, r = pcall(fn, args)
+		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
+	end
+
+	local body = tryRequest(request, {Url=Url,Method="GET"})
+		or tryRequest(http_request, {Url=Url,Method="GET"})
+		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
+		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
+
+	if not body then
+		local ok, r = pcall(function() return game:HttpGet(Url) end)
+		if ok and typeof(r) == "string" then body = r
+		elseif ok and typeof(r) == "Instance" then
+			local iok, src = pcall(function() return r.Source end)
+			if iok and typeof(src) == "string" then body = src end
+		end
+	end
+
+	if not body then error("[TokaIHub] HTTP failed: " .. tostring(Url), 2) end
+
+	-- 429 retry
+	if body:match("^429") or body:lower():match("rate limit") then
+		warn("[TokaIHub] Rate limit — waiting 10s")
+		task.wait(10)
+		return GetLoadstringSource(Url)
+	end
+
+	if body:match("^<!DOCTYPE") or body:match("^<html") then
+		error("[TokaIHub] Server returned HTML — bad URL or repo error", 2)
+	end
+
+	return body
+end
+
+local _loadstring = loadstring or (syn and syn.loadstring) or (getgenv and getgenv().loadstring)
+
+local function LoadRemote(Url)
+	local Source = GetLoadstringSource(Url)
+	if not _loadstring then error("loadstring not available in this executor", 2) end
+	local Chunk, LoadError = _loadstring(Source)
+	if not Chunk then
+		error("loadstring failed for " .. tostring(Url) .. ": " .. tostring(LoadError), 2)
+	end
+	return Chunk()
+end
+
+local Library = LoadRemote(Repository .. "source.lua")
+local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
+local SaveManager = LoadRemote(Repository .. "addons/SaveManager.lua")
+
+-- libba stores Options/Toggles in getgenv()
+local Options = getgenv().Options or {}
+local Toggles = getgenv().Toggles or {}
+
+local MoonUI = {
+	Scale = { Window = 1 },
+	Colors = {
+		Highlight = Color3.fromRGB(88, 101, 242),
+		Toggle = Color3.fromRGB(88, 101, 242),
+		Risky = Color3.fromRGB(255, 80, 80),
+		BGDBColor = Color3.fromRGB(20, 20, 24),
+		BlockColor = Color3.fromRGB(28, 28, 34),
+		StrokeColor = Color3.fromRGB(60, 60, 70),
+		SwitchColor = Color3.fromRGB(235, 235, 245),
+		LineColor = Color3.fromRGB(80, 80, 90),
+		DropColor = Color3.fromRGB(32, 32, 38),
+	},
+}
+
+function MoonUI:SetTheme() end
+function MoonUI:RefreshCurrentColor() end
+function MoonUI:ConfigManager(Data)
+	return Data or {}
+end
+
+function MoonUI.newNotify()
+	return {
+		new = function(Data)
+			local text = (Data and Data.Title) or "TokaIHub"
+			if Data and (Data.Content or Data.Description) then
+				text = text .. " — " .. (Data.Content or Data.Description)
+			end
+			pcall(function() Library:Notify(text, (Data and Data.Duration) or 5) end)
+		end,
+	}
+end
+
+local function NormalizeUIString(Value, Fallback)
+	if typeof(Value) == "EnumItem" then return Value.Name end
+	if Value == nil then return Fallback end
+	return tostring(Value)
+end
+
+local function NormalizeKey(Value, Fallback)
+	if typeof(Value) == "EnumItem" then return Value.Name end
+	if Value == nil then return Fallback or "None" end
+	return tostring(Value)
+end
+
+local function WrapSection(Groupbox)
+	local Section = {}
+
+	function Section:AddToggle(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Toggle")
+		local Toggle = Groupbox:AddToggle(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = Data.Default or false, Tooltip = Data.Tooltip })
+		if Data.Callback then Toggle:OnChanged(Data.Callback) end
+		return {
+			Instance = Toggle,
+			SetValue = function(_, v) Toggle:SetValue(v) end,
+			GetValue = function(_) return Toggles[Flag] and Toggles[Flag].Value end,
+			Link = {
+				AddKeybind = function(_, KeyData)
+					local KeyFlag = NormalizeUIString(KeyData.Flag or KeyData.Name or (Flag .. "_Key"), Flag .. "_Key")
+					Toggle:AddKeyPicker(KeyFlag, {
+						Default = NormalizeKey(KeyData.Default, "None"),
+						Text = NormalizeUIString(KeyData.Name or "Keybind", "Keybind"),
+						Mode = NormalizeUIString(KeyData.Mode or "Toggle", "Toggle"),
+						NoUI = KeyData.NoUI or false,
+						SyncToggleState = true,
+					})
+					if KeyData.Callback and Options[KeyFlag] then
+						Options[KeyFlag]:OnChanged(KeyData.Callback)
+					end
+					return Options[KeyFlag]
+				end,
+			},
+		}
+	end
+
+	function Section:AddSlider(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Slider")
+		local Slider = Groupbox:AddSlider(Flag, {
+			Text = NormalizeUIString(Data.Name or Flag, Flag),
+			Default = Data.Default or Data.Min or 0,
+			Min = Data.Min or 0,
+			Max = Data.Max or 100,
+			Rounding = Data.Rounding or 0,
+			Suffix = Data.Suffix,
+			Compact = Data.Compact or false,
+		})
+		if Data.Callback then Slider:OnChanged(Data.Callback) end
+		return Slider
+	end
+
+	function Section:AddDropdown(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Dropdown")
+		local Dropdown = Groupbox:AddDropdown(Flag, {
+			Text = NormalizeUIString(Data.Name or Flag, Flag),
+			Values = Data.Values or {},
+			Default = Data.Default,
+			Multi = Data.Multi or false,
+			Tooltip = Data.Tooltip,
+		})
+		if Data.Callback then Dropdown:OnChanged(Data.Callback) end
+		return Dropdown
+	end
+
+	function Section:AddColorPicker(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "ColorPicker")
+		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
+		Label:AddColorPicker(Flag, { Default = Data.Default or Color3.new(1,1,1) })
+		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+		return Options[Flag]
+	end
+
+	function Section:AddKeybind(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Keybind")
+		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
+		Label:AddKeyPicker(Flag, { Default = NormalizeKey(Data.Default, "None"), Text = NormalizeUIString(Data.Name or Flag, Flag), NoUI = Data.NoUI or false, Mode = NormalizeUIString(Data.Mode or "Toggle", "Toggle") })
+		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+		return Options[Flag]
+	end
+
+	function Section:AddButton(Data)
+		return Groupbox:AddButton(Data.Name or Data.Text or "Button", Data.Callback or Data.Func or function() end)
+	end
+
+	return Section
+end
+
+local function WrapTab(Tab)
+	return {
+		DrawSection = function(_, Data)
+			local Name = Data.Name or "Section"
+			local Position = string.lower(Data.Position or "left")
+			if Position == "right" then
+				return WrapSection(Tab:AddRightGroupbox(Name))
+			else
+				return WrapSection(Tab:AddLeftGroupbox(Name))
+			end
+		end,
+	}
+end
+
+function MoonUI.new(Data)
+	local Window = Library:CreateWindow({ Title = "TokaIHub", Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2 })
+	local SettingsTab
+	local Wrapped = {
+		Raw = Window,
+		Keybind = Data and Data.Keybind,
+		DrawTab = function(_, TabData)
+			local Name = TabData.Name or "Tab"
+			local Tab = Window:AddTab(Name)
+			if Name == "Settings" or Name == "System" then SettingsTab = Tab end
+			return WrapTab(Tab)
+		end,
+		DrawConfig = function(_, ConfigData)
+			SettingsTab = SettingsTab or Window:AddTab("Settings")
+			ThemeManager:SetLibrary(Library)
+			SaveManager:SetLibrary(Library)
+			SaveManager:IgnoreThemeSettings()
+			SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+			ThemeManager:SetFolder("TokaIHub")
+			SaveManager:SetFolder("TokaIHub/specific-game")
+			SaveManager:BuildConfigSection(SettingsTab)
+			ThemeManager:ApplyToTab(SettingsTab)
+			SaveManager:LoadAutoloadConfig()
+			return { Init = function() end }
+		end,
+		Unload = function()
+			pcall(function() Library:Unload() end)
+		end,
+	}
+	return Wrapped
+end
 
 -- Cleanup previous instances (Singleton)
 local scriptId = tick()
-getgenv().TokaIHub_ScriptId = scriptId
+getgenv().Moon_ScriptId = scriptId
 
-if getgenv().TokaIHub_Connections then
-	for _, conn in pairs(getgenv().TokaIHub_Connections) do
+if getgenv().Moon_Connections then
+	for _, conn in pairs(getgenv().Moon_Connections) do
 		if conn then pcall(function() conn:Disconnect() end) end
 	end
 end
-getgenv().TokaIHub_Connections = {}
+getgenv().Moon_Connections = {}
 
 -- Localize Globals and Methods for Performance
 local Vector3_new = Vector3.new
@@ -39,8 +263,8 @@ local tostring = tostring
 local getgenv = getgenv
 local getgc = getgc
 local filtergc = filtergc
-local Drawing = Drawing or {}
-local Drawing_new = Drawing and Drawing.new or function() return setmetatable({},{__index=function() return function() end end, __newindex=function() end}) end
+local Drawing = Drawing
+local Drawing_new = Drawing and Drawing.new
 
 -- Services
 local Players = game:GetService("Players")
@@ -1530,7 +1754,7 @@ function EnableSpeedController()
 		actor.SpeedPenalty = multiplier
 	end)
 
-	table.insert(getgenv().TokaIHub_Connections, SpeedControllerConnection)
+	table.insert(getgenv().Moon_Connections, SpeedControllerConnection)
 	-- print removed
 end
 
@@ -2006,7 +2230,7 @@ local function UpdateCombat(frameId)
 			WeaponManager.Connection = InterfaceStateChanged:Connect(function()
 				WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
 			end)
-			table.insert(getgenv().TokaIHub_Connections, WeaponManager.Connection)
+			table.insert(getgenv().Moon_Connections, WeaponManager.Connection)
 		end
 		-- Initial Sync
 		WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
@@ -3815,9 +4039,9 @@ GBMenu:AddButton({
     Text = 'Unload',
     Func = function()
         pcall(function() Library:Unload() end)
-        if getgenv().TokaIHub_Connections then
-            for _, c in pairs(getgenv().TokaIHub_Connections) do pcall(function() c:Disconnect() end) end
-            getgenv().TokaIHub_Connections = {}
+        if getgenv().Moon_Connections then
+            for _, c in pairs(getgenv().Moon_Connections) do pcall(function() c:Disconnect() end) end
+            getgenv().Moon_Connections = {}
         end
         for uid in pairs(ESPElements) do RemoveESP(uid) end
     end,
@@ -3876,7 +4100,7 @@ local espLoop = RunService.RenderStepped:Connect(function()
 	-- CRITICAL: Run Combat Logic EVERY FRAME for maximum Ragebot/Silent Aim speed (144Hz+)
 	UpdateCombat(frameCount)
 end)
-table.insert(getgenv().TokaIHub_Connections, espLoop)
+table.insert(getgenv().Moon_Connections, espLoop)
 
 -- Success notification
 Notifier.new({
@@ -3911,4 +4135,4 @@ local flyKeybind = UserInputService.InputBegan:Connect(function(input, gameProce
 		VehicleFly.Toggle()
 	end
 end)
-table.insert(getgenv().TokaIHub_Connections, flyKeybind)
+table.insert(getgenv().Moon_Connections, flyKeybind)
