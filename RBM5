@@ -1,265 +1,13 @@
-local Repository = "https://raw.githubusercontent.com/longhazem/libba/main/"
-
--- Executor compat: Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
-local function GetLoadstringSource(Url)
-	local function tryRequest(fn, args)
-		if not fn then return nil end
-		local ok, r = pcall(fn, args)
-		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
-	end
-
-	local body = tryRequest(request, {Url=Url,Method="GET"})
-		or tryRequest(http_request, {Url=Url,Method="GET"})
-		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
-		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
-
-	if not body then
-		local ok, r = pcall(function() return game:HttpGet(Url) end)
-		if ok and typeof(r) == "string" then body = r
-		elseif ok and typeof(r) == "Instance" then
-			local iok, src = pcall(function() return r.Source end)
-			if iok and typeof(src) == "string" then body = src end
-		end
-	end
-
-	if not body then error("[TokaiHub] HTTP failed: " .. tostring(Url), 2) end
-
-	-- 429 retry
-	if body:match("^429") or body:lower():match("rate limit") then
-		warn("[TokaiHub] Rate limit — chờ 10s rồi thử lại")
-		task.wait(10)
-		return GetLoadstringSource(Url)
-	end
-
-	if body:match("^<!DOCTYPE") or body:match("^<html") then
-		error("[TokaiHub] Server trả về HTML — URL sai hoặc repo lỗi", 2)
-	end
-
-	return body
-end
-
-local function PatchObsidianSource(Source)
-	-- Studio/executor compatibility: some environments inject/forward invalid GUI properties
-	-- such as NumSides into Obsidian's generic New() creator. Ignore invalid property
-	-- assignments instead of crashing during CreateWindow.
-	Source = Source:gsub("Instance%[key%] = value", [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
-	return Source
-end
-
-local function LoadRemote(Url)
-	local Source = GetLoadstringSource(Url)
-	if string.find(Url, "/source.lua", 1, true) then
-		Source = PatchObsidianSource(Source)
-	end
-	local Chunk, LoadError = loadstring(Source)
-	if not Chunk then
-		error("loadstring failed for " .. tostring(Url) .. ": " .. tostring(LoadError), 2)
-	end
-	return Chunk()
-end
-
-local Library = LoadRemote(Repository .. "source.lua")
-local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
-local SaveManager = LoadRemote(Repository .. "addons/SaveManager.lua")
-
--- libba stores Options/Toggles in getgenv(), not Library.Options
-local Options = getgenv().Options or {}
-local Toggles = getgenv().Toggles or {}
-
-local MoonUI = {
-	Scale = { Window = 1 },
-	Colors = {
-		Highlight = Color3.fromRGB(88, 101, 242),
-		Toggle = Color3.fromRGB(88, 101, 242),
-		Risky = Color3.fromRGB(255, 80, 80),
-		BGDBColor = Color3.fromRGB(20, 20, 24),
-		BlockColor = Color3.fromRGB(28, 28, 34),
-		StrokeColor = Color3.fromRGB(60, 60, 70),
-		SwitchColor = Color3.fromRGB(235, 235, 245),
-		LineColor = Color3.fromRGB(80, 80, 90),
-		DropColor = Color3.fromRGB(32, 32, 38),
-	},
-}
-
-function MoonUI:SetTheme() end
-function MoonUI:RefreshCurrentColor() end
-function MoonUI:ConfigManager(Data)
-	return Data or {}
-end
-
-function MoonUI.newNotify()
-	return {
-		new = function(Data)
-			local text = (Data and Data.Title) or "Tokaihub"
-			if Data and (Data.Content or Data.Description) then
-				text = text .. " — " .. (Data.Content or Data.Description)
-			end
-			pcall(function() Library:Notify(text, (Data and Data.Duration) or 5) end)
-		end,
-	}
-end
-
-local function NormalizeUIString(Value, Fallback)
-	if typeof(Value) == "EnumItem" then
-		return Value.Name
-	end
-	if Value == nil then
-		return Fallback
-	end
-	return tostring(Value)
-end
-
-local function NormalizeKey(Value, Fallback)
-	if typeof(Value) == "EnumItem" then
-		return Value.Name
-	end
-	if Value == nil then
-		return Fallback or "None"
-	end
-	return tostring(Value)
-end
-
-local function WrapSection(Groupbox)
-	local Section = {}
-
-	function Section:AddToggle(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Toggle")
-		local Toggle = Groupbox:AddToggle(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = Data.Default or false, Tooltip = Data.Tooltip })
-		if Data.Callback then Toggle:OnChanged(Data.Callback) end
-		return {
-			Instance = Toggle,
-			Link = {
-				AddKeybind = function(_, KeyData)
-					local KeyFlag = NormalizeUIString(KeyData.Flag or KeyData.Name or (Flag .. "_Key"), Flag .. "_Key")
-					Toggle:AddKeyPicker(KeyFlag, {
-						Default = NormalizeKey(KeyData.Default, "None"),
-						Text = NormalizeUIString(KeyData.Name or "Keybind", "Keybind"),
-						Mode = NormalizeUIString(KeyData.Mode or "Toggle", "Toggle"),
-						NoUI = KeyData.NoUI or false,
-						SyncToggleState = true, -- libba: always true so keybind flips toggle
-					})
-					if KeyData.Callback and Options[KeyFlag] then
-						Options[KeyFlag]:OnChanged(KeyData.Callback)
-					end
-					return Options[KeyFlag]
-				end,
-			},
-		}
-	end
-
-	function Section:AddSlider(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Slider")
-		local Slider = Groupbox:AddSlider(Flag, {
-			Text = NormalizeUIString(Data.Name or Flag, Flag),
-			Default = Data.Default or Data.Min or 0,
-			Min = Data.Min or 0,
-			Max = Data.Max or 100,
-			Rounding = Data.Rounding or 0,
-			Suffix = Data.Suffix,
-			Compact = Data.Compact or false,
-		})
-		if Data.Callback then Slider:OnChanged(Data.Callback) end
-		return Slider
-	end
-
-	function Section:AddDropdown(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Dropdown")
-		local Dropdown = Groupbox:AddDropdown(Flag, {
-			Text = NormalizeUIString(Data.Name or Flag, Flag),
-			Values = Data.Values or {},
-			Default = Data.Default,
-			Multi = Data.Multi or false,
-			Tooltip = Data.Tooltip,
-		})
-		if Data.Callback then Dropdown:OnChanged(Data.Callback) end
-		return Dropdown
-	end
-
-	function Section:AddColorPicker(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "ColorPicker")
-		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
-		Label:AddColorPicker(Flag, { Default = Data.Default or Color3.new(1, 1, 1) })
-		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
-		return Options[Flag]
-	end
-
-	function Section:AddKeybind(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Keybind")
-		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
-		Label:AddKeyPicker(Flag, { Default = NormalizeKey(Data.Default, "None"), Text = NormalizeUIString(Data.Name or Flag, Flag), NoUI = Data.NoUI or false, Mode = NormalizeUIString(Data.Mode or "Toggle", "Toggle") })
-		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
-		return Options[Flag]
-	end
-
-	function Section:AddButton(Data)
-		return Groupbox:AddButton(Data.Name or Data.Text or "Button", Data.Callback or Data.Func or function() end)
-	end
-
-	return Section
-end
-
-local function WrapTab(Tab)
-	return {
-		DrawSection = function(_, Data)
-			local Name = Data.Name or "Section"
-			local Position = string.lower(Data.Position or "left")
-			if Position == "right" then
-				return WrapSection(Tab:AddRightGroupbox(Name))
-			else
-				return WrapSection(Tab:AddLeftGroupbox(Name))
-			end
-		end,
-	}
-end
-
-function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Tokaihub", Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2 })
-	local SettingsTab
-	local Wrapped = {
-		Raw = Window,
-		DrawTab = function(_, TabData)
-			local Name = TabData.Name or "Tab"
-			local Tab = Window:AddTab(Name)
-			if Name == "Settings" or Name == "System" then
-				SettingsTab = Tab
-			end
-			return WrapTab(Tab)
-		end,
-		DrawConfig = function(_, ConfigData)
-			SettingsTab = SettingsTab or Window:AddTab("Settings", "settings", "UI settings and configurations")
-			ThemeManager:SetLibrary(Library)
-			SaveManager:SetLibrary(Library)
-			SaveManager:IgnoreThemeSettings()
-			SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
-			ThemeManager:SetFolder("Tokaihub")
-			SaveManager:SetFolder("Tokaihub/specific-game")
-			if SaveManager.SetSubFolder then
-				SaveManager:SetSubFolder("specific-place")
-			end
-			SaveManager:BuildConfigSection(SettingsTab)
-			ThemeManager:ApplyToTab(SettingsTab)
-			SaveManager:LoadAutoloadConfig()
-			return { Init = function() end }
-		end,
-		SetMenuKey = function(_, Key)
-			task.defer(function() Library.ToggleKeybind = getgenv().Options and getgenv().Options.MenuKeybind end)
-		end,
-		Unload = function()
-			Library:Unload()
-		end,
-	}
-	return Wrapped
-end
 -- Cleanup previous instances (Singleton)
 local scriptId = tick()
-getgenv().Moon_ScriptId = scriptId
+getgenv().TokaIHub_ScriptId = scriptId
 
-if getgenv().Moon_Connections then
-	for _, conn in pairs(getgenv().Moon_Connections) do
+if getgenv().TokaIHub_Connections then
+	for _, conn in pairs(getgenv().TokaIHub_Connections) do
 		if conn then pcall(function() conn:Disconnect() end) end
 	end
 end
-getgenv().Moon_Connections = {}
+getgenv().TokaIHub_Connections = {}
 
 -- Localize Globals and Methods for Performance
 local Vector3_new = Vector3.new
@@ -585,186 +333,6 @@ function VehicleFly.Toggle()
 	print("[Vehicle Fly]", Config.VehicleFly_Enabled and "ENABLED" or "DISABLED")
 end
 
-
--- ==========================================
--- BULLET TRAIL RENDERER v2 (3D Arc Visualization)
--- Tích hợp vào BulletService.Discharge hook sẵn có
--- ==========================================
-
-local TrailRenderer = {}
-
--- Config nội bộ — UI controls sẽ ghi đè các giá trị này
-local TrailConfig = {
-    Enabled         = false,
-
-    -- Arc ballistic thật (đường đỏ cong)
-    ArcColor        = Color3.fromRGB(255, 60, 60),
-    ArcTransparency = 0.25,   -- 0 = đục, 1 = vô hình
-    ArcWidth        = 0.08,   -- studs
-    ArcSteps        = 40,     -- số segment trên arc
-    ArcLifetime     = 8,      -- giây trước khi tự xóa
-
-    -- Đường thẳng predicted (đường tím dashed)
-    LineEnabled     = true,
-    LineColor       = Color3.fromRGB(160, 80, 255),
-    LineTransparency= 0.35,
-    LineWidth       = 0.05,
-
-    -- Impact marker
-    ImpactEnabled   = true,
-    ImpactColor     = Color3.fromRGB(0, 255, 120),
-    ImpactSize      = 0.28,
-}
-
--- Internal: Tạo Part hình trụ giữa 2 điểm
-local function _MakeSeg(posA, posB, col, alpha, w)
-    local len = (posB - posA).Magnitude
-    if len < 0.01 then return nil end
-    local p = Instance.new("Part")
-    p.Name          = "BT_Seg"
-    p.Anchored      = true
-    p.CanCollide    = false
-    p.CanQuery      = false
-    p.CanTouch      = false
-    p.CastShadow    = false
-    p.Size          = Vector3_new(w, w, len)
-    p.CFrame        = CFrame_new((posA + posB) * 0.5, posB)
-    p.Color         = col
-    p.Transparency  = alpha
-    p.Material      = Enum.Material.Neon
-    p.Parent        = workspace
-    return p
-end
-
--- Internal: Sample điểm trên arc ballistic
-local function _SampleArc(ori, tgt, spd, grav, steps)
-    local disp  = tgt - ori
-    local flatX = disp.X
-    local flatZ = disp.Z
-    local flatD = math.sqrt(flatX * flatX + flatZ * flatZ)
-    local vertD = disp.Y
-
-    if flatD < 0.1 then return {ori, tgt} end
-
-    local vSq  = spd * spd
-    local g    = grav
-    local root = vSq * vSq - g * (g * flatD * flatD + 2 * vertD * vSq)
-
-    local theta
-    if root < 0 then
-        theta = math.atan2(vertD, flatD)
-    else
-        theta = math.atan((vSq - math.sqrt(root)) / (g * flatD))
-    end
-
-    local vx = spd * math.cos(theta)
-    local vy = spd * math.sin(theta)
-    if vx <= 0 then return {ori, tgt} end
-
-    local totalT = flatD / vx
-    local dirX   = flatX / flatD
-    local dirZ   = flatZ / flatD
-    local pts    = table.create(steps + 1)
-
-    for i = 0, steps do
-        local t  = (i / steps) * totalT
-        local px = dirX * vx * t
-        local pz = dirZ * vx * t
-        local py = vy * t - 0.5 * g * t * t
-        pts[i + 1] = ori + Vector3_new(px, py, pz)
-    end
-
-    return pts
-end
-
--- Internal: Xóa sau N giây
-local function _Cleanup(segs, delay)
-    task.delay(delay, function()
-        for _, p in ipairs(segs) do
-            if p and p.Parent then p:Destroy() end
-        end
-    end)
-end
-
--- PUBLIC: Render trail. Gọi sau khi discharge fire.
-function TrailRenderer.Render(originPos, targetPos, bulletSpeed, gravity)
-    if not TrailConfig.Enabled then return end
-    bulletSpeed = bulletSpeed or 2000
-    gravity     = gravity     or 32.2
-
-    local segs = {}
-
-    -- 1. Straight predicted line
-    if TrailConfig.LineEnabled then
-        local s = _MakeSeg(originPos, targetPos,
-            TrailConfig.LineColor,
-            TrailConfig.LineTransparency,
-            TrailConfig.LineWidth)
-        if s then table.insert(segs, s) end
-    end
-
-    -- 2. Ballistic arc
-    local pts = _SampleArc(originPos, targetPos, bulletSpeed, gravity, TrailConfig.ArcSteps)
-    for i = 1, #pts - 1 do
-        local s = _MakeSeg(pts[i], pts[i + 1],
-            TrailConfig.ArcColor,
-            TrailConfig.ArcTransparency,
-            TrailConfig.ArcWidth)
-        if s then table.insert(segs, s) end
-    end
-
-    -- 3. Impact marker
-    if TrailConfig.ImpactEnabled then
-        local m = Instance.new("Part")
-        m.Name          = "BT_Impact"
-        m.Anchored      = true
-        m.CanCollide    = false
-        m.CanQuery      = false
-        m.Shape         = Enum.PartType.Ball
-        m.Size          = Vector3_new(TrailConfig.ImpactSize, TrailConfig.ImpactSize, TrailConfig.ImpactSize)
-        m.CFrame        = CFrame_new(targetPos)
-        m.Color         = TrailConfig.ImpactColor
-        m.Material      = Enum.Material.Neon
-        m.Transparency  = 0.1
-        m.Parent        = workspace
-        table.insert(segs, m)
-    end
-
-    _Cleanup(segs, TrailConfig.ArcLifetime)
-end
-
--- PUBLIC: Hook vào BulletService.Discharge (gọi sau InitializeServices)
-function TrailRenderer.HookDischarge()
-    if not BulletService then
-        warn("[TrailRenderer] BulletService chưa sẵn — hook sẽ được thử lại sau")
-        return false
-    end
-
-    -- Bao ngoài hook Silent Aim đã có sẵn — không ghi đè
-    local prev = BulletService.Discharge
-    BulletService.Discharge = function(self, originCF, p49, p50, p51, p52, p53, p54, p55, p56, p57)
-        local result = prev(self, originCF, p49, p50, p51, p52, p53, p54, p55, p56, p57)
-
-        if TrailConfig.Enabled and originCF and p51 then
-            local ori = originCF.Position
-            local tgt = p51  -- p51 = target position trong BRM5 Discharge signature
-
-            local spd = 2000
-            if p49 and BulletService.GetInfo then
-                local ok, vel = pcall(function() return BulletService:GetInfo(p49, p50) end)
-                if ok and vel and vel > 0 then spd = vel end
-            end
-
-            task.spawn(TrailRenderer.Render, ori, tgt, spd, 32.2)
-        end
-
-        return result
-    end
-
-    getgenv()._TrailRendererHooked = true
-    print("[TrailRenderer] Hooked vào BulletService.Discharge")
-    return true
-end
 
 -- BRM5 Place IDs (Dumped from PlaceService)
 local Places = {
@@ -1954,7 +1522,7 @@ function EnableSpeedController()
 		actor.SpeedPenalty = multiplier
 	end)
 
-	table.insert(getgenv().Moon_Connections, SpeedControllerConnection)
+	table.insert(getgenv().TokaIHub_Connections, SpeedControllerConnection)
 	-- print removed
 end
 
@@ -2430,7 +1998,7 @@ local function UpdateCombat(frameId)
 			WeaponManager.Connection = InterfaceStateChanged:Connect(function()
 				WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
 			end)
-			table.insert(getgenv().Moon_Connections, WeaponManager.Connection)
+			table.insert(getgenv().TokaIHub_Connections, WeaponManager.Connection)
 		end
 		-- Initial Sync
 		WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
@@ -2711,12 +2279,10 @@ local function UpdateCombat(frameId)
 	local mouse = UserInputService:GetMouseLocation()
 
 	if FOVCircle then
-		-- Sync radius every frame so circle is never size-0 on first enable
-		pcall(function() FOVCircle.Radius = Config.SilentAimFOV end)
-		local fovShow = Config.SilentAim and Config.ShowFOV
-		pcall(function() FOVCircle.Visible = fovShow end)
-		if fovShow then
-			pcall(function() FOVCircle.Position = mouse end)
+		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
+		if FOVCircle.Visible then
+			FOVCircle.Position = mouse
+			FOVCircle.Radius = Config.SilentAimFOV
 		end
 	end
 
@@ -3017,7 +2583,23 @@ local function SetAllVisible(drawings, espData, visible)
 	end
 end
 
--- Hitbox Expander Helper
+
+	if not head then return end
+
+	if enabled and actor.Alive then
+		if not OriginalSizes[head] then OriginalSizes[head] = head.Size end
+		local sz = cfg.HitboxSize or 4
+		head.Size = Vector3_new(sz, sz, sz)
+		head.Transparency = 0.5
+		head.CanCollide = false
+	elseif OriginalSizes[head] then
+		head.Size = OriginalSizes[head]
+		head.Transparency = 0
+		head.CanCollide = true
+		OriginalSizes[head] = nil
+	end
+end
+
 local function RemoveESP(uid)
 	local espData = ESPElements[uid]
 	if not espData then return end
@@ -3063,6 +2645,7 @@ local function UpdateESPForActor(uid, espData, frameId, cachedCfg, localSquad)
 		return
 	end
 
+
 	-- Bug Fix: Re-check filters for existing elements
 	if not ShouldShowEntity(actor, entityType, localSquad) then
 		SetAllVisible(espData.Drawing, espData, false)
@@ -3086,11 +2669,7 @@ local function UpdateESPForActor(uid, espData, frameId, cachedCfg, localSquad)
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing, espData, false)
 		local sESP = espData.SimpleESP
-		local isVisible = actor.ViewportOnScreen or actor.LOD_OnScreen or actor.OnScreen
-		if not isVisible and actor.Position then
-			local _, v = Camera:WorldToViewportPoint(actor.Position)
-			isVisible = v
-		end
+		local isVisible = actor.OnScreen or actor.ViewportOnScreen or actor.LOD_OnScreen
 		if distance < 50 then isVisible = true end
 
 		if isVisible then
@@ -3110,23 +2689,17 @@ local function UpdateESPForActor(uid, espData, frameId, cachedCfg, localSquad)
 	end
 
 	local drawings = espData.Drawing
-
-	-- Get world position first (needed for engineVisible check)
-	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
-	if not worldPos then
-		SetAllVisible(drawings, espData, false)
-		return
-	end
-
-	-- LOD_OnScreen is never set in this game — use WorldToViewportPoint directly
-	local screen_point, onScreen = Camera:WorldToViewportPoint(worldPos)
-	local engineVisible = onScreen or actor.ViewportOnScreen or (distance < 128)
+	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
 
 	if not engineVisible then
 		SetAllVisible(drawings, espData, false)
 		return
 	end
 
+	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
+	if not worldPos then return end
+
+	local screen_point, onScreen = Camera:WorldToViewportPoint(worldPos)
 	if not onScreen then
 		SetAllVisible(drawings, espData, false)
 		return
@@ -3626,18 +3199,14 @@ local function UpdateVehicles(frameId, cachedCfg)
 	end
 end
 
--- IsEnemy helper for Hitbox Expander
-local function IsEnemyForExpander(player)
-	if not player or not LocalPlayer then return false end
-	-- If using team system
-	if player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then return false end
-	-- Fallback/Safety: consider everyone else enemy if not same team
-	return true
-end
 
--- Hitbox expander merged into ESP loop
+			if success then return result end
+		end
+		return nil 
+	end)
+	setreadonly(mt, true)
+end)
 
--- Server Hide Hook (Spoof Size property)
 local function UpdateESP()
 	if not ESPEnabled then return end
 	if not ReplicatorService then return end
@@ -3697,1145 +3266,575 @@ end
 --[[
     INITIALIZATION
 ]]
--- Initialize Moon notifier
-local Notifier = MoonUI.newNotify();
 
--- Create Window
-local Window = MoonUI.new({
-	Name = "Tokaihub",
-	Keybind = "LeftAlt",
-	Logo = nil,
-	Scale = MoonUI.Scale.Window,
-	TextSize = 14,
-});
 
--- Initialize Config Manager
-local _ConfigManager = MoonUI:ConfigManager({ 
-	Directory = "Tokaihub", 
-	Config = "Tokaihub" 
-})
-_ConfigManager.EnableNotify = true
+-- ══════════════════════════════════════════════
+-- TOKAIHUB UI -- Linoria Library
+-- ══════════════════════════════════════════════
 
--- Combat Tab
-local CombatTab = Window:DrawTab({ Name = "Combat", Icon = "swords", Type = "Double" })
-
--- Rage Section
-local S_Rage = CombatTab:DrawSection({ Name = "Ragebot", Position = "right" })
-
-S_Rage:AddToggle({ 
-	Name = "Enabled", 
-	Flag = "Rage_Enabled", 
-	Default = false,
-	Callback = function(v) 
-		Config.RageMode = v
-	end 
-})
-
-S_Rage:AddToggle({ 
-	Name = "Look At Target", 
-	Flag = "Rage_LookAt", 
-	Default = false,
-	Callback = function(v) 
-		Config.Rage_LookAt = v
-	end 
-})
-
-S_Rage:AddSlider({
-	Name = "Rage Range",
-	Flag = "Rage_Range",
-	Min = 50,
-	Max = 2000,
-	Default = 500,
-	Callback = function(v)
-		Config.Rage_Range = v
+-- Executor compat: Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
+local function GetLoadstringSource(Url)
+	local function tryRequest(fn, args)
+		if not fn then return nil end
+		local ok, r = pcall(fn, args)
+		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
 	end
-})
-
-S_Rage:AddDropdown({
-	Name = "Target Part",
-	Flag = "Rage_TargetPart",
-	Default = "Head",
-	Values = { "Head", "UpperTorso" },
-	Callback = function(v)
-		Config.Rage_TargetPart = v
+	local body = tryRequest(request, {Url=Url,Method="GET"})
+		or tryRequest(http_request, {Url=Url,Method="GET"})
+		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
+		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
+	if not body then
+		local ok, r = pcall(function() return game:HttpGet(Url) end)
+		if ok and typeof(r) == "string" then body = r
+		elseif ok and typeof(r) == "Instance" then
+			local iok, src = pcall(function() return r.Source end)
+			if iok and typeof(src) == "string" then body = src end
+		end
 	end
+	if not body then error("Failed to fetch: " .. tostring(Url), 2) end
+	return body
+end
+
+local function LoadRemote(Url)
+	local src = GetLoadstringSource(Url)
+	local chunk, err = loadstring(src)
+	if not chunk then error("loadstring failed for " .. tostring(Url) .. ": " .. tostring(err), 2) end
+	return chunk()
+end
+
+local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
+local Library      = LoadRemote(repo .. 'source.lua')
+local ThemeManager = LoadRemote(repo .. 'addons/ThemeManager.lua')
+local SaveManager  = LoadRemote(repo .. 'addons/SaveManager.lua')
+
+local Window = Library:CreateWindow({
+    Title    = 'TokaIHub',
+    Center   = true,
+    AutoShow = true,
+    TabPadding  = 8,
+    MenuFadeTime = 0.2,
 })
 
-S_Rage:AddToggle({ 
-	Name = "Auto Fire", 
-	Flag = "Rage_AutoFire", 
-	Default = false,
-	Callback = function(v) 
-		Config.Rage_AutoFire = v
-	end 
+local Tabs = {
+    Combat    = Window:AddTab('Combat'),
+    ESP       = Window:AddTab('ESP'),
+    Character = Window:AddTab('Character'),
+    Vehicles  = Window:AddTab('Vehicles'),
+    Misc      = Window:AddTab('Misc'),
+    Settings  = Window:AddTab('Settings'),
+}
+
+-- ── notify helper ──────────────────
+local function Notify(data)
+    Library:Notify({
+        Title       = data.Title or 'TokaIHub',
+        Description = data.Content or data.Description or '',
+        Duration    = data.Duration or 5,
+    })
+end
+
+-- ──────────────────────────────────────────────
+-- COMBAT TAB
+-- ──────────────────────────────────────────────
+local GBRage     = Tabs.Combat:AddRightGroupbox('Ragebot')
+local GBSilent   = Tabs.Combat:AddLeftGroupbox('Silent Aim')
+local GBGunMods  = Tabs.Combat:AddRightGroupbox('Gun Mods')
+
+-- Ragebot
+GBRage:AddToggle('Rage_Enabled', {
+    Text = 'Enabled', Default = false,
+    Callback = function(v) Config.RageMode = v end,
+})
+GBRage:AddToggle('Rage_LookAt', {
+    Text = 'Look At Target', Default = false,
+    Callback = function(v) Config.Rage_LookAt = v end,
+})
+GBRage:AddSlider('Rage_Range', {
+    Text = 'Rage Range', Default = 500, Min = 50, Max = 2000, Rounding = 0,
+    Callback = function(v) Config.Rage_Range = v end,
+})
+GBRage:AddDropdown('Rage_TargetPart', {
+    Text = 'Target Part', Default = 'Head',
+    Values = {'Head','UpperTorso'},
+    Callback = function(v) Config.Rage_TargetPart = v end,
+})
+GBRage:AddToggle('Rage_AutoFire', {
+    Text = 'Auto Fire', Default = false,
+    Callback = function(v) Config.Rage_AutoFire = v end,
+})
+GBRage:AddToggle('Rage_AmmoSaver', {
+    Text = 'Ammo Saver (Efficiency)', Default = false,
+    Callback = function(v) Config.Rage_AmmoSaver = v end,
+})
+GBRage:AddSlider('Rage_ExtraShots', {
+    Text = 'Extra Shots (Safety)', Default = 0, Min = 0, Max = 5, Rounding = 0,
+    Callback = function(v) Config.Rage_ExtraShots = v end,
 })
 
-S_Rage:AddToggle({ 
-	Name = "Ammo Saver (Efficiency)", 
-	Flag = "Rage_AmmoSaver", 
-	Default = false,
-	Callback = function(v) 
-		Config.Rage_AmmoSaver = v
-	end 
+-- Silent Aim
+GBSilent:AddToggle('Combat_SilentAim', {
+    Text = 'Enabled', Default = false,
+    Callback = function(v) Config.SilentAim = v end,
+})
+GBSilent:AddToggle('Combat_ShowFOV', {
+    Text = 'Show FOV', Default = false,
+    Callback = function(v) Config.ShowFOV = v end,
+})
+GBSilent:AddToggle('Combat_ShowWeaponInfo', {
+    Text = 'Show Weapon Info', Default = true,
+    Callback = function(v) Config.ShowWeaponInfo = v end,
+})
+GBSilent:AddSlider('Combat_SilentAimFOV', {
+    Text = 'FOV Radius', Default = 100, Min = 10, Max = 500, Rounding = 0,
+    Callback = function(v) Config.SilentAimFOV = v end,
+})
+GBSilent:AddSlider('Combat_SilentAimChance', {
+    Text = 'Hit Chance', Default = 100, Min = 0, Max = 100, Rounding = 0,
+    Callback = function(v) Config.SilentAimHitChance = v end,
+})
+GBSilent:AddDropdown('Combat_SilentAimPart', {
+    Text = 'Target Part', Default = 'Head',
+    Values = {
+        'Head','UpperTorso','LowerTorso',
+        'LeftUpperArm','LeftLowerArm','LeftHand',
+        'RightUpperArm','RightLowerArm','RightHand',
+        'LeftUpperLeg','LeftLowerLeg','LeftFoot',
+        'RightUpperLeg','RightLowerLeg','RightFoot',
+    },
+    Callback = function(v) Config.SilentAimTargetPart = v end,
+})
+GBSilent:AddToggle('Combat_Prediction', {
+    Text = 'Prediction', Default = false,
+    Callback = function(v) Config.Prediction = v end,
+})
+GBSilent:AddToggle('ESP_BulletDrop', {
+    Text = 'Bullet Drop', Default = false,
+    Callback = function(v) Config.BulletDrop = v end,
 })
 
-S_Rage:AddSlider({
-	Name = "Extra Shots (Safety)",
-	Flag = "Rage_ExtraShots",
-	Min = 0,
-	Max = 5,
-	Default = 0,
-	Callback = function(v)
-		Config.Rage_ExtraShots = v
-	end
+-- Gun Mods
+GBGunMods:AddToggle('Combat_NoRecoil', {
+    Text = 'No Recoil', Default = false,
+    Callback = function(v) Config.NoRecoil = v end,
+})
+GBGunMods:AddToggle('Combat_NoSpread', {
+    Text = 'No Spread', Default = false,
+    Callback = function(v) Config.NoSpread = v end,
+})
+GBGunMods:AddToggle('Combat_Firemodes', {
+    Text = 'Unlock Firemodes', Default = false,
+    Callback = function(v) Config.UnlockFiremodes = v end,
+})
+GBGunMods:AddToggle('Combat_CustomRPM', {
+    Text = 'Custom RPM', Default = false,
+    Callback = function(v) Config.CustomRPM = v end,
+})
+GBGunMods:AddSlider('Combat_RPMValue', {
+    Text = 'RPM Value', Default = 800, Min = 100, Max = 3000, Rounding = 0,
+    Callback = function(v) Config.RPMValue = v end,
 })
 
--- Gun Mods Section
-local S_GunMods = CombatTab:DrawSection({ Name = "Gun Mods", Position = "right" })
+-- ──────────────────────────────────────────────
+-- ESP TAB
+-- ──────────────────────────────────────────────
+local GBEsp      = Tabs.ESP:AddLeftGroupbox('ESP Settings')
+local GBFilters  = Tabs.ESP:AddRightGroupbox('Entity Filters')
+local GBColors   = Tabs.ESP:AddRightGroupbox('Entity Colors')
+local GBLayout   = Tabs.ESP:AddLeftGroupbox('Layout Settings')
 
--- Silent Aim Section
-local S_SilentAim = CombatTab:DrawSection({ Name = "Silent Aim", Position = "left" })
-
-S_SilentAim:AddToggle({ 
-	Name = "Enabled", 
-	Flag = "Combat_SilentAim", 
-	Default = false,
-	Callback = function(v) 
-		Config.SilentAim = v
-	end 
-})
-
-S_SilentAim:AddToggle({ 
-	Name = "Show FOV", 
-	Flag = "Combat_ShowFOV", 
-	Default = false,
-	Callback = function(v) 
-		Config.ShowFOV = v
-	end 
-})
-
-S_SilentAim:AddToggle({ 
-	Name = "Show Weapon Info", 
-	Flag = "Combat_ShowWeaponInfo", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowWeaponInfo = v
-	end 
-})
-
-S_SilentAim:AddSlider({ 
-	Name = "FOV Radius", 
-	Min = 10, 
-	Max = 500, 
-	Default = 100, 
-	Flag = "Combat_SilentAimFOV", 
-	Callback = function(v) 
-		Config.SilentAimFOV = v
-	end 
-})
-
-S_SilentAim:AddSlider({ 
-	Name = "Hit Chance", 
-	Min = 0, 
-	Max = 100, 
-	Default = 100, 
-	Flag = "Combat_SilentAimChance", 
-	Callback = function(v) 
-		Config.SilentAimHitChance = v
-	end 
-})
-
-S_SilentAim:AddDropdown({
-	Name = "Target Part",
-	Default = "Head",
-	Values = {
-		"Head", "UpperTorso", "LowerTorso",
-		"LeftUpperArm", "LeftLowerArm", "LeftHand",
-		"RightUpperArm", "RightLowerArm", "RightHand",
-		"LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-		"RightUpperLeg", "RightLowerLeg", "RightFoot"
-	},
-	Flag = "Combat_SilentAimPart",
-	Callback = function(v)
-		Config.SilentAimTargetPart = v
-	end
-})
-
-S_SilentAim:AddToggle({ 
-	Name = "Prediction", 
-	Flag = "Combat_Prediction", 
-	Default = false,
-	Callback = function(v) 
-		Config.Prediction = v
-	end 
-})
-
-S_SilentAim:AddToggle({ 
-	Name = "Bullet Drop", 
-	Flag = "ESP_BulletDrop", 
-	Default = false,
-	Callback = function(v) 
-		Config.BulletDrop = v
-	end 
-})
-
-S_GunMods:AddToggle({ 
-	Name = "No Recoil", 
-	Flag = "Combat_NoRecoil", 
-	Default = false,
-	Callback = function(v) 
-		Config.NoRecoil = v
-	end 
-})
-
-S_GunMods:AddToggle({ 
-	Name = "No Spread", 
-	Flag = "Combat_NoSpread", 
-	Default = false,
-	Callback = function(v) 
-		Config.NoSpread = v
-	end 
-})
-
-S_GunMods:AddToggle({ 
-	Name = "Unlock Firemodes", 
-	Flag = "Combat_Firemodes", 
-	Default = false,
-	Callback = function(v) 
-		Config.UnlockFiremodes = v
-	end 
-})
-
-S_GunMods:AddToggle({ 
-	Name = "Custom RPM", 
-	Flag = "Combat_CustomRPM", 
-	Default = false,
-	Callback = function(v) 
-		Config.CustomRPM = v
-	end 
-})
-
-S_GunMods:AddSlider({ 
-	Name = "RPM Value", 
-	Min = 100, 
-	Max = 3000, 
-	Default = 800, 
-	Flag = "Combat_RPMValue", 
-	Callback = function(v) 
-		Config.RPMValue = v
-	end 
-})
-
-
--- Visuals Tab
-local VisualsTab = Window:DrawTab({ Name = "ESP", Icon = "eye", Type = "Double" })
-
--- ESP Settings Section
-local S_ESP = VisualsTab:DrawSection({ Name = "ESP Settings", Position = "left" })
-
-S_ESP:AddToggle({ 
-	Name = "Enable ESP", 
-	Flag = "ESP_Enabled", 
-	Default = false,
-	Callback = function(v) 
-		ESPEnabled = v
-		if not v then
-			for uid in pairs(ESPElements) do
-				RemoveESP(uid)
-			end
-		end
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Simple ESP (Optimized)", 
-	Flag = "ESP_Simple", 
-	Default = false,
-	Callback = function(v) 
-		Config.SimpleESP = v
-		-- Clear ESP to refresh with new mode
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Box ESP", 
-	Flag = "ESP_Box", 
-	Default = true,
-	Callback = function(v) 
-		Config.UseBoxESP = v
-		-- Clear ESP to refresh with new settings
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Highlight ESP", 
-	Flag = "ESP_Highlight", 
-	Default = false,
-	Callback = function(v) 
-		Config.UseHighlight = v
-		-- Clear ESP to refresh with new settings
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Tracers", 
-	Flag = "ESP_Tracers", 
-	Default = false,
-	Callback = function(v) 
-		Config.UseTracers = v
-		-- Clear ESP to refresh with new settings
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Show Names", 
-	Flag = "ESP_Names", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowNames = v
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Show Distance", 
-	Flag = "ESP_Distance", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowDistance = v
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Show Health", 
-	Flag = "ESP_Health", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowHealth = v
-	end 
-})
-
-S_ESP:AddToggle({ 
-	Name = "Show Prediction", 
-	Flag = "ESP_ShowPred", 
-	Default = false,
-	Callback = function(v) 
-		Config.ShowPrediction = v
-	end 
-})
-
-S_ESP:AddColorPicker({ 
-	Name = "Prediction Color", 
-	Default = Config.PredictionColor,
-	Flag = "ESP_PredColor", 
-	Callback = function(v) 
-		Config.PredictionColor = v
-		local dot = getgenv().PredictionDot
-		if dot then
-			dot.Color = v
-		end
-	end 
-})
-
-
-Config.TextScale = 1.2
-
-
-S_ESP:AddSlider({ 
-	Name = "Max Distance (m)", 
-	Min = 25, 
-	Max = 3000, 
-	Default = 1000, -- ~1000 studs
-	Flag = "ESP_MaxDist", 
-	Callback = function(v) 
-		-- Convert meters to studs for internal use (1m ≈ 3.57 studs)
-		Config.MaxDistance = math.floor(v * 3.57)
-	end 
-})
-
--- Entity Filters Section
-local S_Filters = VisualsTab:DrawSection({ Name = "Entity Filters", Position = "right" })
-
-S_Filters:AddToggle({ 
-	Name = "Show Players", 
-	Flag = "ESP_Players", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowPlayers = v
-		-- Clear ESP to refresh with new filters
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-S_Filters:AddToggle({ 
-	Name = "Show Zombies", 
-	Flag = "ESP_Zombies", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowZombies = v
-		-- Clear ESP to refresh with new filters
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-S_Filters:AddToggle({ 
-	Name = "Show NPCs", 
-	Flag = "ESP_NPCs", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowNPCs = v
-		-- Clear ESP to refresh with new filters
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-
-
-S_Filters:AddToggle({ 
-	Name = "Show teammates", 
-	Flag = "ESP_Squad", 
-	Default = false,
-	Callback = function(v) 
-		Config.ShowSquadMembers = v
-		-- Clear ESP to refresh with new filters
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
-S_Filters:AddButton({ 
-	Name = "Clear All ESP", 
-	Callback = function() 
-		for uid in pairs(ESPElements) do
-			RemoveESP(uid)
-		end
-	end 
-})
-
--- Colors Section
-local S_Colors = VisualsTab:DrawSection({ Name = "Entity Colors", Position = "right" })
-
-S_Colors:AddColorPicker({
-	Name = "Player (Enemy)",
-	Flag = "Color_Player",
-	Default = Config.PlayerColor,
-	Callback = function(v)
-		Config.PlayerColor = v
-	end
-})
-
-S_Colors:AddColorPicker({
-	Name = "Teammate (Squad)",
-	Flag = "Color_Squad",
-	Default = Config.SquadColor,
-	Callback = function(v)
-		Config.SquadColor = v
-	end
-})
-
-S_Colors:AddColorPicker({
-	Name = "NPC",
-	Flag = "Color_NPC",
-	Default = Config.NPCColor,
-	Callback = function(v)
-		Config.NPCColor = v
-	end
-})
-
-S_Colors:AddColorPicker({
-	Name = "Zombie: Crippled",
-	Flag = "Color_Z_Crippled",
-	Default = Config.ZombieColors[1],
-	Callback = function(v)
-		Config.ZombieColors[1] = v
-	end
-})
-
-S_Colors:AddColorPicker({
-	Name = "Zombie: Slow",
-	Flag = "Color_Z_Slow",
-	Default = Config.ZombieColors[2],
-	Callback = function(v)
-		Config.ZombieColors[2] = v
-	end
-})
-
-S_Colors:AddColorPicker({
-	Name = "Zombie: Normal",
-	Flag = "Color_Z_Normal",
-	Default = Config.ZombieColors[3],
-	Callback = function(v)
-		Config.ZombieColors[3] = v
-	end
-})
-
-S_Colors:AddColorPicker({
-	Name = "Zombie: Sprinter",
-	Flag = "Color_Z_Sprinter",
-	Default = Config.ZombieColors[4],
-	Callback = function(v)
-		Config.ZombieColors[4] = v
-	end
-})
-
--- ==========================================
--- BULLET TRAIL UI SECTION (ESP Tab, right column)
--- ==========================================
-local S_Trail = VisualsTab:DrawSection({ Name = "Bullet Trail", Position = "right" })
-
-S_Trail:AddToggle({
-    Name    = "Enable Trail",
-    Flag    = "BT_Enabled",
-    Default = TrailConfig.Enabled,
+GBEsp:AddToggle('ESP_Enabled', {
+    Text = 'Enable ESP', Default = false,
     Callback = function(v)
-        TrailConfig.Enabled = v
-    end
+        ESPEnabled = v
+        if not v then for uid in pairs(ESPElements) do RemoveESP(uid) end end
+    end,
 })
-
-S_Trail:AddToggle({
-    Name    = "Show Predicted Line",
-    Flag    = "BT_ShowLine",
-    Default = TrailConfig.LineEnabled,
+GBEsp:AddToggle('ESP_Simple', {
+    Text = 'Simple ESP (Optimized)', Default = false,
     Callback = function(v)
-        TrailConfig.LineEnabled = v
-    end
+        Config.SimpleESP = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
-
-S_Trail:AddToggle({
-    Name    = "Show Impact Marker",
-    Flag    = "BT_ShowImpact",
-    Default = TrailConfig.ImpactEnabled,
+GBEsp:AddToggle('ESP_Box', {
+    Text = 'Box ESP', Default = true,
     Callback = function(v)
-        TrailConfig.ImpactEnabled = v
-    end
+        Config.UseBoxESP = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
-
--- Màu arc chính
-S_Trail:AddColorPicker({
-    Name    = "Arc Color",
-    Flag    = "BT_ArcColor",
-    Default = TrailConfig.ArcColor,
+GBEsp:AddToggle('ESP_Highlight', {
+    Text = 'Highlight ESP', Default = false,
     Callback = function(v)
-        TrailConfig.ArcColor = v
-    end
+        Config.UseHighlight = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
-
--- Màu đường thẳng predicted
-S_Trail:AddColorPicker({
-    Name    = "Line Color",
-    Flag    = "BT_LineColor",
-    Default = TrailConfig.LineColor,
+GBEsp:AddToggle('ESP_Tracers', {
+    Text = 'Tracers', Default = false,
     Callback = function(v)
-        TrailConfig.LineColor = v
-    end
+        Config.UseTracers = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
-
--- Màu impact marker
-S_Trail:AddColorPicker({
-    Name    = "Impact Color",
-    Flag    = "BT_ImpactColor",
-    Default = TrailConfig.ImpactColor,
+GBEsp:AddToggle('ESP_Names', {
+    Text = 'Show Names', Default = true,
+    Callback = function(v) Config.ShowNames = v end,
+})
+GBEsp:AddToggle('ESP_Distance', {
+    Text = 'Show Distance', Default = true,
+    Callback = function(v) Config.ShowDistance = v end,
+})
+GBEsp:AddToggle('ESP_Health', {
+    Text = 'Show Health', Default = true,
+    Callback = function(v) Config.ShowHealth = v end,
+})
+GBEsp:AddToggle('ESP_ShowPred', {
+    Text = 'Show Prediction', Default = false,
+    Callback = function(v) Config.ShowPrediction = v end,
+})
+GBEsp:AddLabel('Prediction Color'):AddColorPicker('ESP_PredColor', {
+    Default = Config.PredictionColor,
     Callback = function(v)
-        TrailConfig.ImpactColor = v
-    end
+        Config.PredictionColor = v
+        local dot = getgenv().PredictionDot
+        if dot then dot.Color = v end
+    end,
+})
+GBEsp:AddSlider('ESP_MaxDist', {
+    Text = 'Max Distance (m)', Default = 1000, Min = 25, Max = 3000, Rounding = 0,
+    Callback = function(v) Config.MaxDistance = math.floor(v * 3.57) end,
 })
 
--- Độ trong suốt arc (0% = đục, 100% = vô hình)
-S_Trail:AddSlider({
-    Name     = "Arc Transparency %",
-    Flag     = "BT_ArcAlpha",
-    Min      = 0,
-    Max      = 100,
-    Default  = math.floor(TrailConfig.ArcTransparency * 100),
-    Rounding = 0,
-    Suffix   = "%",
+-- Entity Filters
+GBFilters:AddToggle('ESP_Players', {
+    Text = 'Show Players', Default = true,
     Callback = function(v)
-        TrailConfig.ArcTransparency = v / 100
-    end
+        Config.ShowPlayers = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
-
--- Độ trong suốt line
-S_Trail:AddSlider({
-    Name     = "Line Transparency %",
-    Flag     = "BT_LineAlpha",
-    Min      = 0,
-    Max      = 100,
-    Default  = math.floor(TrailConfig.LineTransparency * 100),
-    Rounding = 0,
-    Suffix   = "%",
+GBFilters:AddToggle('ESP_Zombies', {
+    Text = 'Show Zombies', Default = true,
     Callback = function(v)
-        TrailConfig.LineTransparency = v / 100
-    end
+        Config.ShowZombies = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
-
--- Size arc (width của đường đạn)
-S_Trail:AddSlider({
-    Name     = "Arc Width",
-    Flag     = "BT_ArcWidth",
-    Min      = 1,
-    Max      = 50,
-    Default  = math.floor(TrailConfig.ArcWidth * 100),  -- internal 0.08 → UI 8
-    Rounding = 0,
-    Suffix   = "cm",
+GBFilters:AddToggle('ESP_NPCs', {
+    Text = 'Show NPCs', Default = true,
     Callback = function(v)
-        TrailConfig.ArcWidth = v / 100  -- cm → studs
-    end
+        Config.ShowNPCs = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
-
--- Size line
-S_Trail:AddSlider({
-    Name     = "Line Width",
-    Flag     = "BT_LineWidth",
-    Min      = 1,
-    Max      = 30,
-    Default  = math.floor(TrailConfig.LineWidth * 100),
-    Rounding = 0,
-    Suffix   = "cm",
+GBFilters:AddToggle('ESP_Squad', {
+    Text = 'Show Teammates', Default = false,
     Callback = function(v)
-        TrailConfig.LineWidth = v / 100
-    end
+        Config.ShowSquadMembers = v
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
+})
+GBFilters:AddButton({
+    Text = 'Clear All ESP',
+    Func = function() for uid in pairs(ESPElements) do RemoveESP(uid) end end,
 })
 
--- Thời gian tự xóa
-S_Trail:AddSlider({
-    Name     = "Trail Lifetime",
-    Flag     = "BT_Lifetime",
-    Min      = 1,
-    Max      = 60,
-    Default  = TrailConfig.ArcLifetime,
-    Rounding = 0,
-    Suffix   = "s",
+-- Colors
+GBColors:AddLabel('Player (Enemy)'):AddColorPicker('Color_Player', {
+    Default = Config.PlayerColor,
+    Callback = function(v) Config.PlayerColor = v end,
+})
+GBColors:AddLabel('Teammate (Squad)'):AddColorPicker('Color_Squad', {
+    Default = Config.SquadColor,
+    Callback = function(v) Config.SquadColor = v end,
+})
+GBColors:AddLabel('NPC'):AddColorPicker('Color_NPC', {
+    Default = Config.NPCColor,
+    Callback = function(v) Config.NPCColor = v end,
+})
+GBColors:AddLabel('Zombie: Crippled'):AddColorPicker('Color_Z_Crippled', {
+    Default = Config.ZombieColors[1],
+    Callback = function(v) Config.ZombieColors[1] = v end,
+})
+GBColors:AddLabel('Zombie: Slow'):AddColorPicker('Color_Z_Slow', {
+    Default = Config.ZombieColors[2],
+    Callback = function(v) Config.ZombieColors[2] = v end,
+})
+GBColors:AddLabel('Zombie: Normal'):AddColorPicker('Color_Z_Normal', {
+    Default = Config.ZombieColors[3],
+    Callback = function(v) Config.ZombieColors[3] = v end,
+})
+GBColors:AddLabel('Zombie: Sprinter'):AddColorPicker('Color_Z_Sprinter', {
+    Default = Config.ZombieColors[4],
+    Callback = function(v) Config.ZombieColors[4] = v end,
+})
+
+-- Layout
+GBLayout:AddDropdown('ESP_BoxStyle', {
+    Text = 'Box Style', Default = 'Full', Values = {'Full','Corner'},
+    Callback = function(v) Config.BoxStyle = v end,
+})
+GBLayout:AddLabel('Box Color'):AddColorPicker('ESP_BoxColorOverride', {
+    Default = Color3.fromRGB(255,255,255),
+    Callback = function(v) Config.BoxColor = v end,
+})
+GBLayout:AddDropdown('ESP_BarPos', {
+    Text = 'Health Bar Position', Default = 'Left', Values = {'Left','Right','Bottom'},
+    Callback = function(v) Config.HealthBarSide = v end,
+})
+GBLayout:AddToggle('ESP_BarGrad', {
+    Text = 'Health Gradient', Default = true,
+    Callback = function(v) Config.UseHealthGradient = v end,
+})
+GBLayout:AddLabel('Health Color'):AddColorPicker('ESP_BarColor', {
+    Default = Color3.fromRGB(0,255,0),
+    Callback = function(v) Config.HealthBarColor = v end,
+})
+
+-- ──────────────────────────────────────────────
+-- CHARACTER TAB
+-- ──────────────────────────────────────────────
+local GBMovement = Tabs.Character:AddLeftGroupbox('Movement')
+local GBWorld    = Tabs.Character:AddRightGroupbox('World')
+
+local FlyToggle_raw
+GBMovement:AddToggle('Char_Fly', {
+    Text = 'Fly', Default = false,
     Callback = function(v)
-        TrailConfig.ArcLifetime = v
-    end
+        Config.Character_Fly = v
+        if not v and ControllerService and ControllerService.Controller then
+            if ControllerService.Controller.SetCFrame then
+                ControllerService.Controller:SetCFrame(nil)
+            end
+        end
+    end,
+})
+FlyToggle_raw = Toggles.Char_Fly
+
+GBMovement:AddLabel('Fly Key'):AddKeyPicker('Char_FlyKey', {
+    Default = 'V', Mode = 'Toggle', Text = 'Fly Toggle',
+    Callback = function(v) end,
 })
 
--- Độ mượt của arc (số segment)
-S_Trail:AddSlider({
-    Name     = "Arc Smoothness",
-    Flag     = "BT_Steps",
-    Min      = 8,
-    Max      = 80,
-    Default  = TrailConfig.ArcSteps,
-    Rounding = 0,
+GBMovement:AddToggle('Char_Spinbot', {
+    Text = 'Spinbot', Default = false,
+    Callback = function(v) Config.Spinbot = v end,
+})
+GBMovement:AddSlider('Char_SpinSpeed', {
+    Text = 'Spin Speed', Default = 20, Min = 1, Max = 100, Rounding = 0,
+    Callback = function(v) Config.SpinbotSpeed = v end,
+})
+GBMovement:AddSlider('Char_FlySpeed', {
+    Text = 'Fly Speed', Default = 50, Min = 10, Max = 1000, Rounding = 0,
+    Callback = function(v) Config.Character_FlySpeed = v end,
+})
+GBMovement:AddToggle('Char_WalkSpeedEnabled', {
+    Text = 'Walk Speed', Default = false,
+    Callback = function(v) Config.Character_WalkSpeedEnabled = v end,
+})
+GBMovement:AddSlider('Char_WalkSpeed', {
+    Text = 'Walk Speed Value', Default = 16, Min = 16, Max = 100, Rounding = 0,
+    Callback = function(v) Config.Character_WalkSpeed = v end,
+})
+GBMovement:AddToggle('Char_SprintSpeedEnabled', {
+    Text = 'Sprint Speed', Default = false,
+    Callback = function(v) Config.Character_SprintSpeedEnabled = v end,
+})
+GBMovement:AddSlider('Char_SprintSpeed', {
+    Text = 'Sprint Speed Value', Default = 25, Min = 25, Max = 100, Rounding = 0,
+    Callback = function(v) Config.Character_SprintSpeed = v end,
+})
+
+-- World
+GBWorld:AddToggle('World_ThermalVision', {
+    Text = 'Thermal Vision', Default = false,
     Callback = function(v)
-        TrailConfig.ArcSteps = v
-    end
-})
-
--- Character Tab
-local CharacterTab = Window:DrawTab({ Name = "Character", Icon = "user", Type = "Double" })
-local S_Movement = CharacterTab:DrawSection({ Name = "Movement", Position = "left" })
-
-local FlyToggle = S_Movement:AddToggle({ 
-	Name = "Fly", 
-	Flag = "Char_Fly", 
-	Default = false,
-	Callback = function(v) 
-		Config.Character_Fly = v
-
-		-- Reset Fly State when disabling
-		if not v and ControllerService and ControllerService.Controller then
-			-- Restore physics by un-forcing CFrame
-			if ControllerService.Controller.SetCFrame then
-				ControllerService.Controller:SetCFrame(nil)
-			end
-		end
-	end 
-})
-
-local FlyKey = "V"
-FlyToggle.Link:AddKeybind({
-	Name = "Fly Key", 
-	Flag = "Char_FlyKey", 
-	Default = FlyKey,
-	Callback = function(v) 
-		FlyKey = v
-	end
-})
-
-game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-
-	-- Fly Toggle
-	if FlyKey and FlyKey ~= "None" and (input.KeyCode.Name == FlyKey or input.KeyCode == FlyKey) then
-		FlyToggle:SetValue(not FlyToggle:GetValue())
-	end
-	if Window.Keybind and Window.Keybind ~= "None" and (input.KeyCode.Name == Window.Keybind or input.KeyCode == Window.Keybind) then
-	end
-end)
-
-S_Movement:AddToggle({ 
-	Name = "Spinbot", 
-	Flag = "Char_Spinbot", 
-	Default = false,
-	Callback = function(v) 
-		Config.Spinbot = v
-	end 
-})
-
-S_Movement:AddSlider({ 
-	Name = "Spin Speed", 
-	Min = 1, 
-	Max = 100, 
-	Default = 20, 
-	Flag = "Char_SpinSpeed", 
-	Callback = function(v) 
-		Config.SpinbotSpeed = v
-	end 
-})
-
-S_Movement:AddSlider({ 
-	Name = "Fly Speed", 
-	Min = 10, 
-	Max = 1000, 
-	Default = 50, 
-	Flag = "Char_FlySpeed", 
-	Callback = function(v) 
-		Config.Character_FlySpeed = v
-	end 
-
-
-})
-
-S_Movement:AddToggle({ 
-	Name = "Walk Speed", 
-	Flag = "Char_WalkSpeedEnabled", 
-	Default = false,
-	Callback = function(v) 
-		Config.Character_WalkSpeedEnabled = v
-	end 
-})
-
-S_Movement:AddSlider({ 
-	Name = "Walk Speed Value", 
-	Min = 16, 
-	Max = 100, 
-	Default = 16, 
-	Flag = "Char_WalkSpeed", 
-	Callback = function(v) 
-		Config.Character_WalkSpeed = v
-	end 
-})
-
-S_Movement:AddToggle({ 
-	Name = "Sprint Speed", 
-	Flag = "Char_SprintSpeedEnabled", 
-	Default = false,
-	Callback = function(v) 
-		Config.Character_SprintSpeedEnabled = v
-	end 
-})
-
-S_Movement:AddSlider({ 
-	Name = "Sprint Speed Value", 
-	Min = 25, 
-	Max = 100, 
-	Default = 25, 
-	Flag = "Char_SprintSpeed", 
-	Callback = function(v) 
-		Config.Character_SprintSpeed = v
-	end 
-})
-
--- World Section (based on EnvironmentService analysis)
-local S_World = CharacterTab:DrawSection({ Name = "World", Position = "right" })
-
-S_World:AddToggle({ 
-	Name = "Thermal Vision", 
-	Flag = "World_ThermalVision", 
-	Default = false,
-	Callback = function(v) 
-		Config.ThermalVision = v
-		-- Use EnvironmentService.FLIR property discovered in service analysis
-		if EnvironmentService then
-			EnvironmentService.FLIR = v
-		end
-	end 
+        Config.ThermalVision = v
+        if EnvironmentService then EnvironmentService.FLIR = v end
+    end,
 })
 
 local NVGColorCorrection = nil
-
 local NVGColors = {
-	["Green"] = Color3.fromRGB(112, 245, 65),  -- Green Phosphor (original)
-	["Blue"] = Color3.fromRGB(165, 233, 255)   -- White Phosphor (blue-ish)
+    ['Green'] = Color3.fromRGB(112, 245, 65),
+    ['Blue']  = Color3.fromRGB(165, 233, 255),
 }
-local CurrentNVGColor = "Green"
-
+local CurrentNVGColor = 'Green'
 local function ApplyNVGEffect()
-	if Config.NightVision and NVGColorCorrection then
-		NVGColorCorrection.TintColor = NVGColors[CurrentNVGColor] or NVGColors["Green"]
-		-- Exact game values from Tubes.lua
-		NVGColorCorrection.Brightness = 0.15
-		NVGColorCorrection.Contrast = 0.5
-		NVGColorCorrection.Saturation = -1
-		NVGColorCorrection.Enabled = true
-	end
+    if Config.NightVision and NVGColorCorrection then
+        NVGColorCorrection.TintColor   = NVGColors[CurrentNVGColor] or NVGColors['Green']
+        NVGColorCorrection.Brightness  = 0.15
+        NVGColorCorrection.Contrast    = 0.5
+        NVGColorCorrection.Saturation  = -1
+        NVGColorCorrection.Enabled     = true
+    end
 end
 
-S_World:AddToggle({ 
-	Name = "Night Vision", 
-	Flag = "World_NightVision", 
-	Default = false,
-	Callback = function(v) 
-		Config.NightVision = v
-
-		if v then
-			-- Create NVG effect using Lighting ColorCorrectionEffect
-			if not NVGColorCorrection then
-				NVGColorCorrection = Instance.new("ColorCorrectionEffect")
-				NVGColorCorrection.Name = "ESP_NightVision"
-				NVGColorCorrection.Parent = game:GetService("Lighting")
-			end
-			ApplyNVGEffect()
-		else
-			-- Disable NVG effect
-			if NVGColorCorrection then
-				NVGColorCorrection.Enabled = false
-			end
-		end
-	end 
+GBWorld:AddToggle('World_NightVision', {
+    Text = 'Night Vision', Default = false,
+    Callback = function(v)
+        Config.NightVision = v
+        if v then
+            if not NVGColorCorrection then
+                NVGColorCorrection = Instance.new('ColorCorrectionEffect')
+                NVGColorCorrection.Name = 'ESP_NightVision'
+                NVGColorCorrection.Parent = game:GetService('Lighting')
+            end
+            ApplyNVGEffect()
+        else
+            if NVGColorCorrection then NVGColorCorrection.Enabled = false end
+        end
+    end,
+})
+GBWorld:AddDropdown('World_NVGColor', {
+    Text = 'NVG Color', Default = 'Green', Values = {'Green','Blue'},
+    Callback = function(v) CurrentNVGColor = v; ApplyNVGEffect() end,
 })
 
-S_World:AddDropdown({
-	Name = "NVG Color",
-	Flag = "World_NVGColor",
-	Values = {"Green", "Blue"},
-	Default = "Green",
-	Callback = function(v)
-		CurrentNVGColor = v
-		ApplyNVGEffect()
-	end
+-- Fly keybind input handler
+game:GetService('UserInputService').InputBegan:Connect(function(input, gp)
+    if gp then return end
+    local fk = Options.Char_FlyKey
+    if fk and fk.Value and (input.KeyCode.Name == fk.Value or tostring(input.KeyCode) == fk.Value) then
+        local tog = Toggles.Char_Fly
+        if tog then tog:SetValue(not tog.Value) end
+    end
+end)
+
+-- ──────────────────────────────────────────────
+-- VEHICLES TAB
+-- ──────────────────────────────────────────────
+local GBVehFly     = Tabs.Vehicles:AddLeftGroupbox('Vehicle Fly')
+local GBVehTurret  = Tabs.Vehicles:AddLeftGroupbox('Turret Mods')
+local GBVehVisuals = Tabs.Vehicles:AddRightGroupbox('Visuals')
+
+GBVehFly:AddToggle('Veh_FlyEnabled', {
+    Text = 'Enable Fly', Default = false,
+    Callback = function(v) Config.VehicleFly_Enabled = v end,
+})
+GBVehFly:AddLabel('Toggle Key'):AddKeyPicker('Veh_FlyKey', {
+    Default = 'X', Mode = 'Toggle', Text = 'Vehicle Fly Toggle',
+    Callback = function(v) end,
+})
+GBVehFly:AddSlider('Veh_FlySpeed', {
+    Text = 'Fly Speed', Default = 100, Min = 10, Max = 500, Rounding = 0,
+    Callback = function(v) Config.VehicleFly_Speed = v end,
 })
 
--- Layout Section
-local S_Layout = VisualsTab:DrawSection({ Name = "Layout Settings", Position = "left" })
-
-
-Config.BoxScale = 1.4 -- Locked default
-
-S_Layout:AddDropdown({
-	Name = "Box Style",
-	Values = {"Full", "Corner"},
-	Default = "Full",
-	Flag = "ESP_BoxStyle",
-	Callback = function(v)
-		Config.BoxStyle = v
-	end
+GBVehTurret:AddToggle('Veh_UnlockFiremodes', {
+    Text = 'Unlock Firemodes', Default = false,
+    Callback = function(v) Config.TurretUnlockFiremodes = v end,
+})
+GBVehTurret:AddToggle('Veh_NoRecoil', {
+    Text = 'No Recoil', Default = false,
+    Callback = function(v) Config.TurretNoRecoil = v end,
+})
+GBVehTurret:AddToggle('Veh_NoSpread', {
+    Text = 'No Spread', Default = false,
+    Callback = function(v) Config.TurretNoSpread = v end,
 })
 
-S_Layout:AddColorPicker({
-	Name = "Box Color",
-	Flag = "ESP_BoxColorOverride",
-	Default = Color3.fromRGB(255, 255, 255),
-	Callback = function(v)
-		Config.BoxColor = v
-	end
+GBVehVisuals:AddToggle('ESP_Vehicles', {
+    Text = 'Enabled', Default = false,
+    Callback = function(v) Config.ShowVehicles = v end,
+})
+GBVehVisuals:AddToggle('ESP_VehIgnoreLocal', {
+    Text = 'Ignore Local Vehicle', Default = true,
+    Callback = function(v) Config.IgnoreLocalVehicle = v end,
+})
+GBVehVisuals:AddToggle('ESP_VehBox', {
+    Text = 'Show Box', Default = true,
+    Callback = function(v) Config.ShowVehicleBox = v end,
+})
+GBVehVisuals:AddDropdown('ESP_VehBoxStyle', {
+    Text = 'Box Style', Default = 'Full', Values = {'Full','Corner'},
+    Callback = function(v) Config.VehicleBoxStyle = v end,
+})
+GBVehVisuals:AddLabel('Box Color'):AddColorPicker('ESP_VehColor', {
+    Default = Config.VehicleColor,
+    Callback = function(v) Config.VehicleColor = v end,
+})
+GBVehVisuals:AddToggle('ESP_VehName', {
+    Text = 'Show Name', Default = true,
+    Callback = function(v) Config.ShowVehicleName = v end,
+})
+GBVehVisuals:AddToggle('ESP_VehHealth', {
+    Text = 'Show Health', Default = true,
+    Callback = function(v) Config.ShowVehicleHealth = v end,
+})
+GBVehVisuals:AddDropdown('ESP_VehBarSide', {
+    Text = 'Health Bar Pos', Default = 'Bottom', Values = {'Left','Right','Bottom'},
+    Callback = function(v) Config.VehicleHealthBarSide = v end,
+})
+GBVehVisuals:AddLabel('Health Color'):AddColorPicker('ESP_VehHealthColor', {
+    Default = Config.VehicleHealthColor,
+    Callback = function(v) Config.VehicleHealthColor = v end,
 })
 
-S_Layout:AddDropdown({
-	Name = "Health Bar Position",
-	Values = {"Left", "Right", "Bottom"},
-	Default = "Left",
-	Flag = "ESP_BarPos",
-	Callback = function(v)
-		Config.HealthBarSide = v
-	end
+-- Vehicle Fly keybind
+game:GetService('UserInputService').InputBegan:Connect(function(input, gp)
+    if gp then return end
+    local fk = Options.Veh_FlyKey
+    if fk and fk.Value and input.KeyCode.Name == fk.Value then
+        VehicleFly.Toggle()
+    end
+end)
+
+-- ──────────────────────────────────────────────
+-- MISC TAB
+-- ──────────────────────────────────────────────
+local GBAtmos = Tabs.Misc:AddLeftGroupbox('Atmosphere')
+
+GBAtmos:AddToggle('Misc_AlwaysDay', {
+    Text = 'Always Day', Default = false,
+    Callback = function(v) Config.AlwaysDay = v end,
+})
+GBAtmos:AddToggle('Misc_NoFog', {
+    Text = 'No Fog', Default = false,
+    Callback = function(v) Config.NoFog = v end,
 })
 
-S_Layout:AddToggle({
-	Name = "Health Gradient",
-	Flag = "ESP_BarGrad",
-	Default = true,
-	Callback = function(v)
-		Config.UseHealthGradient = v
-	end
+-- ──────────────────────────────────────────────
+-- SETTINGS TAB  (SaveManager + ThemeManager)
+-- ──────────────────────────────────────────────
+local GBMenu = Tabs.Settings:AddLeftGroupbox('Menu')
+
+GBMenu:AddButton({
+    Text = 'Unload',
+    Func = function()
+        pcall(function() Library:Unload() end)
+        if getgenv().TokaIHub_Connections then
+            for _, c in pairs(getgenv().TokaIHub_Connections) do pcall(function() c:Disconnect() end) end
+            getgenv().TokaIHub_Connections = {}
+        end
+        for uid in pairs(ESPElements) do RemoveESP(uid) end
+    end,
 })
 
-S_Layout:AddColorPicker({
-	Name = "Health Color",
-	Flag = "ESP_BarColor",
-	Default = Color3.fromRGB(0, 255, 0),
-	Callback = function(v)
-		Config.HealthBarColor = v
-	end
+GBMenu:AddLabel('Menu Bind'):AddKeyPicker('MenuKeybind', {
+    Default = 'RightShift', NoUI = true, Text = 'Menu Keybind',
 })
+Library.ToggleKeybind = Options.MenuKeybind
 
--- Vehicle Tab
-local VehicleTab = Window:DrawTab({ Name = "Vehicles", Icon = "car", Type = "Double" })
--- local S_Vehicles = VehicleTab:DrawSection({ Name = "Vehicle List", Position = "left" }) -- Removed as empty
-local S_VehVisuals = VehicleTab:DrawSection({ Name = "Visuals", Position = "right" })
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({'MenuKeybind'})
+ThemeManager:SetFolder('TokaIHub')
+SaveManager:SetFolder('TokaIHub/specific-game')
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
 
--- Vehicle Fly Section (Left)
-local S_VehFly = VehicleTab:DrawSection({ Name = "Vehicle Fly", Position = "left" })
-
-local VehFlyToggle = S_VehFly:AddToggle({ 
-	Name = "Enable Fly", 
-	Flag = "Veh_FlyEnabled", 
-	Default = false,
-	Callback = function(v) 
-		Config.VehicleFly_Enabled = v
-		if not v and VehicleService then
-			-- Optional: Reset physics
-		end
-	end 
+-- ──────────────────────────────────────────────
+-- SUCCESS NOTIFY
+-- ──────────────────────────────────────────────
+Notify({
+    Title   = 'TokaIHub',
+    Content = 'TokaIHub loaded successfully! discord.gg/wNuxGPER',
+    Duration = 5,
 })
-
-VehFlyToggle.Link:AddKeybind({
-	Name = "Toggle Key", 
-	Flag = "Veh_FlyKey", 
-	Default = Config.VehicleFly_ToggleKey,
-	Callback = function(v) 
-		Config.VehicleFly_ToggleKey = v
-	end
-})
-
-S_VehFly:AddSlider({ 
-	Name = "Fly Speed", 
-	Min = 10, 
-	Max = 500, 
-	Default = 100, 
-	Flag = "Veh_FlySpeed", 
-	Callback = function(v) 
-		Config.VehicleFly_Speed = v
-	end 
-})
-
--- Add Turret Mods Section (Left)
-local S_VehTurret = VehicleTab:DrawSection({ Name = "Turret Mods", Position = "left" })
-
-S_VehTurret:AddToggle({ 
-	Name = "Unlock Firemodes", 
-	Flag = "Veh_UnlockFiremodes", 
-	Default = false,
-	Callback = function(v) 
-		Config.TurretUnlockFiremodes = v
-	end 
-})
-
-S_VehTurret:AddToggle({ 
-	Name = "No Recoil", 
-	Flag = "Veh_NoRecoil", 
-	Default = false,
-	Callback = function(v) 
-		Config.TurretNoRecoil = v
-	end 
-})
-
-S_VehTurret:AddToggle({ 
-	Name = "No Spread", 
-	Flag = "Veh_NoSpread", 
-	Default = false,
-	Callback = function(v) 
-		Config.TurretNoSpread = v
-	end 
-})
-
-S_VehVisuals:AddToggle({ 
-	Name = "Enabled", 
-	Flag = "ESP_Vehicles", 
-	Default = false,
-	Callback = function(v) 
-		Config.ShowVehicles = v
-	end 
-})
-
-S_VehVisuals:AddToggle({ 
-	Name = "Ignore Local Vehicle", 
-	Flag = "ESP_VehIgnoreLocal", 
-	Default = true,
-	Callback = function(v) 
-		Config.IgnoreLocalVehicle = v
-	end 
-})
-
-S_VehVisuals:AddToggle({ 
-	Name = "Show Box", 
-	Flag = "ESP_VehBox", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowVehicleBox = v
-	end 
-})
-
-S_VehVisuals:AddDropdown({
-	Name = "Box Style",
-	Values = {"Full", "Corner"},
-	Default = "Full",
-	Flag = "ESP_VehBoxStyle",
-	Callback = function(v)
-		Config.VehicleBoxStyle = v
-	end
-})
-
-S_VehVisuals:AddColorPicker({
-	Name = "Box Color",
-	Flag = "ESP_VehColor",
-	Default = Config.VehicleColor,
-	Callback = function(v)
-		Config.VehicleColor = v
-	end
-})
-
-S_VehVisuals:AddToggle({ 
-	Name = "Show Name", 
-	Flag = "ESP_VehName", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowVehicleName = v
-	end 
-})
-
-S_VehVisuals:AddToggle({ 
-	Name = "Show Health", 
-	Flag = "ESP_VehHealth", 
-	Default = true,
-	Callback = function(v) 
-		Config.ShowVehicleHealth = v
-	end 
-})
-
-S_VehVisuals:AddDropdown({
-	Name = "Health Bar Pos",
-	Values = {"Left", "Right", "Bottom"},
-	Default = "Bottom",
-	Flag = "ESP_VehBarSide",
-	Callback = function(v)
-		Config.VehicleHealthBarSide = v
-	end
-})
-
-S_VehVisuals:AddColorPicker({
-	Name = "Health Color",
-	Flag = "ESP_VehHealthColor",
-	Default = Config.VehicleHealthColor,
-	Callback = function(v)
-		Config.VehicleHealthColor = v
-	end
-})
-
--- Misc Tab
-local MiscTab = Window:DrawTab({ Name = "Misc", Icon = "droplets", Type = "Double" })
-local S_Atmosphere = MiscTab:DrawSection({ Name = "Atmosphere", Position = "left" })
-
-S_Atmosphere:AddToggle({
-	Name = "Always Day",
-	Flag = "Misc_AlwaysDay",
-	Default = false,
-	Callback = function(v)
-		Config.AlwaysDay = v
-	end
-})
-
-S_Atmosphere:AddToggle({
-	Name = "No Fog",
-	Flag = "Misc_NoFog",
-	Default = false,
-	Callback = function(v)
-		Config.NoFog = v
-	end
-})
-
--- Settings Tab
-local SettingsTab = Window:DrawTab({ Name = "Settings", Icon = "settings", Type = "Double" })
-local MenuGroup = SettingsTab:DrawSection({ Name = "Menu", Position = "left" })
-
-MenuGroup:AddToggle({
-	Name = "Open Keybind Menu",
-	Flag = "KeybindMenuOpen",
-	Default = Library.KeybindFrame and Library.KeybindFrame.Visible or false,
-	Callback = function(value)
-		if Library.KeybindFrame then
-			Library.KeybindFrame.Visible = value
-		end
-	end,
-})
-
-MenuGroup:AddToggle({
-	Name = "Custom Cursor",
-	Flag = "ShowCustomCursor",
-	Default = true,
-	Callback = function(value)
-		Library.ShowCustomCursor = value
-	end,
-})
-
-MenuGroup:AddDropdown({
-	Name = "DPI Scale",
-	Flag = "DPIDropdown",
-	Values = { "50%", "75%", "100%", "125%", "150%", "175%", "200%" },
-	Default = "100%",
-	Callback = function(value)
-		value = tostring(value):gsub("%%", "")
-		local DPI = tonumber(value)
-		if DPI and Library.SetDPIScale then
-			Library:SetDPIScale(DPI)
-		end
-	end,
-})
-
-MenuGroup:AddSlider({
-	Name = "Corner Radius",
-	Flag = "UICornerSlider",
-	Default = Library.CornerRadius or 8,
-	Min = 0,
-	Max = 20,
-	Rounding = 0,
-	Callback = function(value)
-		if Window.Raw and Window.Raw.SetCornerRadius then
-			Window.Raw:SetCornerRadius(value)
-		end
-	end,
-})
-
-MenuGroup:AddKeybind({
-	Name = "Menu bind",
-	Flag = "MenuKeybind",
-	Default = "RightShift",
-	NoUI = true,
-	Callback = function()
-		Library.ToggleKeybind = Options.MenuKeybind
-	end,
-})
-
-MenuGroup:AddButton({
-	Name = "Unload",
-	Callback = function()
-		pcall(function() Library:Unload() end)
-		pcall(function() Window:Unload() end)
-		if getgenv().Moon_Connections then
-			for _, c in pairs(getgenv().Moon_Connections) do c:Disconnect() end
-			getgenv().Moon_Connections = {}
-		end
-		for uid in pairs(ESPElements) do RemoveESP(uid) end
-	end,
-})
-
--- Configuration Tab
-local ConfigUI = Window:DrawConfig({
-	Name = "Configs",
-	Icon = "folder",
-	Config = _ConfigManager
-})
-ConfigUI:Init()
 
 local frameCount = 0
 local espLoop = RunService.RenderStepped:Connect(function()
@@ -4866,14 +3865,14 @@ local espLoop = RunService.RenderStepped:Connect(function()
 	-- CRITICAL: Run Combat Logic EVERY FRAME for maximum Ragebot/Silent Aim speed (144Hz+)
 	UpdateCombat(frameCount)
 end)
-table.insert(getgenv().Moon_Connections, espLoop)
+table.insert(getgenv().TokaIHub_Connections, espLoop)
 
 -- Success notification
 Notifier.new({
-	Title = "Tokaihub",
-	Content = "Tokaihub loaded successfully!",
+	Title = "TokaIHub",
+	Content = "TokaIHub loaded successfully!",
 	Duration = 5,
-	Icon = "rbxassetid://0"
+	Icon = "rbxassetid://124218764552179"
 });
 
 -- Initial Map Detection
@@ -4892,14 +3891,6 @@ task.spawn(function()
 	task.wait(0.5)
 	VehicleFly.HookVehicles()
 	print("[Vehicle Fly] Ready! Press X to toggle")
-
-	-- Hook TrailRenderer vào BulletService (sau khi BulletService đã được tìm bởi InitializeServices)
-	task.wait(0.2)
-	if not TrailRenderer.HookDischarge() then
-		-- Retry nếu BulletService chưa sẵn lúc đầu
-		task.wait(3)
-		TrailRenderer.HookDischarge()
-	end
 end)
 
 -- Vehicle Fly Keybind
@@ -4909,4 +3900,4 @@ local flyKeybind = UserInputService.InputBegan:Connect(function(input, gameProce
 		VehicleFly.Toggle()
 	end
 end)
-table.insert(getgenv().Moon_Connections, flyKeybind)
+table.insert(getgenv().TokaIHub_Connections, flyKeybind)
