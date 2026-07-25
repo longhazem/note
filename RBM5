@@ -1,3 +1,11 @@
+-- Executor compat guards
+local getgenv = getgenv or function() return _G end
+local filtergc = filtergc or function() return {} end
+local getgc    = getgc    or function() return {} end
+local setreadonly = setreadonly or function() end
+local make_writeable = make_writeable or function() end
+local newcclosure = newcclosure or function(f) return f end
+
 -- Cleanup previous instances (Singleton)
 local scriptId = tick()
 getgenv().TokaIHub_ScriptId = scriptId
@@ -31,8 +39,8 @@ local tostring = tostring
 local getgenv = getgenv
 local getgc = getgc
 local filtergc = filtergc
-local Drawing = Drawing
-local Drawing_new = Drawing and Drawing.new
+local Drawing = Drawing or {}
+local Drawing_new = Drawing and Drawing.new or function() return setmetatable({},{__index=function() return function() end end, __newindex=function() end}) end
 
 -- Services
 local Players = game:GetService("Players")
@@ -3295,9 +3303,12 @@ local function GetLoadstringSource(Url)
 	return body
 end
 
+local _loadstring = loadstring or (syn and syn.loadstring) or (getgenv and getgenv().loadstring)
+
 local function LoadRemote(Url)
 	local src = GetLoadstringSource(Url)
-	local chunk, err = loadstring(src)
+	if not _loadstring then error("loadstring not available in this executor", 2) end
+	local chunk, err = _loadstring(src)
 	if not chunk then error("loadstring failed for " .. tostring(Url) .. ": " .. tostring(err), 2) end
 	return chunk()
 end
