@@ -1,231 +1,160 @@
---[[
-  SCRIPT ROBLOX HOÀN CHỈNH - BÀN PHÍM ẢO KÉO + TOGGLE Q/E + R, +, -
-  Bao gồm: GUI, LocalScript (xử lý kéo & nút), ServerScript (nhận lệnh điều khiển)
---]]
+-- ===================== SCRIPT HOÀN CHỈNH - ROBLOX =====================
+-- ĐẶT: LocalScript trong StarterPlayer -> StarterPlayerScripts hoặc gắn vào StarterGui
+-- YÊU CẦU: Không cần RemoteEvent nếu chỉ demo, nhưng để gửi lệnh lên server thì cần.
+-- Tôi đưa ra phiên bản TỰ TẠO GUI và HIỂN THỊ RÕ RÀNG các nút.
 
--- ========== 1. TẠO REMOTEEVENT (Đặt trong ReplicatedStorage) ==========
--- Tạo thủ công: Insert Object -> RemoteEvent -> đặt tên "InputRemote"
+local player = game.Players.LocalPlayer
+local gui = Instance.new("ScreenGui")
+gui.Name = "BanPhimAo"
+gui.Parent = player:WaitForChild("PlayerGui")  -- ĐẢM BẢO HIỂN THỊ
 
--- ========== 2. SCRIPT SERVER (Đặt trong ServerScriptService) ==========
-local Remote = game:GetService("ReplicatedStorage"):WaitForChild("InputRemote")
+-- Frame chính có màu sắc nổi bật
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 350, 0, 280)
+frame.Position = UDim2.new(0.5, -175, 0.5, -140)
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+frame.BackgroundTransparency = 0.1
+frame.BorderSizePixel = 3
+frame.BorderColor3 = Color3.new(1, 1, 1)
+frame.Active = true
+frame.Parent = gui
 
-Remote.OnServerEvent:Connect(function(player, action, value)
-    local char = player.Character
-    if not char or not char.Parent then return end
-    local humanoid = char:FindFirstChild("Humanoid")
-    if not humanoid then return end
+-- Tiêu đề to
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 35)
+title.Text = "BÀN PHÍM KÉO - ROBLOX"
+title.TextColor3 = Color3.new(1, 0.8, 0)
+title.TextScaled = true
+title.BackgroundTransparency = 1
+title.Parent = frame
 
-    if action == "move" then
-        -- value là Vector2 (x, y) chuẩn hóa từ joystick
-        local direction = Vector3.new(value.X, 0, value.Y)
-        if direction.Magnitude > 0.1 then
-            humanoid:MoveTo(char.PrimaryPart.Position + direction.Unit * 50)
-            -- Hoặc dùng MoveDirection (chỉ client nhưng server vẫn có thể set)
-            -- humanoid.MoveDirection = direction.Unit  -- (chỉ đọc, không set được)
-            -- Dùng cách di chuyển bằng MoveTo liên tục
-        end
-    elseif action == "toggle_Q" then
-        -- value = true (giữ) / false (thả)
-        print(player.Name .. " Q toggle: " .. tostring(value))
-        -- Gắn hiệu ứng hoặc hành động giữ phím Q
-    elseif action == "toggle_E" then
-        print(player.Name .. " E toggle: " .. tostring(value))
-    elseif action == "press_R" then
-        print(player.Name .. " bấm R")
-    elseif action == "press_Plus" then
-        print(player.Name .. " bấm +")
-    elseif action == "press_Minus" then
-        print(player.Name .. " bấm -")
+-- === JOYSTICK (nút kéo) ===
+local joyBg = Instance.new("Frame")
+joyBg.Size = UDim2.new(0, 140, 0, 140)
+joyBg.Position = UDim2.new(0.5, -70, 0.35, 0)
+joyBg.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
+joyBg.BorderSizePixel = 2
+joyBg.BorderColor3 = Color3.new(0.7, 0.7, 0.7)
+joyBg.Parent = frame
+local corner1 = Instance.new("UICorner")
+corner1.CornerRadius = UDim.new(1, 0)
+corner1.Parent = joyBg
+
+local thumb = Instance.new("Frame")
+thumb.Size = UDim2.new(0, 35, 0, 35)
+thumb.Position = UDim2.new(0.5, -17.5, 0.5, -17.5)
+thumb.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
+thumb.BorderSizePixel = 0
+thumb.Parent = joyBg
+local corner2 = Instance.new("UICorner")
+corner2.CornerRadius = UDim.new(1, 0)
+corner2.Parent = thumb
+
+-- Biến kéo
+local dragging = false
+local centerX = 0.5
+local centerY = 0.5
+local maxR = 0.4
+
+local function updateMove()
+    local dx = thumb.Position.X.Scale - centerX
+    local dy = thumb.Position.Y.Scale - centerY
+    local dist = math.sqrt(dx*dx + dy*dy)
+    if dist > maxR then
+        dx = dx / dist * maxR
+        dy = dy / dist * maxR
+        thumb.Position = UDim2.new(centerX + dx, -17.5, centerY + dy, -17.5)
+    end
+    -- In ra console để kiểm tra (bỏ comment nếu cần)
+    -- print("Move:", dx, dy)
+end
+
+-- Sự kiện Input
+local UIS = game:GetService("UserInputService")
+
+UIS.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
     end
 end)
 
--- ========== 3. LOCALSCRIPT (Đặt trong StarterPlayerScripts hoặc gắn GUI) ==========
-local player = game.Players.LocalPlayer
-local Remote = game:GetService("ReplicatedStorage"):WaitForChild("InputRemote")
-
--- Tạo GUI (khởi tạo hoặc lấy từ StarterGui)
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "BanPhimAo"
-screenGui.Parent = player:WaitForChild("PlayerGui")
-
--- === Frame chính ===
-local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 300, 0, 400)
-mainFrame.Position = UDim2.new(0, 20, 0, 50)
-mainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
-mainFrame.BackgroundTransparency = 0.2
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = screenGui
-
--- Tiêu đề
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 30)
-title.Text = "BÀN PHÍM KÉO"
-title.TextColor3 = Color3.new(1,1,1)
-title.BackgroundTransparency = 1
-title.Parent = mainFrame
-
--- === JOYSTICK (nút kéo thay WASD) ===
-local joystickBase = Instance.new("Frame")
-joystickBase.Size = UDim2.new(0, 160, 0, 160)
-joystickBase.Position = UDim2.new(0.5, -80, 0.3, 0)
-joystickBase.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
-joystickBase.BorderSizePixel = 2
-joystickBase.BorderColor3 = Color3.new(0.8,0.8,0.8)
-joystickBase.AnchorPoint = Vector2.new(0, 0)
-joystickBase.Parent = mainFrame
--- bo góc thành hình tròn
-local cornerBase = Instance.new("UICorner")
-cornerBase.CornerRadius = UDim.new(1, 0)
-cornerBase.Parent = joystickBase
-
--- Thumb (bóng kéo)
-local thumb = Instance.new("Frame")
-thumb.Size = UDim2.new(0, 40, 0, 40)
-thumb.Position = UDim2.new(0.5, -20, 0.5, -20)
-thumb.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
-thumb.BorderSizePixel = 0
-thumb.AnchorPoint = Vector2.new(0,0)
-thumb.Parent = joystickBase
-local cornerThumb = Instance.new("UICorner")
-cornerThumb.CornerRadius = UDim.new(1, 0)
-cornerThumb.Parent = thumb
-
--- Biến trạng thái joystick
-local isDragging = false
-local centerX = 0.5
-local centerY = 0.5
-local maxRadius = 0.4 -- tỷ lệ so với base (80px / 160)
-
--- Hàm cập nhật hướng và gửi server
-local function sendMoveFromThumb()
-    local pos = thumb.Position
-    local dx = pos.X.Scale - centerX
-    local dy = pos.Y.Scale - centerY
-    local dist = math.sqrt(dx*dx + dy*dy)
-    if dist > maxRadius then
-        dx = dx / dist * maxRadius
-        dy = dy / dist * maxRadius
-        thumb.Position = UDim2.new(centerX + dx, 0, centerY + dy, 0)
-    end
-    -- Chuẩn hóa vector (gửi server)
-    local normX = dx / maxRadius
-    local normY = dy / maxRadius
-    -- Chỉ gửi khi khác 0 đáng kể
-    if math.abs(normX) > 0.05 or math.abs(normY) > 0.05 then
-        Remote:FireServer("move", Vector2.new(normX, -normY)) -- đảo Y vì Roblox Y hướng lên
-    else
-        Remote:FireServer("move", Vector2.new(0, 0))
-    end
-end
-
--- Sự kiện kéo thumb
-local function onInputBegan(input)
+UIS.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        isDragging = true
+        dragging = false
+        thumb.Position = UDim2.new(0.5, -17.5, 0.5, -17.5)
+        -- Gửi lệnh dừng (nếu có Remote)
     end
-end
+end)
 
-local function onInputEnded(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        isDragging = false
-        -- Tự động về trung tâm khi thả
-        thumb.Position = UDim2.new(0.5, -20, 0.5, -20)
-        Remote:FireServer("move", Vector2.new(0, 0))
-    end
-end
-
-local function onMouseMove(input)
-    if not isDragging then return end
-    -- Lấy vị trí chuột so với joystickBase
+UIS.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
     local absPos = input.Position
-    local baseAbsPos = joystickBase.AbsolutePosition
-    local baseSize = joystickBase.AbsoluteSize
-    local relX = (absPos.X - baseAbsPos.X) / baseSize.X
-    local relY = (absPos.Y - baseAbsPos.Y) / baseSize.Y
-    -- Giới hạn trong vòng tròn
+    local baseAbs = joyBg.AbsolutePosition
+    local baseSize = joyBg.AbsoluteSize
+    local relX = (absPos.X - baseAbs.X) / baseSize.X
+    local relY = (absPos.Y - baseAbs.Y) / baseSize.Y
     local dx = relX - centerX
     local dy = relY - centerY
     local dist = math.sqrt(dx*dx + dy*dy)
-    if dist > maxRadius then
-        dx = dx / dist * maxRadius
-        dy = dy / dist * maxRadius
+    if dist > maxR then
+        dx = dx / dist * maxR
+        dy = dy / dist * maxR
     end
-    thumb.Position = UDim2.new(centerX + dx, -20, centerY + dy, -20)
-    sendMoveFromThumb()
-end
-
--- Gắn sự kiện vào UserInputService
-local UIS = game:GetService("UserInputService")
-UIS.InputBegan:Connect(onInputBegan)
-UIS.InputEnded:Connect(onInputEnded)
-UIS.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement then
-        onMouseMove(input)
-    end
+    thumb.Position = UDim2.new(centerX + dx, -17.5, centerY + dy, -17.5)
+    updateMove()
 end)
 
--- === CÁC NÚT BẤM ===
-local buttonY = 0.7
-local spacing = 0.12
+-- === 5 NÚT CHỨC NĂNG (HIỂN THỊ RÕ) ===
+local btnList = {"Q", "E", "R", "+", "-"}
+local isToggle = {true, true, false, false, false} -- Q và E toggle, còn lại bấm thường
+local btnY = 0.75
+local startX = 0.05
+local spacing = 0.18
 
-local function taoNut(text, action, isToggle)
+for i, name in ipairs(btnList) do
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 50, 0, 40)
-    btn.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.Text = text
-    btn.BorderSizePixel = 1
-    btn.BorderColor3 = Color3.new(0.6,0.6,0.6)
-    btn.Parent = mainFrame
+    btn.Position = UDim2.new(startX + (i-1)*spacing, 0, btnY, 0)
+    btn.BackgroundColor3 = Color3.fromRGB(100, 100, 140)
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Text = name
+    btn.TextScaled = true
+    btn.BorderSizePixel = 2
+    btn.BorderColor3 = Color3.new(1, 1, 1)
+    btn.Parent = frame
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
+    corner.CornerRadius = UDim.new(0, 6)
     corner.Parent = btn
 
-    if isToggle then
-        -- Biến trạng thái toggle
+    if isToggle[i] then
         local toggled = false
         btn.MouseButton1Click:Connect(function()
             toggled = not toggled
-            btn.BackgroundColor3 = toggled and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(70, 70, 90)
-            btn.Text = text .. (toggled and " [GIỮ]" or " [THẢ]")
-            Remote:FireServer("toggle_" .. text, toggled)
+            btn.BackgroundColor3 = toggled and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(100, 100, 140)
+            btn.Text = name .. (toggled and " [ON]" or " [OFF]")
+            print("Toggle " .. name .. " = " .. tostring(toggled))
+            -- Gửi lên server nếu có Remote
         end)
     else
         btn.MouseButton1Click:Connect(function()
-            Remote:FireServer("press_" .. text)
-            btn.BackgroundColor3 = Color3.fromRGB(150, 150, 200)
+            print("Pressed " .. name)
+            btn.BackgroundColor3 = Color3.fromRGB(200, 200, 50)
             task.wait(0.1)
-            btn.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
+            btn.BackgroundColor3 = Color3.fromRGB(100, 100, 140)
+            -- Gửi lên server nếu có Remote
         end)
     end
-    return btn
 end
 
--- Bố trí: Q (toggle), E (toggle), R, +, -
-local qBtn = taoNut("Q", "Q", true)
-qBtn.Position = UDim2.new(0.05, 0, buttonY, 0)
-
-local eBtn = taoNut("E", "E", true)
-eBtn.Position = UDim2.new(0.05 + spacing*1.2, 0, buttonY, 0)
-
-local rBtn = taoNut("R", "R", false)
-rBtn.Position = UDim2.new(0.05 + spacing*2.4, 0, buttonY, 0)
-
-local plusBtn = taoNut("+", "Plus", false)
-plusBtn.Position = UDim2.new(0.05 + spacing*3.6, 0, buttonY, 0)
-
-local minusBtn = taoNut("-", "Minus", false)
-minusBtn.Position = UDim2.new(0.05 + spacing*4.8, 0, buttonY, 0)
-
 -- Hướng dẫn
-local help = Instance.new("TextLabel")
-help.Size = UDim2.new(1, 0, 0, 25)
-help.Position = UDim2.new(0, 0, 0.95, 0)
-help.Text = "Kéo bóng → di chuyển | Q/E: giữ/ngắt | R, +, -: bấm"
-help.TextColor3 = Color3.new(0.8,0.8,0.8)
-help.TextSize = 12
-help.BackgroundTransparency = 1
-help.Parent = mainFrame
+local info = Instance.new("TextLabel")
+info.Size = UDim2.new(1, 0, 0, 22)
+info.Position = UDim2.new(0, 0, 0.93, 0)
+info.Text = "Kéo bóng xanh di chuyển | Q/E giữ/ngắt | R, +, - bấm"
+info.TextColor3 = Color3.new(0.8, 0.8, 0.9)
+info.TextSize = 14
+info.BackgroundTransparency = 1
+info.Parent = frame
 
-print("Bàn phím ảo Roblox đã sẵn sàng (chế độ sinh tồn)")
+print("ĐÃ TẠO GIAO DIỆN BÀN PHÍM. NHÌN LÊN MÀN HÌNH -> CÓ CÁC NÚT MÀU XANH ĐỎ.")
