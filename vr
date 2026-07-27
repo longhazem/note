@@ -1,270 +1,281 @@
--- Palofsc: Loại bỏ hoàn toàn VR, chỉ giữ điều khiển fly + camera
--- Hỗ trợ PC (keyboard) và Mobile (joystick + 4 nút E, Q, +, -)
-do
-    local qot = queue_on_teleport or (syn and syn.queue_on_teleport)
-    if not qot then
-        warn("Không tìm thấy queue_on_teleport – script sẽ chạy trực tiếp")
-    end
+-- Fly script – không VR, không teleport, hỗ trợ PC và Mobile
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local lp = Players.LocalPlayer
+if not lp then return end
 
-    local hrs = [==[
-        local Players = game:GetService("Players")
-        local RunService = game:GetService("RunService")
-        local UIS = game:GetService("UserInputService")
-        local GuiService = game:GetService("GuiService")
-        local lp = Players.LocalPlayer
-        if not lp then return end
+local isMobile = UIS.TouchEnabled or (GuiService:GetTouchEnabled() and true or false)
+local cam = workspace.CurrentCamera
+cam.CameraType = Enum.CameraType.Scriptable
 
-        local isMobile = UIS.TouchEnabled or (GuiService:GetTouchEnabled() and true or false)
-        local cam = workspace.CurrentCamera
-        cam.CameraType = Enum.CameraType.Scriptable
+-- Tham số bay
+local speed = 20
+local verticalSpeed = 15
+local sens = 0.003
+local yaw, pitch = 0, 0
+local camPos = cam.CFrame.Position
 
-        -- Tham số
-        local speed = 20
-        local sens = 0.003
-        local yaw = 0
-        local pitch = 0
-        local camPos = cam.CFrame.Position
+-- Trạng thái phím (cho PC và toggle)
+local keys = {}
+local moveVec = Vector3.zero   -- joystick
+local verticalMove = 0         -- từ nút +/- (sẽ dùng toggle)
 
-        -- Trạng thái phím
-        local keys = {}
-        local moveVec = Vector3.zero -- cho joystick
+-- Toggle cho các nút (E, Q, +, -)
+local toggleState = { E = false, Q = false, Plus = false, Minus = false }
 
-        -- Hàm khởi tạo look
-        local function setLook(v) 
-            -- không dùng lock center trên mobile
-            UIS.MouseBehavior = (not isMobile) and (v and Enum.MouseBehavior.LockCenter or Enum.MouseBehavior.Default) or Enum.MouseBehavior.Default
-        end
-        setLook(true)
-
-        -- Joystick và nút bấm cho mobile
-        if isMobile then
-            local gui = Instance.new("ScreenGui")
-            gui.Name = "MobileFlyUI"
-            gui.ResetOnSpawn = false
-            gui.IgnoreGuiInset = true
-            gui.Parent = lp:WaitForChild("PlayerGui")
-
-            -- Joystick (trái)
-            local joyBg = Instance.new("ImageLabel", gui)
-            joyBg.AnchorPoint = Vector2.new(0, 1)
-            joyBg.Position = UDim2.new(0.05, 0, 0.85, 0)
-            joyBg.Size = UDim2.new(0, 120, 0, 120)
-            joyBg.Image = "rbxassetid://11939836944"
-            joyBg.ImageColor3 = Color3.fromRGB(80,80,80)
-            joyBg.BackgroundTransparency = 1
-
-            local joyKnob = Instance.new("ImageLabel", joyBg)
-            joyKnob.AnchorPoint = Vector2.new(0.5, 0.5)
-            joyKnob.Position = UDim2.new(0.5, 0, 0.5, 0)
-            joyKnob.Size = UDim2.new(0, 40, 0, 40)
-            joyKnob.Image = "rbxassetid://11939836944"
-            joyKnob.ImageColor3 = Color3.fromRGB(200,200,200)
-            joyKnob.BackgroundTransparency = 1
-
-            local joyCenter = joyBg.Position + UDim2.new(0, 60, 0, 60)
-            local joyDrag = false
-
-            local function updateMove(pos)
-                local delta = pos - joyCenter
-                local mag = delta.Magnitude
-                if mag > 0.01 then
-                    local maxR = 50
-                    local clamped = delta / math.max(mag, maxR) * math.min(mag, maxR)
-                    moveVec = Vector3.new(clamped.X, 0, -clamped.Y) / maxR
-                else
-                    moveVec = Vector3.zero
-                end
-            end
-
-            joyBg.InputBegan:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.Touch then
-                    joyDrag = true
-                    local pos = inp.Position
-                    local delta = pos - joyCenter
-                    local mag = delta.Magnitude
-                    if mag > 50 then delta = delta / mag * 50 end
-                    joyKnob.Position = UDim2.new(0.5, delta.X, 0.5, delta.Y)
-                    updateMove(joyCenter + delta)
-                end
-            end)
-            joyBg.InputChanged:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.Touch and joyDrag then
-                    local pos = inp.Position
-                    local delta = pos - joyCenter
-                    local mag = delta.Magnitude
-                    if mag > 50 then delta = delta / mag * 50 end
-                    joyKnob.Position = UDim2.new(0.5, delta.X, 0.5, delta.Y)
-                    updateMove(joyCenter + delta)
-                end
-            end)
-            joyBg.InputEnded:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.Touch then
-                    joyDrag = false
-                    joyKnob.Position = UDim2.new(0.5, 0, 0.5, 0)
-                    moveVec = Vector3.zero
-                end
-            end)
-
-            -- Vuốt màn hình để xoay
-            local lookDrag = false
-            local lastTouch = nil
-            UIS.InputBegan:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.Touch and not joyDrag then
-                    lookDrag = true
-                    lastTouch = inp.Position
-                end
-            end)
-            UIS.InputChanged:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.Touch and lookDrag and lastTouch then
-                    local delta = inp.Position - lastTouch
-                    if delta.Magnitude > 2 then
-                        yaw = yaw - delta.X * sens
-                        pitch = math.clamp(pitch - delta.Y * sens, -1.45, 1.45)
-                        lastTouch = inp.Position
-                    end
-                end
-            end)
-            UIS.InputEnded:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.Touch then
-                    lookDrag = false
-                    lastTouch = nil
-                end
-            end)
-
-            -- Hàm tạo nút
-            local function makeBtn(parent, name, posX, posY, size, color, onDown, onUp)
-                local btn = Instance.new("ImageButton", parent)
-                btn.AnchorPoint = Vector2.new(0.5, 0.5)
-                btn.Position = UDim2.new(posX, 0, posY, 0)
-                btn.Size = UDim2.new(0, size, 0, size)
-                btn.Image = "rbxassetid://11939836944"
-                btn.ImageColor3 = color
-                btn.BackgroundTransparency = 1
-                btn.Name = name
-                btn.MouseButton1Down:Connect(onDown)
-                btn.MouseButton1Up:Connect(onUp)
-                btn.TouchBegan:Connect(onDown)
-                btn.TouchEnded:Connect(onUp)
-                return btn
-            end
-
-            -- Nút E (gán phím E)
-            makeBtn(gui, "E", 0.85, 0.65, 60, Color3.fromRGB(255,100,100),
-                function() keys[Enum.KeyCode.E] = true end,
-                function() keys[Enum.KeyCode.E] = false end
-            )
-
-            -- Nút Q
-            makeBtn(gui, "Q", 0.85, 0.78, 60, Color3.fromRGB(100,100,255),
-                function() keys[Enum.KeyCode.Q] = true end,
-                function() keys[Enum.KeyCode.Q] = false end
-            )
-
-            -- Nút +
-            makeBtn(gui, "Plus", 0.15, 0.70, 50, Color3.fromRGB(255,255,100),
-                function() speed = math.min(speed + 2, 80) end,
-                function() end
-            )
-
-            -- Nút -
-            makeBtn(gui, "Minus", 0.15, 0.83, 50, Color3.fromRGB(255,200,50),
-                function() speed = math.max(speed - 2, 2) end,
-                function() end
-            )
-
-            -- Label các nút
-            local function label(parent, text, posX, posY)
-                local lbl = Instance.new("TextLabel", parent)
-                lbl.AnchorPoint = Vector2.new(0.5, 0.5)
-                lbl.Position = UDim2.new(posX, 0, posY, 0)
-                lbl.Size = UDim2.new(0, 30, 0, 20)
-                lbl.BackgroundTransparency = 1
-                lbl.TextColor3 = Color3.fromRGB(255,255,255)
-                lbl.Text = text
-                lbl.TextSize = 16
-                lbl.Font = Enum.Font.SourceSansBold
-            end
-            label(gui, "E", 0.85, 0.62)
-            label(gui, "Q", 0.85, 0.75)
-            label(gui, "+", 0.15, 0.67)
-            label(gui, "-", 0.15, 0.80)
-        end
-
-        -- Xử lý bàn phím (PC)
-        UIS.InputBegan:Connect(function(io)
-            if io.UserInputType == Enum.UserInputType.Keyboard then
-                keys[io.KeyCode] = true
-                if io.KeyCode == Enum.KeyCode.LeftAlt then setLook(not (UIS.MouseBehavior == Enum.MouseBehavior.LockCenter)) end
-            end
-        end)
-        UIS.InputEnded:Connect(function(io)
-            if io.UserInputType == Enum.UserInputType.Keyboard then
-                keys[io.KeyCode] = false
-            end
-        end)
-
-        -- HUD hiển thị tốc độ
-        pcall(function()
-            local gui = Instance.new("ScreenGui")
-            gui.Name = "SpeedHUD"
-            gui.ResetOnSpawn = false
-            gui.IgnoreGuiInset = true
-            gui.Parent = lp:WaitForChild("PlayerGui")
-            local lbl = Instance.new("TextLabel", gui)
-            lbl.AnchorPoint = Vector2.new(1,0)
-            lbl.Position = UDim2.new(1,-10,0,10)
-            lbl.Size = UDim2.new(0,150,0,30)
-            lbl.BackgroundTransparency = 0.5
-            lbl.BackgroundColor3 = Color3.fromRGB(0,0,0)
-            lbl.TextColor3 = Color3.fromRGB(255,255,255)
-            lbl.TextSize = 18
-            lbl.Font = Enum.Font.Code
-            RunService.Heartbeat:Connect(function()
-                lbl.Text = "Speed: " .. string.format("%.1f", speed)
-            end)
-        end)
-
-        -- Vòng lặp chính
-        RunService:BindToRenderStep("FlyControl", Enum.RenderPriority.Camera.Value + 1, function(dt)
-            -- Xoay camera (trên PC dùng mouse delta)
-            if not isMobile then
-                local d = UIS:GetMouseDelta()
-                yaw = yaw - d.X * sens
-                pitch = math.clamp(pitch - d.Y * sens, -1.45, 1.45)
-            end
-
-            local rot = CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
-            local mv = Vector3.zero
-
-            if isMobile then
-                mv = moveVec
-            else
-                if keys[Enum.KeyCode.W] then mv += Vector3.new(0,0,-1) end
-                if keys[Enum.KeyCode.S] then mv += Vector3.new(0,0, 1) end
-                if keys[Enum.KeyCode.A] then mv += Vector3.new(-1,0,0) end
-                if keys[Enum.KeyCode.D] then mv += Vector3.new( 1,0,0) end
-                if keys[Enum.KeyCode.Space] then mv += Vector3.new(0, 1,0) end
-                if keys[Enum.KeyCode.LeftShift] then mv += Vector3.new(0,-1,0) end
-            end
-
-            if mv.Magnitude > 0 then
-                camPos = camPos + (rot * mv.Unit) * speed * dt
-            end
-
-            cam.CFrame = CFrame.new(camPos) * rot
-        end)
-
-        print("[Fly] Đã kích hoạt – không VR, hỗ trợ PC/Mobile")
-    ]==]
-
-    if qot then
-        qot(hrs)
-    else
-        -- chạy trực tiếp nếu không có teleport
-        loadstring(hrs)()
-    end
-
-    -- Teleport để kích hoạt script (giữ nguyên như yêu cầu gốc)
-    local TeleportService = game:GetService("TeleportService")
-    TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
+-- Hàm khởi tạo lock chuột
+local function setLook(v)
+    UIS.MouseBehavior = (not isMobile) and (v and Enum.MouseBehavior.LockCenter or Enum.MouseBehavior.Default) or Enum.MouseBehavior.Default
 end
+setLook(true)
+
+-- Tạo UI cho mobile
+if isMobile then
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "FlyMobileUI"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.Parent = lp:WaitForChild("PlayerGui")
+
+    -- Joystick (trái)
+    local joyBg = Instance.new("ImageLabel", gui)
+    joyBg.AnchorPoint = Vector2.new(0, 1)
+    joyBg.Position = UDim2.new(0.05, 0, 0.85, 0)
+    joyBg.Size = UDim2.new(0, 120, 0, 120)
+    joyBg.Image = "rbxassetid://11939836944"
+    joyBg.ImageColor3 = Color3.fromRGB(80,80,80)
+    joyBg.BackgroundTransparency = 1
+
+    local joyKnob = Instance.new("ImageLabel", joyBg)
+    joyKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+    joyKnob.Position = UDim2.new(0.5, 0, 0.5, 0)
+    joyKnob.Size = UDim2.new(0, 40, 0, 40)
+    joyKnob.Image = "rbxassetid://11939836944"
+    joyKnob.ImageColor3 = Color3.fromRGB(200,200,200)
+    joyKnob.BackgroundTransparency = 1
+
+    local joyCenter = joyBg.Position + UDim2.new(0, 60, 0, 60)
+    local joyDrag = false
+
+    local function updateMove(pos)
+        local delta = pos - joyCenter
+        local mag = delta.Magnitude
+        if mag > 0.01 then
+            local maxR = 50
+            local clamped = delta / math.max(mag, maxR) * math.min(mag, maxR)
+            moveVec = Vector3.new(clamped.X, 0, -clamped.Y) / maxR
+        else
+            moveVec = Vector3.zero
+        end
+    end
+
+    joyBg.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch then
+            joyDrag = true
+            local pos = inp.Position
+            local delta = pos - joyCenter
+            local mag = delta.Magnitude
+            if mag > 50 then delta = delta / mag * 50 end
+            joyKnob.Position = UDim2.new(0.5, delta.X, 0.5, delta.Y)
+            updateMove(joyCenter + delta)
+        end
+    end)
+    joyBg.InputChanged:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch and joyDrag then
+            local pos = inp.Position
+            local delta = pos - joyCenter
+            local mag = delta.Magnitude
+            if mag > 50 then delta = delta / mag * 50 end
+            joyKnob.Position = UDim2.new(0.5, delta.X, 0.5, delta.Y)
+            updateMove(joyCenter + delta)
+        end
+    end)
+    joyBg.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch then
+            joyDrag = false
+            joyKnob.Position = UDim2.new(0.5, 0, 0.5, 0)
+            moveVec = Vector3.zero
+        end
+    end)
+
+    -- Vuốt màn hình để xoay camera
+    local lookDrag = false
+    local lastTouch = nil
+    UIS.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch and not joyDrag then
+            lookDrag = true
+            lastTouch = inp.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch and lookDrag and lastTouch then
+            local delta = inp.Position - lastTouch
+            if delta.Magnitude > 2 then
+                yaw = yaw - delta.X * sens
+                pitch = math.clamp(pitch - delta.Y * sens, -1.45, 1.45)
+                lastTouch = inp.Position
+            end
+        end
+    end)
+    UIS.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch then
+            lookDrag = false
+            lastTouch = nil
+        end
+    end)
+
+    -- Hàm tạo nút toggle (nhấn để bật, nhấn lại để tắt)
+    local function makeToggleBtn(parent, name, posX, posY, size, color, onToggle)
+        local btn = Instance.new("ImageButton", parent)
+        btn.AnchorPoint = Vector2.new(0.5, 0.5)
+        btn.Position = UDim2.new(posX, 0, posY, 0)
+        btn.Size = UDim2.new(0, size, 0, size)
+        btn.Image = "rbxassetid://11939836944"
+        btn.ImageColor3 = color
+        btn.BackgroundTransparency = 1
+        btn.Name = name
+        local toggled = false
+        local function click()
+            toggled = not toggled
+            onToggle(toggled)
+            btn.ImageColor3 = toggled and Color3.fromRGB(255,255,255) or color
+        end
+        btn.MouseButton1Down:Connect(click)
+        btn.TouchBegan:Connect(click)
+        return btn
+    end
+
+    -- Nút E (toggle – ví dụ tăng tốc)
+    makeToggleBtn(gui, "E", 0.85, 0.65, 60, Color3.fromRGB(255,100,100),
+        function(on)
+            toggleState.E = on
+            if on then speed = speed + 10 else speed = speed - 10 end
+            speed = math.clamp(speed, 2, 80)
+        end
+    )
+
+    -- Nút Q (toggle – giảm tốc)
+    makeToggleBtn(gui, "Q", 0.85, 0.78, 60, Color3.fromRGB(100,100,255),
+        function(on)
+            toggleState.Q = on
+            if on then speed = speed - 10 else speed = speed + 10 end
+            speed = math.clamp(speed, 2, 80)
+        end
+    )
+
+    -- Nút + (toggle – bay lên)
+    makeToggleBtn(gui, "Plus", 0.15, 0.70, 50, Color3.fromRGB(255,255,100),
+        function(on)
+            toggleState.Plus = on
+            verticalMove = on and 1 or 0
+        end
+    )
+
+    -- Nút - (toggle – bay xuống)
+    makeToggleBtn(gui, "Minus", 0.15, 0.83, 50, Color3.fromRGB(255,200,50),
+        function(on)
+            toggleState.Minus = on
+            verticalMove = on and -1 or 0
+        end
+    )
+
+    -- Nhãn (chữ cái)
+    local function label(parent, text, posX, posY)
+        local lbl = Instance.new("TextLabel", parent)
+        lbl.AnchorPoint = Vector2.new(0.5, 0.5)
+        lbl.Position = UDim2.new(posX, 0, posY, 0)
+        lbl.Size = UDim2.new(0, 30, 0, 20)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = Color3.fromRGB(255,255,255)
+        lbl.Text = text
+        lbl.TextSize = 16
+        lbl.Font = Enum.Font.SourceSansBold
+    end
+    label(gui, "E", 0.85, 0.62)
+    label(gui, "Q", 0.85, 0.75)
+    label(gui, "+", 0.15, 0.67)
+    label(gui, "-", 0.15, 0.80)
+end
+
+-- Xử lý bàn phím cho PC (vẫn hoạt động nếu có)
+UIS.InputBegan:Connect(function(io)
+    if io.UserInputType == Enum.UserInputType.Keyboard then
+        keys[io.KeyCode] = true
+        if io.KeyCode == Enum.KeyCode.LeftAlt then
+            setLook(not (UIS.MouseBehavior == Enum.MouseBehavior.LockCenter))
+        end
+        -- Phím + và - trên bàn phím cũng điều chỉnh speed
+        if io.KeyCode == Enum.KeyCode.Equals then speed = math.min(speed + 2, 80) end
+        if io.KeyCode == Enum.KeyCode.Minus then speed = math.max(speed - 2, 2) end
+    end
+end)
+UIS.InputEnded:Connect(function(io)
+    if io.UserInputType == Enum.UserInputType.Keyboard then
+        keys[io.KeyCode] = false
+    end
+end)
+
+-- HUD tốc độ
+pcall(function()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "SpeedHUD"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.Parent = lp:WaitForChild("PlayerGui")
+    local lbl = Instance.new("TextLabel", gui)
+    lbl.AnchorPoint = Vector2.new(1, 0)
+    lbl.Position = UDim2.new(1, -10, 0, 10)
+    lbl.Size = UDim2.new(0, 200, 0, 40)
+    lbl.BackgroundTransparency = 0.5
+    lbl.BackgroundColor3 = Color3.fromRGB(0,0,0)
+    lbl.TextColor3 = Color3.fromRGB(255,255,255)
+    lbl.TextSize = 18
+    lbl.Font = Enum.Font.Code
+    RunService.Heartbeat:Connect(function()
+        lbl.Text = "Speed: " .. string.format("%.1f", speed) .. "\nE: " .. (toggleState.E and "ON" or "OFF") .. " Q: " .. (toggleState.Q and "ON" or "OFF")
+    end)
+end)
+
+-- Vòng lặp bay
+RunService:BindToRenderStep("Fly", Enum.RenderPriority.Camera.Value + 1, function(dt)
+    -- Xoay camera (PC dùng chuột)
+    if not isMobile then
+        local d = UIS:GetMouseDelta()
+        yaw = yaw - d.X * sens
+        pitch = math.clamp(pitch - d.Y * sens, -1.45, 1.45)
+    end
+
+    local rot = CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
+    local mv = Vector3.zero
+
+    if isMobile then
+        mv = moveVec
+        mv = mv + Vector3.new(0, verticalMove, 0)
+    else
+        if keys[Enum.KeyCode.W] then mv += Vector3.new(0,0,-1) end
+        if keys[Enum.KeyCode.S] then mv += Vector3.new(0,0, 1) end
+        if keys[Enum.KeyCode.A] then mv += Vector3.new(-1,0,0) end
+        if keys[Enum.KeyCode.D] then mv += Vector3.new( 1,0,0) end
+        if keys[Enum.KeyCode.Space] then mv += Vector3.new(0, 1,0) end
+        if keys[Enum.KeyCode.LeftShift] then mv += Vector3.new(0,-1,0) end
+    end
+
+    if mv.Magnitude > 0 then
+        local horiz = Vector3.new(mv.X, 0, mv.Z)
+        local vert = Vector3.new(0, mv.Y, 0)
+        local moveDelta = Vector3.zero
+        if horiz.Magnitude > 0 then
+            moveDelta = moveDelta + (rot * horiz.Unit) * speed * dt
+        end
+        if vert.Magnitude > 0 then
+            moveDelta = moveDelta + vert.Unit * verticalSpeed * dt
+        end
+        camPos = camPos + moveDelta
+    end
+
+    cam.CFrame = CFrame.new(camPos) * rot
+end)
+
+print("[Fly] Đã kích hoạt – Không VR, không teleport. PC: WASD/Space/Shift, chuột. Mobile: joystick, vuốt, nút E/Q (+/- speed), +/- (lên/xuống) toggle.")
