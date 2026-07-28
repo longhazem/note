@@ -4804,24 +4804,51 @@ local function StartAutoFarm()
 			end
 		end)
 
-		-- Auto attack using equipped weapon
+		-- Auto attack — kill all nearby enemies
 		local now = tick()
 		if now - _autoFarmLastAttack < Config.AutoFarmDelay then return end
 		_autoFarmLastAttack = now
 
 		local handler = WeaponManager.Equipped or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+		local auraRadius = Config.AutoFarmRadius * 4 -- aura kill range
+
+		-- Attempt gun discharge on nearest
 		if handler then
 			pcall(function()
-				-- Try gun discharge first
-				if handler.Discharge then
-					handler:Discharge()
-				-- Try melee/swing
-				elseif handler.Swing then
-					handler:Swing()
-				elseif handler.Attack then
-					handler:Attack()
-				elseif handler.Use then
-					handler:Use()
+				if handler.Discharge then handler:Discharge()
+				elseif handler.Swing then handler:Swing()
+				elseif handler.Attack then handler:Attack()
+				elseif handler.Use then handler:Use() end
+			end)
+		end
+
+		-- Aura kill: damage all enemies within radius regardless of weapon type
+		-- Works for melee, gun, or empty handed
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if not actor.Alive then continue end
+			local pos = actor.Position or (actor.Character and actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
+			if not pos then continue end
+			if (pos - myPos).Magnitude > auraRadius then continue end
+
+			pcall(function()
+				-- Method 1: Set health to 0 directly
+				if type(actor.Health) == "number" then
+					actor.Health = 0
+				elseif type(actor.Health) == "table" then
+					actor.Health.Current = 0
+				end
+
+				-- Method 2: Call TakeDamage if available
+				if actor.TakeDamage then
+					actor:TakeDamage(99999)
+				elseif actor.Damage then
+					actor:Damage(99999)
+				end
+
+				-- Method 3: Kill via humanoid in character
+				if actor.Character then
+					local hum = actor.Character:FindFirstChildOfClass("Humanoid")
+					if hum then hum.Health = 0 end
 				end
 			end)
 		end
