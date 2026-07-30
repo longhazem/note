@@ -4804,51 +4804,86 @@ local function StartAutoFarm()
 			end
 		end)
 
-		-- Auto attack — kill all nearby enemies
+		-- Auto Farm: melee — tìm MeleeHandler trong GC và gọi method attack
+		-- Scan GC 1 lần để cache melee handler (không scan mỗi frame)
+		if not getgenv()._meleeHandler then
+			for _, obj in pairs(getgc(true)) do
+				if type(obj) == "table" then
+					-- Melee handler có _actor và method đặc trưng (không có _firearm)
+					if rawget(obj, "_actor") and not rawget(obj, "_firearm") then
+						if rawget(obj, "Swing") or rawget(obj, "Stab") or rawget(obj, "Slash")
+							or rawget(obj, "Attack") or rawget(obj, "Hit")
+							or rawget(obj, "_swing") or rawget(obj, "_stab") then
+							getgenv()._meleeHandler = obj
+							break
+						end
+					end
+				end
+			end
+		end
+
+		-- Auto Farm: melee only — teleport đến head NPC + BulletService damage thật
 		local now = tick()
 		if now - _autoFarmLastAttack < Config.AutoFarmDelay then return end
 		_autoFarmLastAttack = now
 
-		local handler = WeaponManager.Equipped or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
-		local auraRadius = Config.AutoFarmRadius * 4 -- aura kill range
+		if not BulletService or not BulletService._originalDischarge then return end
 
-		-- Attempt gun discharge on nearest
-		if handler then
-			pcall(function()
-				if handler.Discharge then handler:Discharge()
-				elseif handler.Swing then handler:Swing()
-				elseif handler.Attack then handler:Attack()
-				elseif handler.Use then handler:Use() end
-			end)
+		-- Lấy caliber từ vũ khí cận chiến đang cầm (nếu có)
+		local handler = WeaponManager.Equipped or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+		local caliber, barrel = nil, nil
+		if handler and handler._firearm and handler._firearm.Tune then
+			caliber = handler._firearm.Tune.Caliber
+			barrel  = handler._firearm.Tune.Barrel
 		end
 
-		-- Aura kill: damage all enemies within radius regardless of weapon type
-		-- Works for melee, gun, or empty handed
+		-- Kill TẤT CẢ enemy trong radius bằng BulletService (tiền + loot thật)
 		for _, actor in ipairs(ActorManager.Enemies) do
 			if not actor.Alive then continue end
-			local pos = actor.Position or (actor.Character and actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
-			if not pos then continue end
-			if (pos - myPos).Magnitude > auraRadius then continue end
+
+			-- Lấy vị trí head
+			local headPos = nil
+			if actor.Parts and actor.Parts.Head then
+				headPos = actor.Parts.Head.Position
+			elseif actor.Character then
+				local head = actor.Character:FindFirstChild("Head")
+				if head then headPos = head.Position end
+			end
+			if not headPos then
+				headPos = (actor.Position or Vector3.new(0,0,0)) + Vector3.new(0, 1.5, 0)
+			end
+
+			local dist = (headPos - myPos).Magnitude
+			if dist > Config.AutoFarmRadius * 4 then continue end
 
 			pcall(function()
-				-- Method 1: Set health to 0 directly
-				if type(actor.Health) == "number" then
-					actor.Health = 0
-				elseif type(actor.Health) == "table" then
-					actor.Health.Current = 0
+				-- Teleport sát head NPC
+				local teleportTo = headPos + Vector3.new(0, -1, 0)
+				myActor.SimulatedPosition = teleportTo
+				if ControllerService and ControllerService.Controller then
+					ControllerService.Controller._position = teleportTo
 				end
 
-				-- Method 2: Call TakeDamage if available
-				if actor.TakeDamage then
-					actor:TakeDamage(99999)
-				elseif actor.Damage then
-					actor:Damage(99999)
+				-- Method 1: Melee handler trực tiếp
+				local mh = getgenv()._meleeHandler
+				if mh then
+					if mh.Swing then pcall(function() mh:Swing() end)
+					elseif mh.Stab then pcall(function() mh:Stab() end)
+					elseif mh.Slash then pcall(function() mh:Slash() end)
+					elseif mh.Attack then pcall(function() mh:Attack() end)
+					elseif mh.Hit then pcall(function() mh:Hit() end)
+					elseif mh._swing then pcall(function() mh:_swing() end)
+					end
 				end
 
-				-- Method 3: Kill via humanoid in character
-				if actor.Character then
-					local hum = actor.Character:FindFirstChildOfClass("Humanoid")
-					if hum then hum.Health = 0 end
+				-- Method 2: BulletService fallback (đảm bảo damage lên server)
+				local originCF = CFrame.new(teleportTo + Vector3.new(0,1,0), headPos)
+				for _ = 1, 5 do
+					pcall(function()
+						BulletService._originalDischarge(BulletService,
+							originCF, caliber, barrel,
+							true, nil, nil, nil, nil, nil, false)
+					end)
 				end
 			end)
 		end
