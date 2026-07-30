@@ -1172,19 +1172,24 @@ local function UpdateCombat(frameId)
 	if equippedController then
 		ApplyGunMods(equippedController,false)
 
-		-- Auto Reload
+		-- Auto Reload (global tick — không gán lên controller, không block manual R)
 		if Config.AutoReload then
-			local now_ar=tick()
-			if not equippedController._lastARCheck or (now_ar-equippedController._lastARCheck)>0.2 then
-				equippedController._lastARCheck=now_ar
-				local magEmpty=(equippedController._mag and (equippedController._mag.Capacity or 0)==0) or not equippedController._mag
-				if magEmpty and not equippedController._reloading then
+			local now_ar = tick()
+			if (now_ar - (getgenv()._autoReloadTick or 0)) > 0.2 then
+				getgenv()._autoReloadTick = now_ar
+				-- Chỉ trigger khi mag = 0 VÀ không đang reload (manual hoặc auto)
+				local magCapacity = equippedController._mag and (equippedController._mag.Capacity or 0) or 0
+				local magEmpty = magCapacity == 0
+				local isReloading = equippedController._reloading == true
+				if magEmpty and not isReloading then
 					pcall(function()
-						if equippedController._getMags then
-							local mags=equippedController:_getMags()
-							if mags and #mags>0 then equippedController:_reload(); return end
+						-- Dùng _getMags trước (source gốc), không fallback Reload() để tránh conflict PC
+						if equippedController._getMags and equippedController._reload then
+							local mags = equippedController:_getMags()
+							if mags and #mags > 0 then
+								equippedController:_reload()
+							end
 						end
-						if equippedController.Reload then equippedController:Reload() end
 					end)
 				end
 			end
@@ -2665,3 +2670,237 @@ S_VehTurret:AddButton({
 
 getgenv().VehicleMods = VehicleMods
 print("[BulletTracer v2 + VehicleMods] Loaded")
+
+-- ==========================================
+-- AURA KILL — MELEE SLASH
+-- Fire "InventoryAction"/"Slash" packet to all enemies in range
+-- Packet format: [_code, "InventoryAction", "Slash", targetId]
+-- Encryption: XOR-like Caesar cipher with net._key[1..4] + padding
+-- ==========================================
+
+local AuraKill = {
+	Enabled = false,
+	Range = 20,          -- studs
+	Interval = 0.1,      -- seconds between slash packets
+	_networkObj = nil,
+	_lastFire = 0,
+	_connection = nil,
+	_running = false,
+}
+
+-- Find network object via GC (has _key + _code)
+local function AK_GetNetworkObj()
+	if AuraKill._networkObj and rawget(AuraKill._networkObj, "_key") then
+		return AuraKill._networkObj
+	end
+
+	local ok, gc = pcall(function() return filtergc("table") end)
+	if not ok then ok, gc = pcall(function() return getgc(true) end) end
+	if not ok or type(gc) ~= "table" then return nil end
+
+	for _, v in pairs(gc) do
+		if type(v) == "table"
+			and rawget(v, "_key")
+			and rawget(v, "_code")
+			and type(rawget(v, "_key")) == "table"
+		then
+			AuraKill._networkObj = v
+			print("[AuraKill] Network object found")
+			return v
+		end
+	end
+	return nil
+end
+
+-- Encrypt packet using game's XOR-like cipher
+local function AK_Encrypt(data)
+	local net = AK_GetNetworkObj()
+	if not net then return nil end
+
+	local HttpService = game:GetService("HttpService")
+	local ok, rawStr = pcall(function()
+		return HttpService:JSONEncode(data)
+	end)
+	if not ok or not rawStr then return nil end
+
+	local key = net._key
+	local result = ""
+	for i = 1, #rawStr do
+		local ki = (i % 4) + 1
+		local nb = (string.byte(rawStr, i) - 32 + key[ki]) % 95 + 32
+		result = result .. string.char(nb)
+	end
+	-- Append padding
+	local padLen = key[5] or 79
+	for i = 1, padLen do
+		result = result .. string.char(math.random(33, 126))
+	end
+	return result
+end
+
+-- Get the RemoteEvent
+local function AK_GetRemote()
+	local rs = game:GetService("ReplicatedStorage")
+	local events = rs:FindFirstChild("Events")
+	if events then
+		local re = events:FindFirstChild("RemoteEvent")
+		if re then return re end
+	end
+	-- Fallback: search all RemoteEvents in RS
+	for _, v in ipairs(rs:GetDescendants()) do
+		if v:IsA("RemoteEvent") then return v end
+	end
+	return nil
+end
+
+-- Fire one Slash packet at a target actor
+local function AK_FireSlash(targetActor)
+	local net = AK_GetNetworkObj()
+	if not net then return false end
+
+	local remote = AK_GetRemote()
+	if not remote then return false end
+
+	-- Build packet: [_code, "InventoryAction", "Slash", targetUID]
+	-- targetUID: try actor.UID, actor.Id, or actor.Owner.UserId
+	local targetId = nil
+	if targetActor.UID then targetId = targetActor.UID
+	elseif targetActor.Id then targetId = targetActor.Id
+	elseif targetActor.Owner and targetActor.Owner.UserId then
+		targetId = targetActor.Owner.UserId
+	end
+
+	local packet = {
+		net._code,          -- [1] auth code
+		"InventoryAction",  -- [2] action type
+		"Slash",            -- [3] sub-action
+		targetId            -- [4] target
+	}
+
+	local encrypted = AK_Encrypt(packet)
+	if encrypted then
+		pcall(function()
+			remote:FireServer(encrypted)
+		end)
+		return true
+	end
+
+	-- Fallback: try raw table (some server builds accept unencrypted)
+	pcall(function()
+		remote:FireServer(packet)
+	end)
+	return true
+end
+
+-- Main aura tick
+local function AK_Tick()
+	if not AuraKill.Enabled then return end
+	if not ActorManager.Initialized then return end
+
+	local now = tick()
+	if (now - AuraKill._lastFire) < AuraKill.Interval then return end
+	AuraKill._lastFire = now
+
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+
+	local myPos = myActor.Position or Camera.CFrame.Position
+	local range = AuraKill.Range
+
+	-- Fire at all enemies in range
+	for _, actor in ipairs(ActorManager.Enemies) do
+		if actor and actor.Alive and actor.Character then
+			local actorPos = actor.Position
+			if not actorPos and actor.Character.PrimaryPart then
+				actorPos = actor.Character.PrimaryPart.Position
+			end
+
+			if actorPos then
+				local dist = (actorPos - myPos).Magnitude
+				if dist <= range then
+					AK_FireSlash(actor)
+				end
+			end
+		end
+	end
+end
+
+function AuraKill.Start()
+	if AuraKill._running then return end
+	AuraKill._running = true
+
+	-- Pre-cache network object
+	task.spawn(function()
+		AK_GetNetworkObj()
+	end)
+
+	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
+	table.insert(getgenv().Moon_Connections, AuraKill._connection)
+	print("[AuraKill] Started — Range:", AuraKill.Range, "studs")
+end
+
+function AuraKill.Stop()
+	AuraKill._running = false
+	if AuraKill._connection then
+		pcall(function() AuraKill._connection:Disconnect() end)
+		AuraKill._connection = nil
+	end
+	print("[AuraKill] Stopped")
+end
+
+getgenv().AuraKill = AuraKill
+
+-- ==========================================
+-- UI — Combat tab, new section "Aura Kill"
+-- ==========================================
+local S_AuraKill = CombatTab:DrawSection({ Name = "Aura Kill", Position = "right" })
+
+S_AuraKill:AddToggle({
+	Name = "Enable Aura Kill",
+	Flag = "AK_Enabled",
+	Default = false,
+	Callback = function(v)
+		AuraKill.Enabled = v
+		if v then AuraKill.Start()
+		else AuraKill.Stop() end
+	end
+})
+
+S_AuraKill:AddSlider({
+	Name = "Range (studs)",
+	Flag = "AK_Range",
+	Min = 5,
+	Max = 100,
+	Default = 20,
+	Rounding = 0,
+	Callback = function(v)
+		AuraKill.Range = v
+	end
+})
+
+S_AuraKill:AddSlider({
+	Name = "Fire Rate (ms)",
+	Flag = "AK_Interval",
+	Min = 50,
+	Max = 1000,
+	Default = 100,
+	Rounding = 0,
+	Callback = function(v)
+		AuraKill.Interval = v / 1000
+	end
+})
+
+S_AuraKill:AddButton({
+	Name = "Rescan Network",
+	Callback = function()
+		AuraKill._networkObj = nil
+		local net = AK_GetNetworkObj()
+		if net then
+			Notifier.new({ Title = "AuraKill", Content = "Network object found!", Duration = 3 })
+		else
+			Notifier.new({ Title = "AuraKill", Content = "Network not found — try again", Duration = 3 })
+		end
+	end
+})
+
+print("[AuraKill] Module loaded")
