@@ -2673,52 +2673,70 @@ print("[BulletTracer v2 + VehicleMods] Loaded")
 
 
 
+
+
 -- ==========================================
--- AURA KILL v2 — MELEE SLASH
--- RSpy dump: ["<guid>","InventoryAction","Slash", 2]
--- [1]=guid string, [2]="InventoryAction", [3]="Slash", [4]=count/targetId
--- Packet encrypted with XOR cipher: JSONEncode → shift by _key[1..4] → pad _key[5]
+-- AURA KILL v3
+-- Dùng MeleeInventory._use / Slash trực tiếp
+-- Source: ReplicatedFirst.Flux/client.Services.InventoryService.MeleeInventory
+-- Tìm MeleeInventory instance qua GC, gọi :_use() hoặc hàm Slash
 -- ==========================================
 
 local AuraKill = {
 	Enabled = false,
 	Range = 20,
 	Interval = 0.15,
-	_netObj = nil,       -- table with _key (array) + _code (string guid)
-	_remote = nil,
+	_meleeInv = nil,   -- MeleeInventory instance
+	_slashFn = nil,    -- hàm Slash lấy từ upvalue
 	_lastFire = 0,
 	_connection = nil,
 	_running = false,
 }
 
--- Tìm network object qua shared.import trước, sau đó GC
-local function AK_FindNetObj()
-	if AuraKill._netObj and rawget(AuraKill._netObj, "_key") then
-		return AuraKill._netObj
+-- Tìm MeleeInventory instance qua GC
+-- MeleeInventory có _use method và Slash upvalue
+local function AK_FindMeleeInventory()
+	if AuraKill._meleeInv then return AuraKill._meleeInv end
+
+	local ok, gc = pcall(function() return filtergc("table") end)
+	if not ok then ok, gc = pcall(function() return getgc(true) end) end
+	if not ok or type(gc) ~= "table" then return nil end
+
+	for _, obj in pairs(gc) do
+		if type(obj) == "table" then
+			-- MeleeInventory có _use method + Slash trong upvalue
+			local use = rawget(obj, "_use")
+			local slash = rawget(obj, "Slash")
+			if use and type(use) == "function" then
+				AuraKill._meleeInv = obj
+				print("[AuraKill] Found MeleeInventory (_use method)")
+				return obj
+			end
+			-- Alternative: table có Slash function trực tiếp
+			if slash and type(slash) == "function" then
+				AuraKill._meleeInv = obj
+				AuraKill._slashFn = slash
+				print("[AuraKill] Found MeleeInventory (Slash function)")
+				return obj
+			end
+		end
 	end
 
-	-- Priority 1: shared.import("network") — cách source gốc dùng
-	local ok, net = pcall(function() return shared.import("network") end)
-	if ok and net and rawget(net, "_key") and rawget(net, "_code") then
-		AuraKill._netObj = net
-		print("[AuraKill] Found via shared.import")
-		return net
-	end
-
-	-- Priority 2: GC scan
-	local gok, gc = pcall(function() return filtergc("table") end)
-	if not gok then gok, gc = pcall(function() return getgc(true) end) end
-
-	if gok and gc then
-		for _, v in pairs(gc) do
-			if type(v) == "table"
-				and rawget(v, "_key")
-				and rawget(v, "_code")
-				and type(rawget(v, "_key")) == "table"
-			then
-				AuraKill._netObj = v
-				print("[AuraKill] Found via GC")
-				return v
+	-- Fallback: tìm Slash function trong getgc closures
+	local ok2, gc2 = pcall(function() return getgc(false) end)
+	if ok2 and gc2 then
+		for _, fn in pairs(gc2) do
+			if type(fn) == "function" then
+				local info = debug and debug.getinfo and debug.getinfo(fn)
+				-- Tìm function tên "Slash" hoặc "_use" trong MeleeInventory source
+				local ok3, name = pcall(function()
+					return debug.getinfo(fn, "n").name
+				end)
+				if ok3 and (name == "Slash" or name == "_use") then
+					AuraKill._slashFn = fn
+					print("[AuraKill] Found Slash function via getgc closures")
+					return fn
+				end
 			end
 		end
 	end
@@ -2726,73 +2744,36 @@ local function AK_FindNetObj()
 	return nil
 end
 
--- Tìm RemoteEvent
-local function AK_FindRemote()
-	if AuraKill._remote and AuraKill._remote.Parent then
-		return AuraKill._remote
-	end
-	local rs = game:GetService("ReplicatedStorage")
-	-- Exact path từ source: ReplicatedStorage.Events.RemoteEvent
-	local events = rs:FindFirstChild("Events")
-	if events then
-		local re = events:FindFirstChild("RemoteEvent")
-		if re then AuraKill._remote = re; return re end
-	end
-	-- Fallback: bất kỳ RemoteEvent nào trong RS
-	for _, v in ipairs(rs:GetDescendants()) do
-		if v:IsA("RemoteEvent") then
-			AuraKill._remote = v
-			return v
-		end
-	end
-	return nil
-end
+-- Gọi Slash
+local function AK_DoSlash()
+	local inv = AuraKill._meleeInv
+	local slashFn = AuraKill._slashFn
 
--- Encrypt: JSONEncode → Caesar shift → pad
-local function AK_Encrypt(data, net)
-	local hs = game:GetService("HttpService")
-	local ok, raw = pcall(function() return hs:JSONEncode(data) end)
-	if not ok or not raw then return nil end
-
-	local key = net._key
-	local result = ""
-	for i = 1, #raw do
-		local ki = (i % 4) + 1
-		local nb = (string.byte(raw, i) - 32 + (key[ki] or 0)) % 95 + 32
-		result = result .. string.char(nb)
-	end
-	local padLen = key[5] or 79
-	for i = 1, padLen do
-		result = result .. string.char(math.random(33, 126))
-	end
-	return result
-end
-
--- Fire slash packet
-local function AK_FireSlash()
-	local net = AK_FindNetObj()
-	local remote = AK_FindRemote()
-	if not remote then return end
-
-	-- Packet format từ RSpy: [guid, "InventoryAction", "Slash", count]
-	-- count = 2 trong dump (có thể là số targets hoặc damage count)
-	local packet = {
-		net and net._code or "",  -- [1] guid/code
-		"InventoryAction",         -- [2]
-		"Slash",                   -- [3]
-		2                          -- [4] count — từ RSpy dump
-	}
-
-	if net and net._key then
-		local encrypted = AK_Encrypt(packet, net)
-		if encrypted then
-			pcall(function() remote:FireServer(encrypted) end)
-			return
-		end
+	-- Method 1: gọi _use trực tiếp (đây là hàm game dùng internally khi swing melee)
+	if inv and rawget(inv, "_use") then
+		pcall(function() inv:_use() end)
+		return true
 	end
 
-	-- Fallback raw (nếu không tìm được key)
-	pcall(function() remote:FireServer(packet) end)
+	-- Method 2: gọi Slash function trực tiếp
+	if slashFn then
+		pcall(function() slashFn() end)
+		return true
+	end
+
+	-- Method 3: tìm lại nếu chưa có
+	AK_FindMeleeInventory()
+	if AuraKill._meleeInv then
+		pcall(function()
+			local m = AuraKill._meleeInv
+			if rawget(m, "_use") then m:_use()
+			elseif rawget(m, "Slash") then m.Slash()
+			end
+		end)
+		return true
+	end
+
+	return false
 end
 
 -- Main tick
@@ -2801,14 +2782,12 @@ local function AK_Tick()
 
 	local now = tick()
 	if (now - AuraKill._lastFire) < AuraKill.Interval then return end
-	AuraKill._lastFire = now
 
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return end
 
 	local myPos = myActor.Position or Camera.CFrame.Position
-	local range = AuraKill.Range
-	local hasEnemyInRange = false
+	local inRange = false
 
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
@@ -2817,28 +2796,24 @@ local function AK_Tick()
 				if not pos and actor.Character and actor.Character.PrimaryPart then
 					pos = actor.Character.PrimaryPart.Position
 				end
-				if pos and (pos - myPos).Magnitude <= range then
-					hasEnemyInRange = true
+				if pos and (pos - myPos).Magnitude <= AuraKill.Range then
+					inRange = true
 					break
 				end
 			end
 		end
-	else
-		-- Nếu ActorManager chưa init, vẫn fire (blind aura)
-		hasEnemyInRange = true
 	end
 
-	if hasEnemyInRange then
-		AK_FireSlash()
+	if inRange then
+		local ok = AK_DoSlash()
+		if ok then AuraKill._lastFire = now end
 	end
 end
 
 function AuraKill.Start()
 	if AuraKill._running then return end
 	AuraKill._running = true
-	-- Pre-cache
-	task.spawn(AK_FindNetObj)
-	task.spawn(AK_FindRemote)
+	task.spawn(AK_FindMeleeInventory)
 	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
 	table.insert(getgenv().Moon_Connections, AuraKill._connection)
 	print("[AuraKill] Started")
@@ -2857,12 +2832,11 @@ getgenv().AuraKill = AuraKill
 
 
 -- ==========================================
--- VEHICLE TELEPORT — đến tọa độ cố định
--- X=-3772.173, Y=64.953, Z=1424.878 (từ ảnh)
+-- VEHICLE TELEPORT — Anti-cheat bypass
+-- Dùng physics solver SetState thay vì set CFrame trực tiếp
 -- ==========================================
 
 local VehicleTeleport = {
-	-- Tọa độ mặc định từ ảnh
 	X = -3772.173,
 	Y = 64.953,
 	Z = 1424.878,
@@ -2870,81 +2844,72 @@ local VehicleTeleport = {
 
 local function DoVehicleTeleport()
 	local targetPos = Vector3.new(VehicleTeleport.X, VehicleTeleport.Y, VehicleTeleport.Z)
-	local done = false
-
-	-- Method 1: LocalActor đang ngồi xe — dùng SimulatedPosition
+	local newCF = CFrame.new(targetPos)
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if myActor and myActor.Seat then
-		local seat = myActor.Seat
-		-- Tìm vehicle chứa seat này
-		if VehicleService and VehicleService.Vehicles then
-			for _, veh in pairs(VehicleService.Vehicles) do
-				if veh.Model then
-					local seatPart = seat.SeatPart or seat.Part
-					if seatPart and seatPart:IsDescendantOf(veh.Model) then
-						-- Teleport vehicle CFrame
-						pcall(function()
-							local newCF = CFrame.new(targetPos)
-							if veh.Hitbox then
-								veh.Hitbox.CFrame = newCF
-							end
-							veh.CFrame = newCF
-							-- Sync controller solver
-							if ControllerService and ControllerService.Controller then
-								local ctrl = ControllerService.Controller
-								if ctrl._solver and ctrl._solver.SetState then
-									ctrl._solver:SetState(newCF, Vector3.new(), Vector3.new(), veh.ComponentReplicates)
-								end
-							end
-						end)
-						pcall(function()
-							myActor.SimulatedPosition = targetPos
-						end)
-						done = true
-						break
-					end
-				end
-			end
+
+	-- Tìm vehicle đang Controlling = true qua VehicleService
+	local vehicle = nil
+	if VehicleService and VehicleService.Vehicles then
+		for _, veh in pairs(VehicleService.Vehicles) do
+			if veh.Controlling then vehicle = veh; break end
 		end
 	end
 
-	-- Method 2: Hook VehicleClass CFrame trực tiếp qua GC
-	if not done then
+	-- Fallback: scan GC cho vehicle với Controlling flag
+	if not vehicle then
 		local ok, gc = pcall(function() return filtergc("table") end)
 		if not ok then ok, gc = pcall(function() return getgc(true) end) end
 		if ok and gc then
 			for _, obj in pairs(gc) do
-				if type(obj) == "table"
-					and rawget(obj, "Controlling") == true
-					and (rawget(obj, "CFrame") or rawget(obj, "Hitbox"))
-				then
-					pcall(function()
-						local newCF = CFrame.new(targetPos)
-						obj.CFrame = newCF
-						if obj.Hitbox then obj.Hitbox.CFrame = newCF end
-					end)
-					done = true
-					break
+				if type(obj) == "table" and rawget(obj, "Controlling") == true then
+					vehicle = obj; break
 				end
 			end
 		end
 	end
 
-	-- Method 3: Fallback — teleport character saja
-	if not done and myActor then
+	if vehicle then
 		pcall(function()
-			myActor.SimulatedPosition = targetPos
+			-- Zero velocity trước — tránh AC detect momentum spike
+			if vehicle.Hitbox then
+				vehicle.Hitbox.AssemblyLinearVelocity = Vector3.new(0,0,0)
+				vehicle.Hitbox.AssemblyAngularVelocity = Vector3.new(0,0,0)
+			end
+
+			-- Set qua physics solver (bypass server position validation)
 			if ControllerService and ControllerService.Controller then
-				ControllerService.Controller._position = targetPos
-				ControllerService.Controller._lastSafePosition = targetPos
+				local ctrl = ControllerService.Controller
+				if ctrl._solver and ctrl._solver.SetState then
+					ctrl._solver:SetState(newCF, Vector3.new(), Vector3.new(),
+						vehicle.ComponentReplicates or {})
+				end
+			end
+
+			-- Set CFrame sau khi solver đã accept
+			if vehicle.Hitbox then vehicle.Hitbox.CFrame = newCF end
+			vehicle.CFrame = newCF
+
+			-- Sync actor
+			if myActor then
+				myActor.SimulatedPosition = targetPos
+				myActor.CFrame = newCF
 			end
 		end)
-	end
-
-	if done then
-		print("[VehicleTeleport] Teleported to", targetPos)
+		print("[VehicleTeleport] Vehicle teleported to", targetPos)
 	else
-		print("[VehicleTeleport] Character teleported (no vehicle found)")
+		-- Không có xe — teleport character
+		if myActor then
+			pcall(function()
+				if ControllerService and ControllerService.Controller then
+					local ctrl = ControllerService.Controller
+					ctrl._position = targetPos
+					ctrl._lastSafePosition = targetPos
+				end
+				myActor.SimulatedPosition = targetPos
+				myActor.CFrame = newCF
+			end)
+			print("[VehicleTeleport] Character teleported to", targetPos)
+		end
 	end
 end
 
@@ -2987,36 +2952,29 @@ S_AuraKill:AddSlider({
 })
 
 S_AuraKill:AddButton({
-	Name = "Rescan Network",
+	Name = "Rescan Melee",
 	Callback = function()
-		AuraKill._netObj = nil
-		AuraKill._remote = nil
+		AuraKill._meleeInv = nil
+		AuraKill._slashFn = nil
 		task.spawn(function()
-			local net = AK_FindNetObj()
-			local re = AK_FindRemote()
-			if net and re then
-				Notifier.new({ Title="AuraKill", Content="Network OK — Remote OK", Duration=3 })
-			elseif re then
-				Notifier.new({ Title="AuraKill", Content="Remote OK — Network missing (using raw)", Duration=3 })
+			local found = AK_FindMeleeInventory()
+			if found then
+				Notifier.new({ Title="AuraKill", Content="MeleeInventory found!", Duration=3 })
 			else
-				Notifier.new({ Title="AuraKill", Content="Remote not found!", Duration=3 })
+				Notifier.new({ Title="AuraKill", Content="Not found — equip melee rồi thử lại", Duration=4 })
 			end
 		end)
 	end
 })
-
 
 -- Vehicle Teleport — Vehicles tab
 local S_VehTeleport = VehicleTab:DrawSection({ Name = "Vehicle Teleport", Position = "right" })
 
 S_VehTeleport:AddButton({
 	Name = "Teleport Vehicle Here",
-	Callback = function()
-		DoVehicleTeleport()
-	end
+	Callback = function() DoVehicleTeleport() end
 })
 
--- Cho phép chỉnh tọa độ nếu cần
 S_VehTeleport:AddSlider({
 	Name = "Target X",
 	Flag = "VT_X",
@@ -3048,4 +3006,4 @@ S_VehTeleport:AddSlider({
 })
 
 getgenv().VehicleTeleport = VehicleTeleport
-print("[AuraKill v2 + VehicleTeleport] Loaded")
+print("[AuraKill v3 + VehicleTeleport] Loaded")
