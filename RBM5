@@ -1763,7 +1763,7 @@ local CombatTab=Window:DrawTab({ Name="Combat", Icon="swords", Type="Double" })
 local S_Rage=CombatTab:DrawSection({ Name="Ragebot", Position="right" })
 S_Rage:AddToggle({ Name="Enabled", Flag="Rage_Enabled", Default=false, Callback=function(v) Config.RageMode=v end })
 S_Rage:AddToggle({ Name="Look At Target", Flag="Rage_LookAt", Default=false, Callback=function(v) Config.Rage_LookAt=v end })
-S_Rage:AddSlider({ Name="Rage Range", Flag="Rage_Range", Min=50, Max=2000, Default=500, Callback=function(v) Config.Rage_Range=v end })
+S_Rage:AddSlider({ Name="Rage Range", Flag="Rage_Range", Min=50, Max=10000, Default=500, Callback=function(v) Config.Rage_Range=v end })
 S_Rage:AddDropdown({ Name="Target Part", Flag="Rage_TargetPart", Default="Head", Values={"Head","UpperTorso"}, Callback=function(v) Config.Rage_TargetPart=v end })
 S_Rage:AddToggle({ Name="Auto Fire", Flag="Rage_AutoFire", Default=false, Callback=function(v) Config.Rage_AutoFire=v end })
 S_Rage:AddToggle({ Name="Ammo Saver (Efficiency)", Flag="Rage_AmmoSaver", Default=false, Callback=function(v) Config.Rage_AmmoSaver=v end })
@@ -1794,7 +1794,7 @@ S_GunMods:AddToggle({ Name="No Recoil", Flag="Combat_NoRecoil", Default=false, C
 S_GunMods:AddToggle({ Name="No Spread", Flag="Combat_NoSpread", Default=false, Callback=function(v) Config.NoSpread=v end })
 S_GunMods:AddToggle({ Name="Unlock Firemodes", Flag="Combat_Firemodes", Default=false, Callback=function(v) Config.UnlockFiremodes=v end })
 S_GunMods:AddToggle({ Name="Custom RPM", Flag="Combat_CustomRPM", Default=false, Callback=function(v) Config.CustomRPM=v end })
-S_GunMods:AddSlider({ Name="RPM Value", Min=100, Max=3000, Default=800, Flag="Combat_RPMValue", Callback=function(v) Config.RPMValue=v end })
+S_GunMods:AddSlider({ Name="RPM Value", Min=100, Max=10000, Default=800, Flag="Combat_RPMValue", Callback=function(v) Config.RPMValue=v end })
 
 -- ESP Tab
 local VisualsTab=Window:DrawTab({ Name="ESP", Icon="eye", Type="Double" })
@@ -1816,7 +1816,7 @@ S_ESP:AddToggle({ Name="Show Prediction", Flag="ESP_ShowPred", Default=false, Ca
 S_ESP:AddColorPicker({ Name="Prediction Color", Default=Config.PredictionColor, Flag="ESP_PredColor", Callback=function(v)
 	Config.PredictionColor=v; local dot=getgenv().PredictionDot; if dot then dot.Color=v end end })
 Config.TextScale=1.2
-S_ESP:AddSlider({ Name="Max Distance (m)", Min=25, Max=3000, Default=1000, Flag="ESP_MaxDist", Callback=function(v)
+S_ESP:AddSlider({ Name="Max Distance (m)", Min=25, Max=10000, Default=1000, Flag="ESP_MaxDist", Callback=function(v)
 	Config.MaxDistance=math.floor(v*3.57) end })
 
 local S_Filters=VisualsTab:DrawSection({ Name="Entity Filters", Position="right" })
@@ -2195,548 +2195,78 @@ getgenv().BulletTracer = BulletTracer
 
 print("[AutoFarm + BulletTracer] Modules loaded")
 
--- ==========================================
--- BULLET TRACER v2
--- Track projectile parts spawned by game
--- ==========================================
-
-local BulletTracer = {
-	Enabled = false,
-	Lifetime = 3,
-	Transparency = 0.3,
-	Thickness = 2,
-	Color = Color3.fromRGB(255, 200, 50),
-	FadeOut = true,
-	_tracers = {},   -- { line, born, from3, to3 }
-	_watched = {},   -- { part, line, lastPos } — active projectile tracking
-}
-
--- Tìm tất cả projectile parts đang tồn tại
--- Game BRM5 spawn bullet parts vào Workspace với tên chứa "Bullet" hoặc "Projectile"
--- hoặc là BasePart với CanCollide=false, Anchored=false, size nhỏ
-
-local function IsLikelyProjectile(part)
-	if not part:IsA("BasePart") then return false end
-	local name = part.Name:lower()
-	if name:find("bullet") or name:find("projectile") or name:find("shell") or name:find("ammo") then
-		return true
-	end
-	-- size nhỏ, không collide, không anchor
-	if part.Size.Magnitude < 1.5 and not part.CanCollide and not part.Anchored then
-		return true
-	end
-	return false
-end
-
--- Spawn một tracer line tĩnh (from → to)
-local function SpawnStaticTracer(fromPos, toPos)
-	local line = Drawing.new("Line")
-	line.Color = BulletTracer.Color
-	line.Thickness = BulletTracer.Thickness
-	line.Transparency = 1 - BulletTracer.Transparency
-	line.Visible = false
-	line.ZIndex = 10
-
-	local fromS, fromOn = Camera:WorldToViewportPoint(fromPos)
-	local toS, toOn = Camera:WorldToViewportPoint(toPos)
-
-	if fromOn or toOn then
-		line.From = Vector2.new(fromS.X, fromS.Y)
-		line.To = Vector2.new(toS.X, toS.Y)
-		line.Visible = true
-	end
-
-	table.insert(BulletTracer._tracers, {
-		line = line,
-		born = tick(),
-		from3 = fromPos,
-		to3 = toPos,
-	})
-end
-
--- Watch một projectile part: vẽ line theo path của nó
-local function WatchProjectile(part, muzzlePos)
-	local line = Drawing.new("Line")
-	line.Color = BulletTracer.Color
-	line.Thickness = BulletTracer.Thickness
-	line.Transparency = 1 - BulletTracer.Transparency
-	line.Visible = false
-	line.ZIndex = 10
-
-	table.insert(BulletTracer._watched, {
-		part = part,
-		line = line,
-		from3 = muzzlePos,
-		born = tick(),
-	})
-end
-
--- Update loop: cả static tracers (fade) và live projectile tracking
-local function BulletTracer_Update()
-	local now = tick()
-	local toRemoveStatic = {}
-	local toRemoveWatched = {}
-
-	-- Update static fade tracers
-	for i, t in ipairs(BulletTracer._tracers) do
-		local age = now - t.born
-		local lifetime = BulletTracer.Lifetime
-
-		if age >= lifetime then
-			pcall(function() t.line:Remove() end)
-			table.insert(toRemoveStatic, i)
-		else
-			local fromS, fromOn = Camera:WorldToViewportPoint(t.from3)
-			local toS, toOn = Camera:WorldToViewportPoint(t.to3)
-
-			if fromOn or toOn then
-				local alpha = BulletTracer.FadeOut and (1 - (age / lifetime)) or 1
-				t.line.Transparency = (1 - BulletTracer.Transparency) * alpha
-				t.line.From = Vector2.new(fromS.X, fromS.Y)
-				t.line.To = Vector2.new(toS.X, toS.Y)
-				t.line.Visible = true
-			else
-				t.line.Visible = false
-			end
-		end
-	end
-
-	-- Update live projectile tracers
-	for i, w in ipairs(BulletTracer._watched) do
-		local age = now - w.born
-		-- Part biến mất hoặc quá lâu → chuyển thành static tracer
-		local partGone = not w.part or not w.part.Parent
-		local timeout = age > 8  -- projectile sống tối đa 8s
-
-		if partGone or timeout then
-			-- Lấy vị trí cuối của projectile làm endpoint
-			local endPos = w.to3  -- fallback
-			if w.part and w.part.Parent then
-				endPos = w.part.Position
-			end
-
-			pcall(function() w.line:Remove() end)
-			table.insert(toRemoveWatched, i)
-
-			-- Tạo static tracer từ muzzle → điểm cuối
-			SpawnStaticTracer(w.from3, endPos or w.from3 + Vector3.new(0,0,100))
-		else
-			-- Part còn sống: vẽ line từ muzzle → vị trí hiện tại
-			local curPos = w.part.Position
-			local fromS, fromOn = Camera:WorldToViewportPoint(w.from3)
-			local toS, toOn = Camera:WorldToViewportPoint(curPos)
-
-			if fromOn or toOn then
-				w.line.From = Vector2.new(fromS.X, fromS.Y)
-				w.line.To = Vector2.new(toS.X, toS.Y)
-				w.line.Visible = true
-			else
-				w.line.Visible = false
-			end
-		end
-	end
-
-	-- Cleanup reverse
-	for i = #toRemoveStatic, 1, -1 do table.remove(BulletTracer._tracers, toRemoveStatic[i]) end
-	for i = #toRemoveWatched, 1, -1 do table.remove(BulletTracer._watched, toRemoveWatched[i]) end
-end
-
--- Listen Workspace.ChildAdded để bắt projectile khi spawn
-local _tracerWorkspaceConn = nil
-
-local function BulletTracer_StartWatching()
-	if _tracerWorkspaceConn then return end
-
-	_tracerWorkspaceConn = Workspace.ChildAdded:Connect(function(child)
-		if not BulletTracer.Enabled then return end
-		if not IsLikelyProjectile(child) then return end
-
-		-- Lấy muzzle từ WeaponManager hoặc Camera
-		local muzzlePos = GetMuzzlePosition() or Camera.CFrame.Position
-		WatchProjectile(child, muzzlePos)
-	end)
-
-	table.insert(getgenv().Moon_Connections, _tracerWorkspaceConn)
-end
-
-local tracerRenderLoop = RunService.RenderStepped:Connect(function()
-	if BulletTracer.Enabled then
-		BulletTracer_Update()
-	end
-end)
-table.insert(getgenv().Moon_Connections, tracerRenderLoop)
-
-getgenv().BulletTracer = BulletTracer
 
 
--- ==========================================
--- VEHICLE AUTO RELOAD + CUSTOM RPM
--- Dùng findModule("Turrets") để access turret config
--- Dùng _getMags() + _reload() cho auto reload
--- ==========================================
 
-local VehicleMods = {
-	AutoReload = false,
-	TurretCustomRPM = false,
-	TurretRPMValue = 1000,
-	_turretConfigCache = nil,
-	_originalRPMs = {},       -- backup RPM gốc theo turret name
-	_lastReloadCheck = 0,
-}
-
--- findModule: tìm ModuleScript theo tên trong ReplicatedFirst / ReplicatedStorage
-local function findModule(name)
-	local rf = game:GetService("ReplicatedFirst")
-	local rs = game:GetService("ReplicatedStorage")
-
-	-- Priority: Services folder bên trong Flux
-	for _, flux in ipairs(rf:GetChildren()) do
-		if flux.Name:find("Flux") then
-			local services = flux:FindFirstChild("Services")
-			if services then
-				for _, s in ipairs(services:GetChildren()) do
-					if s.Name:find(name) and s:IsA("ModuleScript") then return s end
-				end
-			end
-		end
-	end
-
-	local function search(parent)
-		if not parent then return end
-		for _, child in ipairs(parent:GetChildren()) do
-			local cName = child.Name
-			if (cName:find(name, 1, true) or cName:lower():find(name:lower(), 1, true))
-				and child:IsA("ModuleScript") then
-				if child.Parent then return child end
-			end
-			local found = search(child)
-			if found then return found end
-		end
-	end
-	return search(rf) or search(rs)
-end
-
--- Lấy turret config table từ module "Turrets"
-local function GetTurretConfig()
-	if VehicleMods._turretConfigCache then return VehicleMods._turretConfigCache end
-	local mod = findModule("Turrets")
-	if mod then
-		local ok, result = pcall(require, mod)
-		if ok and result then
-			VehicleMods._turretConfigCache = result
-			return result
-		end
-	end
-	-- Fallback: scan GC cho turret config
-	local ok, gc = pcall(function() return filtergc("table") end)
-	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if ok and gc then
-		for _, obj in pairs(gc) do
-			if type(obj) == "table" then
-				-- Turret config table có nhiều sub-tables với field RPM, Barrel_Spread
-				local count = 0
-				for k, v in pairs(obj) do
-					if type(v) == "table" and (v.RPM or v.Barrel_Spread) then count = count + 1 end
-					if count >= 2 then
-						VehicleMods._turretConfigCache = obj
-						return obj
-					end
-				end
-			end
-		end
-	end
-	return nil
-end
-
--- Apply turret RPM từ config table
-local function ApplyTurretRPM()
-	if not VehicleMods.TurretCustomRPM then
-		-- Restore originals
-		local configs = VehicleMods._turretConfigCache
-		if configs then
-			for name, stats in pairs(configs) do
-				if type(stats) == "table" and stats.RPM and VehicleMods._originalRPMs[name] then
-					stats.RPM = VehicleMods._originalRPMs[name]
-				end
-			end
-		end
-		return
-	end
-
-	local configs = GetTurretConfig()
-	if not configs then return end
-
-	for name, stats in pairs(configs) do
-		if type(stats) == "table" and stats.RPM then
-			-- Backup original
-			if not VehicleMods._originalRPMs[name] then
-				VehicleMods._originalRPMs[name] = stats.RPM
-			end
-			stats.RPM = VehicleMods.TurretRPMValue
-
-			-- Juga apply ke tConfig live jika ada di AllControllersCache
-			if setreadonly then pcall(setreadonly, stats, false) end
-		end
-	end
-
-	-- Also patch live turret controllers dari cache
-	if AllControllersCache and AllControllersCache.Visuals then
-		for _, controller in ipairs(AllControllersCache.Visuals) do
-			if type(controller) == "table" then
-				local tConfig = rawget(controller, "_config")
-				if tConfig and tConfig.RPM then
-					if setreadonly then pcall(setreadonly, tConfig, false) end
-					if not VehicleMods._originalRPMs["_live_"..tostring(controller)] then
-						VehicleMods._originalRPMs["_live_"..tostring(controller)] = tConfig.RPM
-					end
-					tConfig.RPM = VehicleMods.TurretRPMValue
-				end
-			end
-		end
-	end
-
-	-- LocalActor turret
-	if ReplicatorService and ReplicatorService.LocalActor then
-		local myActor = ReplicatorService.LocalActor
-		if myActor.Turret and type(myActor.Turret) == "table" then
-			local tConfig = myActor.Turret._config
-			if tConfig and tConfig.RPM then
-				if setreadonly then pcall(setreadonly, tConfig, false) end
-				if not VehicleMods._originalRPMs["_local_turret"] then
-					VehicleMods._originalRPMs["_local_turret"] = tConfig.RPM
-				end
-				tConfig.RPM = VehicleMods.TurretRPMValue
-			end
-		end
-	end
-end
-
--- Auto reload: check magazine của equipped weapon mỗi 0.2s
-local function DoAutoReload()
-	if not VehicleMods.AutoReload then return end
-	local now = tick()
-	if now - VehicleMods._lastReloadCheck < 0.2 then return end
-	VehicleMods._lastReloadCheck = now
-
-	local weapon = WeaponManager.Equipped
-		or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
-
-	if not weapon then return end
-
-	-- Check mag capacity = 0 và không đang reload
-	local magEmpty = (weapon._mag and (weapon._mag.Capacity or 0) == 0) or not weapon._mag
-	local notReloading = not weapon._reloading
-
-	if magEmpty and notReloading then
-		-- Thử _getMags + _reload (pattern từ source)
-		pcall(function()
-			if weapon._getMags then
-				local mags = weapon:_getMags()
-				if mags and #mags > 0 then
-					weapon:_reload()
-					return
-				end
-			end
-			-- Fallback: method Reload (public API)
-			if weapon.Reload then
-				weapon:Reload()
-			end
-		end)
-	end
-end
-
--- Heartbeat loop cho vehicle mods
-local vehicleModLoop = RunService.Heartbeat:Connect(function()
-	DoAutoReload()
-	-- RPM apply throttled mỗi 10 frames
-	if VehicleMods.TurretCustomRPM then
-		ApplyTurretRPM()
-	end
-end)
-table.insert(getgenv().Moon_Connections, vehicleModLoop)
-
-
--- ==========================================
--- UI: Bullet Tracer → Misc tab
--- UI: Vehicle Auto Reload + RPM → Vehicle tab
--- ==========================================
-
--- Bullet Tracer section (Misc tab)
-local S_Tracer = MiscTab:DrawSection({ Name = "Bullet Tracer", Position = "right" })
-
-S_Tracer:AddToggle({
-	Name = "Enable Tracer",
-	Flag = "BT_Enabled",
-	Default = false,
-	Callback = function(v)
-		BulletTracer.Enabled = v
-		if v then BulletTracer_StartWatching() end
-	end
-})
-
-S_Tracer:AddSlider({
-	Name = "Lifetime (s)",
-	Flag = "BT_Lifetime",
-	Min = 1,
-	Max = 20,
-	Default = 3,
-	Rounding = 0,
-	Callback = function(v) BulletTracer.Lifetime = v end
-})
-
-S_Tracer:AddSlider({
-	Name = "Transparency",
-	Flag = "BT_Transparency",
-	Min = 0,
-	Max = 100,
-	Default = 30,
-	Rounding = 0,
-	Callback = function(v) BulletTracer.Transparency = v / 100 end
-})
-
-S_Tracer:AddSlider({
-	Name = "Thickness",
-	Flag = "BT_Thickness",
-	Min = 1,
-	Max = 8,
-	Default = 2,
-	Rounding = 0,
-	Callback = function(v)
-		BulletTracer.Thickness = v
-		for _, t in ipairs(BulletTracer._tracers) do pcall(function() t.line.Thickness = v end) end
-		for _, w in ipairs(BulletTracer._watched) do pcall(function() w.line.Thickness = v end) end
-	end
-})
-
-S_Tracer:AddToggle({
-	Name = "Fade Out",
-	Flag = "BT_FadeOut",
-	Default = true,
-	Callback = function(v) BulletTracer.FadeOut = v end
-})
-
-S_Tracer:AddColorPicker({
-	Name = "Tracer Color",
-	Flag = "BT_Color",
-	Default = BulletTracer.Color,
-	Callback = function(v)
-		BulletTracer.Color = v
-		for _, t in ipairs(BulletTracer._tracers) do pcall(function() t.line.Color = v end) end
-		for _, w in ipairs(BulletTracer._watched) do pcall(function() w.line.Color = v end) end
-	end
-})
-
-
--- Auto Reload + Turret RPM → S_VehTurret (Turret Mods section)
-S_VehTurret:AddToggle({
-	Name = "Auto Reload",
-	Flag = "Veh_AutoReload",
-	Default = false,
-	Callback = function(v)
-		VehicleMods.AutoReload = v
-	end
-})
-
-S_VehTurret:AddToggle({
-	Name = "Turret Custom RPM",
-	Flag = "Veh_TurretCustomRPM",
-	Default = false,
-	Callback = function(v)
-		VehicleMods.TurretCustomRPM = v
-		if not v then ApplyTurretRPM() end
-	end
-})
-
-S_VehTurret:AddSlider({
-	Name = "Turret RPM",
-	Flag = "Veh_TurretRPMValue",
-	Min = 100,
-	Max = 3000,
-	Default = 1000,
-	Rounding = 0,
-	Callback = function(v)
-		VehicleMods.TurretRPMValue = v
-	end
-})
-
-S_VehTurret:AddButton({
-	Name = "Force Apply RPM",
-	Callback = function()
-		VehicleMods._turretConfigCache = nil
-		VehicleMods._originalRPMs = {}
-		ApplyTurretRPM()
-	end
-})
-
-getgenv().VehicleMods = VehicleMods
-print("[BulletTracer v2 + VehicleMods] Loaded")
 
 
 
 
 
 -- ==========================================
--- AURA KILL v3
--- Dùng MeleeInventory._use / Slash trực tiếp
--- Source: ReplicatedFirst.Flux/client.Services.InventoryService.MeleeInventory
--- Tìm MeleeInventory instance qua GC, gọi :_use() hoặc hàm Slash
+-- AURA KILL v4
+-- Tìm Slash function qua upvalue của MeleeInventory._use
+-- Source: ReplicatedFirst.Flux/.../MeleeInventory
 -- ==========================================
 
 local AuraKill = {
 	Enabled = false,
 	Range = 20,
 	Interval = 0.15,
-	_meleeInv = nil,   -- MeleeInventory instance
-	_slashFn = nil,    -- hàm Slash lấy từ upvalue
+	_slashFn = nil,
 	_lastFire = 0,
 	_connection = nil,
 	_running = false,
 }
 
--- Tìm MeleeInventory instance qua GC
--- MeleeInventory có _use method và Slash upvalue
-local function AK_FindMeleeInventory()
-	if AuraKill._meleeInv then return AuraKill._meleeInv end
+local function AK_FindSlash()
+	if AuraKill._slashFn then return AuraKill._slashFn end
 
-	local ok, gc = pcall(function() return filtergc("table") end)
-	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if not ok or type(gc) ~= "table" then return nil end
+	-- Scan tất cả functions trong GC
+	local ok, gc = pcall(function() return getgc(false) end)
+	if not ok or not gc then return nil end
 
-	for _, obj in pairs(gc) do
-		if type(obj) == "table" then
-			-- MeleeInventory có _use method + Slash trong upvalue
-			local use = rawget(obj, "_use")
-			local slash = rawget(obj, "Slash")
-			if use and type(use) == "function" then
-				AuraKill._meleeInv = obj
-				print("[AuraKill] Found MeleeInventory (_use method)")
-				return obj
+	for _, fn in pairs(gc) do
+		if type(fn) ~= "function" then continue end
+
+		-- Tìm function có upvalue tên "Slash" hoặc chính nó là Slash
+		local i = 1
+		while true do
+			local ok2, name, val = pcall(debug.getupvalue, fn, i)
+			if not ok2 or not name then break end
+
+			-- Method 1: upvalue tên "Slash" là function
+			if name == "Slash" and type(val) == "function" then
+				AuraKill._slashFn = val
+				print("[AuraKill] Found Slash via upvalue name")
+				return val
 			end
-			-- Alternative: table có Slash function trực tiếp
-			if slash and type(slash) == "function" then
-				AuraKill._meleeInv = obj
-				AuraKill._slashFn = slash
-				print("[AuraKill] Found MeleeInventory (Slash function)")
-				return obj
+
+			-- Method 2: upvalue "_actions" hoặc "actions" table có key "Slash"
+			if (name == "_actions" or name == "actions") and type(val) == "table" then
+				local slash = val["Slash"] or val["slash"]
+				if slash and type(slash) == "function" then
+					AuraKill._slashFn = slash
+					print("[AuraKill] Found Slash via actions table upvalue")
+					return slash
+				end
 			end
+			i = i + 1
 		end
 	end
 
-	-- Fallback: tìm Slash function trong getgc closures
-	local ok2, gc2 = pcall(function() return getgc(false) end)
+	-- Fallback: tìm table MeleeInventory có _use method
+	local ok2, gc2 = pcall(function() return filtergc("table") end)
+	if not ok2 then ok2, gc2 = pcall(function() return getgc(true) end) end
 	if ok2 and gc2 then
-		for _, fn in pairs(gc2) do
-			if type(fn) == "function" then
-				local info = debug and debug.getinfo and debug.getinfo(fn)
-				-- Tìm function tên "Slash" hoặc "_use" trong MeleeInventory source
-				local ok3, name = pcall(function()
-					return debug.getinfo(fn, "n").name
-				end)
-				if ok3 and (name == "Slash" or name == "_use") then
-					AuraKill._slashFn = fn
-					print("[AuraKill] Found Slash function via getgc closures")
-					return fn
-				end
+		for _, obj in pairs(gc2) do
+			if type(obj) ~= "table" then continue end
+			local use = rawget(obj, "_use")
+			if use and type(use) == "function" then
+				-- Wrap _use call
+				AuraKill._slashFn = function() use(obj) end
+				print("[AuraKill] Found _use method on MeleeInventory")
+				return AuraKill._slashFn
 			end
 		end
 	end
@@ -2744,42 +2274,8 @@ local function AK_FindMeleeInventory()
 	return nil
 end
 
--- Gọi Slash
-local function AK_DoSlash()
-	local inv = AuraKill._meleeInv
-	local slashFn = AuraKill._slashFn
-
-	-- Method 1: gọi _use trực tiếp (đây là hàm game dùng internally khi swing melee)
-	if inv and rawget(inv, "_use") then
-		pcall(function() inv:_use() end)
-		return true
-	end
-
-	-- Method 2: gọi Slash function trực tiếp
-	if slashFn then
-		pcall(function() slashFn() end)
-		return true
-	end
-
-	-- Method 3: tìm lại nếu chưa có
-	AK_FindMeleeInventory()
-	if AuraKill._meleeInv then
-		pcall(function()
-			local m = AuraKill._meleeInv
-			if rawget(m, "_use") then m:_use()
-			elseif rawget(m, "Slash") then m.Slash()
-			end
-		end)
-		return true
-	end
-
-	return false
-end
-
--- Main tick
 local function AK_Tick()
 	if not AuraKill.Enabled then return end
-
 	local now = tick()
 	if (now - AuraKill._lastFire) < AuraKill.Interval then return end
 
@@ -2797,23 +2293,25 @@ local function AK_Tick()
 					pos = actor.Character.PrimaryPart.Position
 				end
 				if pos and (pos - myPos).Magnitude <= AuraKill.Range then
-					inRange = true
-					break
+					inRange = true; break
 				end
 			end
 		end
 	end
 
-	if inRange then
-		local ok = AK_DoSlash()
-		if ok then AuraKill._lastFire = now end
+	if not inRange then return end
+
+	local fn = AuraKill._slashFn or AK_FindSlash()
+	if fn then
+		pcall(fn)
+		AuraKill._lastFire = now
 	end
 end
 
 function AuraKill.Start()
 	if AuraKill._running then return end
 	AuraKill._running = true
-	task.spawn(AK_FindMeleeInventory)
+	task.spawn(AK_FindSlash)
 	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
 	table.insert(getgenv().Moon_Connections, AuraKill._connection)
 	print("[AuraKill] Started")
@@ -2825,15 +2323,14 @@ function AuraKill.Stop()
 		pcall(function() AuraKill._connection:Disconnect() end)
 		AuraKill._connection = nil
 	end
-	print("[AuraKill] Stopped")
 end
 
 getgenv().AuraKill = AuraKill
 
 
 -- ==========================================
--- VEHICLE TELEPORT — Anti-cheat bypass
--- Dùng physics solver SetState thay vì set CFrame trực tiếp
+-- VEHICLE TELEPORT v3
+-- Bypass AC bằng sethiddenproperty + assembly velocity zero
 -- ==========================================
 
 local VehicleTeleport = {
@@ -2847,78 +2344,318 @@ local function DoVehicleTeleport()
 	local newCF = CFrame.new(targetPos)
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 
-	-- Tìm vehicle đang Controlling = true qua VehicleService
+	-- Tìm vehicle đang Controlling
 	local vehicle = nil
 	if VehicleService and VehicleService.Vehicles then
 		for _, veh in pairs(VehicleService.Vehicles) do
 			if veh.Controlling then vehicle = veh; break end
 		end
 	end
-
-	-- Fallback: scan GC cho vehicle với Controlling flag
 	if not vehicle then
 		local ok, gc = pcall(function() return filtergc("table") end)
 		if not ok then ok, gc = pcall(function() return getgc(true) end) end
 		if ok and gc then
 			for _, obj in pairs(gc) do
-				if type(obj) == "table" and rawget(obj, "Controlling") == true then
+				if type(obj) == "table" and rawget(obj, "Controlling") == true
+					and (rawget(obj, "Hitbox") or rawget(obj, "CFrame")) then
 					vehicle = obj; break
 				end
 			end
 		end
 	end
 
-	if vehicle then
+	if vehicle and vehicle.Hitbox then
 		pcall(function()
-			-- Zero velocity trước — tránh AC detect momentum spike
-			if vehicle.Hitbox then
-				vehicle.Hitbox.AssemblyLinearVelocity = Vector3.new(0,0,0)
-				vehicle.Hitbox.AssemblyAngularVelocity = Vector3.new(0,0,0)
+			local hb = vehicle.Hitbox
+
+			-- Step 1: Zero velocity (AC check momentum)
+			hb.AssemblyLinearVelocity = Vector3.new(0,0,0)
+			hb.AssemblyAngularVelocity = Vector3.new(0,0,0)
+
+			-- Step 2: sethiddenproperty nếu có (bypass network ownership check)
+			local ok1 = false
+			if sethiddenproperty then
+				ok1 = pcall(function()
+					sethiddenproperty(hb, "CFrame", newCF)
+				end)
 			end
 
-			-- Set qua physics solver (bypass server position validation)
-			if ControllerService and ControllerService.Controller then
-				local ctrl = ControllerService.Controller
-				if ctrl._solver and ctrl._solver.SetState then
-					ctrl._solver:SetState(newCF, Vector3.new(), Vector3.new(),
-						vehicle.ComponentReplicates or {})
-				end
+			-- Step 3: fallback direct set
+			if not ok1 then
+				hb.CFrame = newCF
 			end
 
-			-- Set CFrame sau khi solver đã accept
-			if vehicle.Hitbox then vehicle.Hitbox.CFrame = newCF end
 			vehicle.CFrame = newCF
 
-			-- Sync actor
+			-- Step 4: Sync actor + controller
 			if myActor then
 				myActor.SimulatedPosition = targetPos
 				myActor.CFrame = newCF
 			end
-		end)
-		print("[VehicleTeleport] Vehicle teleported to", targetPos)
-	else
-		-- Không có xe — teleport character
-		if myActor then
-			pcall(function()
-				if ControllerService and ControllerService.Controller then
-					local ctrl = ControllerService.Controller
+			if ControllerService and ControllerService.Controller then
+				local ctrl = ControllerService.Controller
+				pcall(function()
 					ctrl._position = targetPos
 					ctrl._lastSafePosition = targetPos
-				end
-				myActor.SimulatedPosition = targetPos
-				myActor.CFrame = newCF
+					if ctrl._solver and ctrl._solver.SetState then
+						ctrl._solver:SetState(newCF, Vector3.new(), Vector3.new(), vehicle.ComponentReplicates or {})
+					end
+				end)
+			end
+		end)
+		print("[VehicleTeleport] Done →", targetPos)
+	elseif myActor then
+		-- Không có xe — teleport character
+		pcall(function()
+			if ControllerService and ControllerService.Controller then
+				local ctrl = ControllerService.Controller
+				ctrl._position = targetPos
+				ctrl._lastSafePosition = targetPos
+			end
+			myActor.SimulatedPosition = targetPos
+			myActor.CFrame = newCF
+		end)
+		print("[VehicleTeleport] Character → ", targetPos)
+	end
+end
+
+
+-- ==========================================
+-- GUN COSMETICS
+-- Điều chỉnh màu, transparency, rainbow viewmodel
+-- ==========================================
+
+local GunCosmetics = {
+	Enabled = false,
+	Rainbow = false,
+	RainbowSpeed = 1,       -- vòng/giây
+	Color = Color3.fromRGB(255, 255, 255),
+	Transparency = 0,       -- 0 = đặc, 1 = trong suốt
+	_connection = nil,
+	_originals = {},        -- backup {part: {color, transparency}}
+}
+
+local function GC_GetViewmodelParts()
+	local parts = {}
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return parts end
+
+	-- ViewModel thường là Character model của LocalActor
+	local char = myActor.Character
+	if not char then return parts end
+
+	-- Tìm tất cả MeshPart/Part trong ViewModel (không phải character body)
+	-- Weapon parts thường có tên chứa gun/firearm keywords hoặc nằm trong Tool
+	local function scan(parent)
+		for _, v in ipairs(parent:GetChildren()) do
+			if v:IsA("BasePart") or v:IsA("MeshPart") or v:IsA("SpecialMesh") then
+				table.insert(parts, v)
+			end
+			scan(v)
+		end
+	end
+
+	-- Scan equipped weapon tool
+	if InventoryService and InventoryService.Equipped then
+		local equipped = InventoryService.Equipped
+		if equipped and equipped.Model then
+			scan(equipped.Model)
+		end
+	end
+
+	-- Fallback: scan character
+	if #parts == 0 then scan(char) end
+
+	return parts
+end
+
+local function GC_Apply()
+	local parts = GC_GetViewmodelParts()
+	local color = GunCosmetics.Color
+	local trans = GunCosmetics.Transparency
+
+	if GunCosmetics.Rainbow then
+		local hue = (tick() * GunCosmetics.RainbowSpeed) % 1
+		color = Color3.fromHSV(hue, 1, 1)
+	end
+
+	for _, part in ipairs(parts) do
+		if part:IsA("BasePart") or part:IsA("MeshPart") then
+			-- Backup original
+			if not GunCosmetics._originals[part] then
+				GunCosmetics._originals[part] = {
+					color = part.Color,
+					transparency = part.Transparency
+				}
+			end
+			pcall(function()
+				part.Color = color
+				part.Transparency = trans
 			end)
-			print("[VehicleTeleport] Character teleported to", targetPos)
 		end
 	end
 end
+
+local function GC_Restore()
+	for part, orig in pairs(GunCosmetics._originals) do
+		pcall(function()
+			if part and part.Parent then
+				part.Color = orig.color
+				part.Transparency = orig.transparency
+			end
+		end)
+	end
+	GunCosmetics._originals = {}
+end
+
+local function GC_Start()
+	if GunCosmetics._connection then return end
+	GunCosmetics._connection = RunService.RenderStepped:Connect(function()
+		if GunCosmetics.Enabled then GC_Apply() end
+	end)
+	table.insert(getgenv().Moon_Connections, GunCosmetics._connection)
+end
+
+GC_Start() -- Start render loop ngay khi load
+
+getgenv().GunCosmetics = GunCosmetics
+
+
+-- ==========================================
+-- BULLET TRACER v3 — Part-based
+-- Tạo Part thật theo đường đạn, tự destroy sau Lifetime giây
+-- ==========================================
+
+local BulletTracer = {
+	Enabled = false,
+	Lifetime = 3,
+	Color = Color3.fromRGB(255, 200, 50),
+	Transparency = 0.3,
+	Width = 0.05,       -- độ dày part (studs)
+	FadeOut = true,
+	_parts = {},        -- {part, born, lifetime}
+}
+
+local function BT_SpawnPart(fromPos, toPos)
+	if not BulletTracer.Enabled then return end
+
+	local distance = (toPos - fromPos).Magnitude
+	if distance < 0.1 then return end
+
+	local midPos = (fromPos + toPos) / 2
+	local lookDir = (toPos - fromPos).Unit
+
+	local part = Instance.new("Part")
+	part.Name = "BulletTracer"
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.CastShadow = false
+	part.Size = Vector3.new(BulletTracer.Width, BulletTracer.Width, distance)
+	part.CFrame = CFrame.new(midPos, toPos)
+	part.Color = BulletTracer.Color
+	part.Transparency = BulletTracer.Transparency
+	part.Material = Enum.Material.Neon
+
+	-- Parent vào workspace (không bị detect bởi game thường)
+	local ok = pcall(function()
+		part.Parent = Workspace
+	end)
+	if not ok then
+		part:Destroy()
+		return
+	end
+
+	table.insert(BulletTracer._parts, {
+		part = part,
+		born = tick(),
+		lifetime = BulletTracer.Lifetime,
+	})
+end
+
+-- Cleanup + fade loop
+local function BT_Update()
+	local now = tick()
+	local toRemove = {}
+
+	for i, t in ipairs(BulletTracer._parts) do
+		if not t.part or not t.part.Parent then
+			table.insert(toRemove, i)
+			continue
+		end
+
+		local age = now - t.born
+		if age >= t.lifetime then
+			pcall(function() t.part:Destroy() end)
+			table.insert(toRemove, i)
+		elseif BulletTracer.FadeOut then
+			-- Fade transparency từ base → 1 (invisible)
+			local alpha = age / t.lifetime
+			local newTrans = BulletTracer.Transparency + (1 - BulletTracer.Transparency) * alpha
+			pcall(function() t.part.Transparency = newTrans end)
+		end
+	end
+
+	for i = #toRemove, 1, -1 do
+		table.remove(BulletTracer._parts, toRemove[i])
+	end
+end
+
+-- Hook BulletService.Discharge để spawn tracer khi bắn
+local function BT_HookDischarge()
+	if not BulletService then return end
+	if BulletService._tracerHooked then return end
+
+	local original = BulletService._originalDischarge or BulletService.Discharge
+	local existing = BulletService.Discharge
+
+	BulletService.Discharge = function(self, originCF, ...)
+		-- Gọi existing pipeline trước (silent aim etc)
+		local results = {pcall(existing, self, originCF, ...)}
+
+		if BulletTracer.Enabled and originCF then
+			local muzzlePos = originCF.Position
+			local direction = originCF.LookVector
+
+			-- Target endpoint: dùng raycast để tìm điểm va chạm thật
+			local rayResult = Workspace:Raycast(
+				muzzlePos,
+				direction * 2000,
+				RaycastParams.new()
+			)
+
+			local endPos
+			if rayResult then
+				endPos = rayResult.Position
+			else
+				endPos = muzzlePos + direction * 800
+			end
+
+			BT_SpawnPart(muzzlePos, endPos)
+		end
+
+		if results[1] then return table.unpack(results, 2) end
+	end
+
+	BulletService._tracerHooked = true
+	print("[BulletTracer] Hooked BulletService.Discharge")
+end
+
+-- Render loop cho fade + cleanup
+local btLoop = RunService.Heartbeat:Connect(function()
+	if #BulletTracer._parts > 0 then BT_Update() end
+end)
+table.insert(getgenv().Moon_Connections, btLoop)
+
+getgenv().BulletTracer = BulletTracer
 
 
 -- ==========================================
 -- UI
 -- ==========================================
 
--- AuraKill section — Combat tab
+-- AURA KILL — Combat tab
 local S_AuraKill = CombatTab:DrawSection({ Name = "Aura Kill", Position = "right" })
 
 S_AuraKill:AddToggle({
@@ -2945,29 +2682,29 @@ S_AuraKill:AddSlider({
 	Name = "Fire Rate (ms)",
 	Flag = "AK_Interval",
 	Min = 50,
-	Max = 1000,
+	Max = 2000,
 	Default = 150,
 	Rounding = 0,
 	Callback = function(v) AuraKill.Interval = v / 1000 end
 })
 
 S_AuraKill:AddButton({
-	Name = "Rescan Melee",
+	Name = "Rescan Slash",
 	Callback = function()
-		AuraKill._meleeInv = nil
 		AuraKill._slashFn = nil
 		task.spawn(function()
-			local found = AK_FindMeleeInventory()
-			if found then
-				Notifier.new({ Title="AuraKill", Content="MeleeInventory found!", Duration=3 })
+			local fn = AK_FindSlash()
+			if fn then
+				Notifier.new({ Title="AuraKill", Content="Slash found!", Duration=3 })
 			else
-				Notifier.new({ Title="AuraKill", Content="Not found — equip melee rồi thử lại", Duration=4 })
+				Notifier.new({ Title="AuraKill", Content="Not found — equip melee rồi thử", Duration=4 })
 			end
 		end)
 	end
 })
 
--- Vehicle Teleport — Vehicles tab
+
+-- VEHICLE TELEPORT — Vehicles tab
 local S_VehTeleport = VehicleTab:DrawSection({ Name = "Vehicle Teleport", Position = "right" })
 
 S_VehTeleport:AddButton({
@@ -3005,5 +2742,121 @@ S_VehTeleport:AddSlider({
 	Callback = function(v) VehicleTeleport.Z = v end
 })
 
-getgenv().VehicleTeleport = VehicleTeleport
-print("[AuraKill v3 + VehicleTeleport] Loaded")
+
+-- GUN COSMETICS — Combat tab
+local S_GunCos = CombatTab:DrawSection({ Name = "Gun Cosmetics", Position = "left" })
+
+S_GunCos:AddToggle({
+	Name = "Enable",
+	Flag = "GC_Enabled",
+	Default = false,
+	Callback = function(v)
+		GunCosmetics.Enabled = v
+		if not v then GC_Restore() end
+	end
+})
+
+S_GunCos:AddToggle({
+	Name = "Rainbow",
+	Flag = "GC_Rainbow",
+	Default = false,
+	Callback = function(v) GunCosmetics.Rainbow = v end
+})
+
+S_GunCos:AddSlider({
+	Name = "Rainbow Speed",
+	Flag = "GC_RainbowSpeed",
+	Min = 1,
+	Max = 20,
+	Default = 1,
+	Rounding = 0,
+	Callback = function(v) GunCosmetics.RainbowSpeed = v end
+})
+
+S_GunCos:AddColorPicker({
+	Name = "Gun Color",
+	Flag = "GC_Color",
+	Default = GunCosmetics.Color,
+	Callback = function(v) GunCosmetics.Color = v end
+})
+
+S_GunCos:AddSlider({
+	Name = "Transparency",
+	Flag = "GC_Transparency",
+	Min = 0,
+	Max = 100,
+	Default = 0,
+	Rounding = 0,
+	Callback = function(v) GunCosmetics.Transparency = v / 100 end
+})
+
+S_GunCos:AddButton({
+	Name = "Restore Original",
+	Callback = function() GC_Restore() end
+})
+
+
+-- BULLET TRACER — Misc tab
+local S_BulletTracer = MiscTab:DrawSection({ Name = "Bullet Tracer", Position = "right" })
+
+S_BulletTracer:AddToggle({
+	Name = "Enable Tracer",
+	Flag = "BT_Enabled",
+	Default = false,
+	Callback = function(v)
+		BulletTracer.Enabled = v
+		if v then BT_HookDischarge() end
+	end
+})
+
+S_BulletTracer:AddSlider({
+	Name = "Lifetime (s)",
+	Flag = "BT_Lifetime",
+	Min = 1,
+	Max = 20,
+	Default = 3,
+	Rounding = 0,
+	Callback = function(v) BulletTracer.Lifetime = v end
+})
+
+S_BulletTracer:AddSlider({
+	Name = "Transparency",
+	Flag = "BT_Transparency",
+	Min = 0,
+	Max = 100,
+	Default = 30,
+	Rounding = 0,
+	Callback = function(v) BulletTracer.Transparency = v / 100 end
+})
+
+S_BulletTracer:AddSlider({
+	Name = "Width (studs)",
+	Flag = "BT_Width",
+	Min = 1,
+	Max = 20,
+	Default = 5,
+	Rounding = 0,
+	Callback = function(v) BulletTracer.Width = v / 100 end
+})
+
+S_BulletTracer:AddToggle({
+	Name = "Fade Out",
+	Flag = "BT_FadeOut",
+	Default = true,
+	Callback = function(v) BulletTracer.FadeOut = v end
+})
+
+S_BulletTracer:AddColorPicker({
+	Name = "Tracer Color",
+	Flag = "BT_Color",
+	Default = BulletTracer.Color,
+	Callback = function(v)
+		BulletTracer.Color = v
+		-- Apply to existing parts
+		for _, t in ipairs(BulletTracer._parts) do
+			pcall(function() if t.part and t.part.Parent then t.part.Color = v end end)
+		end
+	end
+})
+
+print("[AuraKill v4 + VehicleTeleport v3 + GunCosmetics + BulletTracer v3] Loaded")
