@@ -2447,38 +2447,67 @@ local GunCosmetics = {
 	_originals = {},
 }
 
+-- Body part names để blacklist — không bao giờ đổi màu những cái này
+local _BODY_PARTS = {
+	Head=true, UpperTorso=true, LowerTorso=true, HumanoidRootPart=true,
+	LeftUpperArm=true, LeftLowerArm=true, LeftHand=true,
+	RightUpperArm=true, RightLowerArm=true, RightHand=true,
+	LeftUpperLeg=true, LeftLowerLeg=true, LeftFoot=true,
+	RightUpperLeg=true, RightLowerLeg=true, RightFoot=true,
+	["Left Arm"]=true, ["Right Arm"]=true, ["Left Leg"]=true,
+	["Right Leg"]=true, Torso=true,
+}
+
 local function GC_GetParts()
 	local parts = {}
+
 	local function scanModel(model)
 		if not model then return end
 		for _, v in ipairs(model:GetDescendants()) do
-			if v:IsA("BasePart") or v:IsA("MeshPart") then
+			if (v:IsA("BasePart") or v:IsA("MeshPart"))
+				and not _BODY_PARTS[v.Name]  -- không phải body part
+				and v.Name ~= "Handle"        -- Handle thường là grip, skip nếu cần
+			then
 				table.insert(parts, v)
 			end
 		end
 	end
 
-	-- Source pattern: getgenv().CurrentFirearm = self (set khi Equip)
 	local fw = getgenv().CurrentFirearm or WeaponManager.Equipped
 		or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
 
-	if fw then
-		-- _firearm.Model — model 3D của súng
-		if fw._firearm then
-			local f = fw._firearm
-			if f.Model then scanModel(f.Model) end
-			-- Một số súng dùng _character model
-			if f._character then scanModel(f._character) end
-		end
-		-- ViewModel (first person)
-		if fw.ViewModel then scanModel(fw.ViewModel) end
-		if fw._viewmodel then scanModel(fw._viewmodel) end
-		-- LocalActor character parts
-		local myActor = ReplicatorService and ReplicatorService.LocalActor
-		if myActor and myActor.Character and #parts == 0 then
-			scanModel(myActor.Character)
+	if not fw then return parts end
+
+	-- Priority 1: _firearm.Model — đây là model 3D thuần của súng, không có body
+	if fw._firearm then
+		local f = fw._firearm
+		if f.Model and f.Model:IsA("Model") then
+			scanModel(f.Model)
 		end
 	end
+
+	-- Priority 2: ViewModel / _viewmodel (first person hands+gun)
+	-- Chỉ lấy parts không phải body
+	if #parts == 0 then
+		if fw.ViewModel then scanModel(fw.ViewModel) end
+		if fw._viewmodel then scanModel(fw._viewmodel) end
+	end
+
+	-- Priority 3: Tìm Tool trong character của local player
+	-- Tool chứa gun parts, không chứa body
+	if #parts == 0 then
+		local myActor = ReplicatorService and ReplicatorService.LocalActor
+		local char = myActor and myActor.Character
+		if char then
+			for _, child in ipairs(char:GetChildren()) do
+				-- Tool hoặc Model không phải body
+				if child:IsA("Tool") or (child:IsA("Model") and not _BODY_PARTS[child.Name]) then
+					scanModel(child)
+				end
+			end
+		end
+	end
+
 	return parts
 end
 
@@ -2576,15 +2605,29 @@ local function BT_Hook()
 	local existing = BulletService.Discharge
 	BulletService.Discharge = function(self, originCF, ...)
 		local res = {pcall(existing, self, originCF, ...)}
+
+		-- Chỉ spawn tracer khi MÌNH bắn — kiểm tra originCF gần muzzle của local player
 		if BulletTracer.Enabled and originCF then
+			local localMuzzle = GetMuzzlePosition()
 			local mPos = originCF.Position
+			-- Nếu originCF cách muzzle local > 5 studs = không phải mình bắn
+			if localMuzzle and (mPos - localMuzzle).Magnitude > 5 then
+				if res[1] then return table.unpack(res, 2) end
+				return
+			end
+
 			local dir = originCF.LookVector
 			local rp = RaycastParams.new()
-			rp.FilterDescendantsInstances = LocalPlayer.Character
-				and {Camera, LocalPlayer.Character} or {Camera}
+			rp.FilterType = Enum.RaycastFilterType.Exclude
+			local filterList = {Camera}
+			if LocalPlayer.Character then
+				table.insert(filterList, LocalPlayer.Character)
+			end
+			rp.FilterDescendantsInstances = filterList
 			local ray = Workspace:Raycast(mPos, dir*2000, rp)
 			task.spawn(BT_SpawnPart, mPos, ray and ray.Position or mPos+dir*800)
 		end
+
 		if res[1] then return table.unpack(res, 2) end
 	end
 	BulletService._tracerHooked = true
