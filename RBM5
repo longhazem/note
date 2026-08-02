@@ -2205,11 +2205,11 @@ print("[AutoFarm + BulletTracer] Modules loaded")
 
 
 
--- ==========================================
--- VEHICLE MODS (restored)
--- Auto Reload + Turret Custom RPM
--- ==========================================
 
+
+-- ==========================================
+-- VEHICLE MODS — Auto Reload + Turret RPM
+-- ==========================================
 local VehicleMods = {
 	AutoReload = false,
 	TurretCustomRPM = false,
@@ -2219,45 +2219,30 @@ local VehicleMods = {
 }
 
 local function ApplyTurretRPM()
-	-- Live turret trên LocalActor
-	if ReplicatorService and ReplicatorService.LocalActor then
-		local myActor = ReplicatorService.LocalActor
-		if myActor.Turret and type(myActor.Turret) == "table" then
-			local tConfig = myActor.Turret._config
-			if tConfig and tConfig.RPM then
-				if setreadonly then pcall(setreadonly, tConfig, false) end
-				if VehicleMods.TurretCustomRPM then
-					if not VehicleMods._originalRPMs["_local"] then
-						VehicleMods._originalRPMs["_local"] = tConfig.RPM
-					end
-					tConfig.RPM = VehicleMods.TurretRPMValue
-				else
-					if VehicleMods._originalRPMs["_local"] then
-						tConfig.RPM = VehicleMods._originalRPMs["_local"]
-					end
-				end
+	local function patchConfig(tConfig, key)
+		if not tConfig or not tConfig.RPM then return end
+		if setreadonly then pcall(setreadonly, tConfig, false) end
+		if VehicleMods.TurretCustomRPM then
+			if not VehicleMods._originalRPMs[key] then
+				VehicleMods._originalRPMs[key] = tConfig.RPM
+			end
+			tConfig.RPM = VehicleMods.TurretRPMValue
+		else
+			if VehicleMods._originalRPMs[key] then
+				tConfig.RPM = VehicleMods._originalRPMs[key]
 			end
 		end
 	end
 
-	-- Tất cả turret controllers trong cache
+	if ReplicatorService and ReplicatorService.LocalActor then
+		local t = ReplicatorService.LocalActor.Turret
+		if t and type(t) == "table" then patchConfig(t._config, "_local") end
+	end
+
 	if AllControllersCache and AllControllersCache.Visuals then
-		for i, controller in ipairs(AllControllersCache.Visuals) do
-			if type(controller) ~= "table" then continue end
-			local tConfig = rawget(controller, "_config")
-			if tConfig and tConfig.RPM then
-				if setreadonly then pcall(setreadonly, tConfig, false) end
-				local key = "_ctrl_"..i
-				if VehicleMods.TurretCustomRPM then
-					if not VehicleMods._originalRPMs[key] then
-						VehicleMods._originalRPMs[key] = tConfig.RPM
-					end
-					tConfig.RPM = VehicleMods.TurretRPMValue
-				else
-					if VehicleMods._originalRPMs[key] then
-						tConfig.RPM = VehicleMods._originalRPMs[key]
-					end
-				end
+		for i, ctrl in ipairs(AllControllersCache.Visuals) do
+			if type(ctrl) == "table" then
+				patchConfig(rawget(ctrl, "_config"), "_c"..i)
 			end
 		end
 	end
@@ -2268,153 +2253,133 @@ local function DoAutoReload_Vehicle()
 	local now = tick()
 	if now - VehicleMods._lastReloadCheck < 0.2 then return end
 	VehicleMods._lastReloadCheck = now
-
 	local weapon = WeaponManager.Equipped
 		or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
 	if not weapon then return end
-
 	local magEmpty = (weapon._mag and (weapon._mag.Capacity or 0) == 0) or not weapon._mag
 	if magEmpty and not weapon._reloading then
 		pcall(function()
 			if weapon._getMags and weapon._reload then
 				local mags = weapon:_getMags()
 				if mags and #mags > 0 then weapon:_reload() end
-			elseif weapon.Reload then
-				weapon:Reload()
-			end
+			elseif weapon.Reload then weapon:Reload() end
 		end)
 	end
 end
 
--- Hook vào Heartbeat
-local vehicleModLoop = RunService.Heartbeat:Connect(function()
+local _vehicleModHb = RunService.Heartbeat:Connect(function()
 	DoAutoReload_Vehicle()
 	if VehicleMods.TurretCustomRPM then ApplyTurretRPM() end
 end)
-table.insert(getgenv().Moon_Connections, vehicleModLoop)
-
+table.insert(getgenv().Moon_Connections, _vehicleModHb)
 getgenv().VehicleMods = VehicleMods
 
--- UI — thêm vào S_VehTurret đã có
-S_VehTurret:AddToggle({
-	Name = "Auto Reload",
-	Flag = "Veh_AutoReload",
-	Default = false,
-	Callback = function(v) VehicleMods.AutoReload = v end
-})
-
-S_VehTurret:AddToggle({
-	Name = "Turret Custom RPM",
-	Flag = "Veh_TurretCustomRPM",
-	Default = false,
-	Callback = function(v)
-		VehicleMods.TurretCustomRPM = v
-		if not v then
-			VehicleMods._originalRPMs = {}
-			ApplyTurretRPM()
-		end
-	end
-})
-
-S_VehTurret:AddSlider({
-	Name = "Turret RPM",
-	Flag = "Veh_TurretRPMValue",
-	Min = 100,
-	Max = 10000,
-	Default = 1000,
-	Rounding = 0,
-	Callback = function(v) VehicleMods.TurretRPMValue = v end
-})
-
-S_VehTurret:AddButton({
-	Name = "Force Apply RPM",
-	Callback = function()
-		VehicleMods._originalRPMs = {}
-		ApplyTurretRPM()
-	end
-})
+S_VehTurret:AddToggle({ Name="Auto Reload", Flag="Veh_AutoReload", Default=false,
+	Callback=function(v) VehicleMods.AutoReload=v end })
+S_VehTurret:AddToggle({ Name="Turret Custom RPM", Flag="Veh_TurretCustomRPM", Default=false,
+	Callback=function(v)
+		VehicleMods.TurretCustomRPM=v
+		if not v then VehicleMods._originalRPMs={}; ApplyTurretRPM() end
+	end })
+S_VehTurret:AddSlider({ Name="Turret RPM", Flag="Veh_TurretRPMValue",
+	Min=100, Max=10000, Default=1000, Rounding=0,
+	Callback=function(v) VehicleMods.TurretRPMValue=v end })
+S_VehTurret:AddButton({ Name="Force Apply RPM",
+	Callback=function() VehicleMods._originalRPMs={}; ApplyTurretRPM() end })
 
 
 -- ==========================================
--- AURA KILL v5
--- Tìm Slash qua upvalue, fallback gọi _use trực tiếp
--- Equip melee trước khi bật
+-- AURA KILL v6
+-- Dùng findModule("MeleeInventory") → require → hook .new để capture instance
+-- Sau đó gọi instance:_use() mỗi tick
 -- ==========================================
-
 local AuraKill = {
 	Enabled = false,
 	Range = 20,
 	Interval = 0.15,
-	_slashFn = nil,
+	_instance = nil,   -- MeleeInventory instance
 	_lastFire = 0,
 	_connection = nil,
 	_running = false,
 }
 
-local function AK_FindSlash()
-	if AuraKill._slashFn then return AuraKill._slashFn end
-
-	-- Method 1: scan getgc functions cho upvalue "Slash"
-	local ok, gc = pcall(function() return getgc(false) end)
-	if ok and gc then
-		for _, fn in pairs(gc) do
-			if type(fn) ~= "function" then continue end
-			local i = 1
-			while true do
-				local ok2, name, val = pcall(debug.getupvalue, fn, i)
-				if not ok2 or not name then break end
-				if name == "Slash" and type(val) == "function" then
-					AuraKill._slashFn = val
-					print("[AuraKill] Found Slash upvalue")
-					return val
+local function AK_FindModule(name)
+	local rf = game:GetService("ReplicatedFirst")
+	local rs = game:GetService("ReplicatedStorage")
+	for _, flux in ipairs(rf:GetChildren()) do
+		if flux.Name:find("Flux") then
+			local services = flux:FindFirstChild("Services")
+			if services then
+				for _, s in ipairs(services:GetChildren()) do
+					if s.Name:find(name) and s:IsA("ModuleScript") then return s end
 				end
-				if (name == "_actions" or name == "actions") and type(val) == "table" then
-					local s = val["Slash"] or val["slash"]
-					if s and type(s) == "function" then
-						AuraKill._slashFn = s
-						print("[AuraKill] Found Slash in actions table")
-						return s
+			end
+		end
+	end
+	local function search(parent)
+		if not parent then return end
+		for _, child in ipairs(parent:GetChildren()) do
+			if child.Name:find(name) and child:IsA("ModuleScript") then return child end
+			local found = search(child)
+			if found then return found end
+		end
+	end
+	return search(rf) or search(rs)
+end
+
+local function AK_HookMeleeInventory()
+	-- Hook MeleeInventory.new để capture instance khi melee equipped
+	local mod = AK_FindModule("MeleeInventory")
+	if not mod then
+		print("[AuraKill] MeleeInventory module not found")
+		return false
+	end
+
+	local ok, MeleeClass = pcall(require, mod)
+	if not ok or not MeleeClass then
+		print("[AuraKill] require MeleeInventory failed:", MeleeClass)
+		return false
+	end
+
+	-- Hook .new để capture instance
+	if not MeleeClass._AK_Hooked then
+		local oldNew = MeleeClass.new
+		if oldNew then
+			MeleeClass.new = function(...)
+				local inst = oldNew(...)
+				AuraKill._instance = inst
+				print("[AuraKill] MeleeInventory instance captured!")
+				return inst
+			end
+			MeleeClass._AK_Hooked = true
+		end
+
+		-- Capture existing instance nếu có (đã equipped trước khi hook)
+		local ok2, gc = pcall(function() return filtergc("table") end)
+		if not ok2 then ok2, gc = pcall(function() return getgc(true) end) end
+		if ok2 and gc then
+			local mt = MeleeClass
+			for _, obj in pairs(gc) do
+				if type(obj) == "table" then
+					local objMt = getmetatable(obj)
+					if objMt and (objMt == mt or objMt.__index == mt) then
+						AuraKill._instance = obj
+						print("[AuraKill] Found existing MeleeInventory instance via metatable")
+						break
+					end
+					-- Fallback: table có _use và không có _mag (không phải firearm)
+					if rawget(obj, "_use") and not rawget(obj, "_mag") and rawget(obj, "_item") then
+						AuraKill._instance = obj
+						print("[AuraKill] Found MeleeInventory instance via fingerprint")
+						break
 					end
 				end
-				i = i + 1
-				if i > 50 then break end
 			end
 		end
 	end
 
-	-- Method 2: tìm MeleeInventory table có _use
-	local ok2, gc2 = pcall(function() return filtergc("table") end)
-	if not ok2 then ok2, gc2 = pcall(function() return getgc(true) end) end
-	if ok2 and gc2 then
-		for _, obj in pairs(gc2) do
-			if type(obj) ~= "table" then continue end
-			local use = rawget(obj, "_use")
-			-- MeleeInventory: có _use + không phải firearm (không có _mag)
-			if use and type(use) == "function" and not rawget(obj, "_mag") then
-				local fn = function() pcall(use, obj) end
-				AuraKill._slashFn = fn
-				print("[AuraKill] Found _use on MeleeInventory")
-				return fn
-			end
-		end
-	end
-
-	-- Method 3: dùng InventoryService trực tiếp
-	if InventoryService and InventoryService.Equipped then
-		local eq = InventoryService.Equipped
-		-- Check nếu equipped item là melee (SlotType.Melee = 7)
-		if eq and eq.Handler then
-			local handler = eq.Handler
-			local use = rawget(handler, "_use") or rawget(handler, "Use")
-			if use and type(use) == "function" then
-				AuraKill._slashFn = function() pcall(use, handler) end
-				print("[AuraKill] Found via InventoryService.Equipped")
-				return AuraKill._slashFn
-			end
-		end
-	end
-
-	return nil
+	print("[AuraKill] MeleeInventory hooked, class:", tostring(MeleeClass))
+	return true
 end
 
 local function AK_Tick()
@@ -2442,17 +2407,17 @@ local function AK_Tick()
 	end
 	if not inRange then return end
 
-	local fn = AK_FindSlash()
-	if fn then
-		pcall(fn)
-		AuraKill._lastFire = now
+	local inst = AuraKill._instance
+	if inst then
+		local ok = pcall(function() inst:_use() end)
+		if ok then AuraKill._lastFire = now end
 	end
 end
 
 function AuraKill.Start()
 	if AuraKill._running then return end
 	AuraKill._running = true
-	task.spawn(AK_FindSlash)
+	task.spawn(AK_HookMeleeInventory)
 	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
 	table.insert(getgenv().Moon_Connections, AuraKill._connection)
 	print("[AuraKill] Started")
@@ -2465,15 +2430,14 @@ function AuraKill.Stop()
 		AuraKill._connection = nil
 	end
 end
-
 getgenv().AuraKill = AuraKill
 
 
 -- ==========================================
 -- GUN COSMETICS
--- Scan InventoryService.Equipped.Handler._firearm.Model
+-- Dùng getgenv().CurrentFirearm (set bởi Equip hook trong script)
+-- Fallback: WeaponManager.Equipped
 -- ==========================================
-
 local GunCosmetics = {
 	Enabled = false,
 	Rainbow = false,
@@ -2481,13 +2445,11 @@ local GunCosmetics = {
 	Color = Color3.fromRGB(255, 255, 255),
 	Transparency = 0,
 	_originals = {},
-	_connection = nil,
 }
 
-local function GC_GetGunParts()
+local function GC_GetParts()
 	local parts = {}
-
-	local function scan(model)
+	local function scanModel(model)
 		if not model then return end
 		for _, v in ipairs(model:GetDescendants()) do
 			if v:IsA("BasePart") or v:IsA("MeshPart") then
@@ -2496,42 +2458,42 @@ local function GC_GetGunParts()
 		end
 	end
 
-	-- Priority: handler._firearm.Model (gun model 3D)
-	local handler = WeaponManager.Equipped
+	-- Source pattern: getgenv().CurrentFirearm = self (set khi Equip)
+	local fw = getgenv().CurrentFirearm or WeaponManager.Equipped
 		or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
-	if handler then
-		-- _firearm.Model — mesh model của súng
-		if handler._firearm and handler._firearm.Model then
-			scan(handler._firearm.Model)
+
+	if fw then
+		-- _firearm.Model — model 3D của súng
+		if fw._firearm then
+			local f = fw._firearm
+			if f.Model then scanModel(f.Model) end
+			-- Một số súng dùng _character model
+			if f._character then scanModel(f._character) end
 		end
-		-- _viewmodel — first person viewmodel
-		if handler._viewmodel then
-			scan(handler._viewmodel)
-		end
-		-- _model — third person
-		if handler._model then
-			scan(handler._model)
+		-- ViewModel (first person)
+		if fw.ViewModel then scanModel(fw.ViewModel) end
+		if fw._viewmodel then scanModel(fw._viewmodel) end
+		-- LocalActor character parts
+		local myActor = ReplicatorService and ReplicatorService.LocalActor
+		if myActor and myActor.Character and #parts == 0 then
+			scanModel(myActor.Character)
 		end
 	end
-
 	return parts
 end
 
 local function GC_Apply()
-	local parts = GC_GetGunParts()
-	if #parts == 0 then return end
-
+	local parts = GC_GetParts()
 	local color = GunCosmetics.Color
 	if GunCosmetics.Rainbow then
 		local hue = (tick() * GunCosmetics.RainbowSpeed / 10) % 1
 		color = Color3.fromHSV(hue, 1, 1)
 	end
-
 	for _, part in ipairs(parts) do
 		if not GunCosmetics._originals[part] then
 			GunCosmetics._originals[part] = {
 				color = part.Color,
-				transparency = part.Transparency
+				transparency = part.Transparency,
 			}
 		end
 		pcall(function()
@@ -2553,20 +2515,16 @@ local function GC_Restore()
 	GunCosmetics._originals = {}
 end
 
--- RenderStepped loop
-local gcRenderLoop = RunService.RenderStepped:Connect(function()
+local _gcLoop = RunService.RenderStepped:Connect(function()
 	if GunCosmetics.Enabled then GC_Apply() end
 end)
-table.insert(getgenv().Moon_Connections, gcRenderLoop)
-
+table.insert(getgenv().Moon_Connections, _gcLoop)
 getgenv().GunCosmetics = GunCosmetics
 
 
 -- ==========================================
--- BULLET TRACER v3 — Part thật
--- Tạo Part Neon theo đường đạn, auto destroy
+-- BULLET TRACER v3 — Part Neon thật
 -- ==========================================
-
 local BulletTracer = {
 	Enabled = false,
 	Lifetime = 3,
@@ -2578,88 +2536,71 @@ local BulletTracer = {
 }
 
 local function BT_SpawnPart(fromPos, toPos)
-	local distance = (toPos - fromPos).Magnitude
-	if distance < 0.5 then return end
-
+	local dist = (toPos - fromPos).Magnitude
+	if dist < 0.5 then return end
 	local part = Instance.new("Part")
 	part.Name = "BT"
 	part.Anchored = true
 	part.CanCollide = false
 	part.CanTouch = false
 	part.CastShadow = false
-	part.Size = Vector3.new(BulletTracer.Width, BulletTracer.Width, distance)
-	part.CFrame = CFrame.new((fromPos + toPos) / 2, toPos)
+	part.Size = Vector3.new(BulletTracer.Width, BulletTracer.Width, dist)
+	part.CFrame = CFrame.new((fromPos+toPos)/2, toPos)
 	part.Color = BulletTracer.Color
 	part.Transparency = BulletTracer.Transparency
 	part.Material = Enum.Material.Neon
 	pcall(function() part.Parent = Workspace end)
-
-	table.insert(BulletTracer._parts, {
-		part = part,
-		born = tick(),
-	})
+	table.insert(BulletTracer._parts, { part=part, born=tick() })
 end
 
 local function BT_Update()
 	local now = tick()
-	local remove = {}
+	local rem = {}
 	for i, t in ipairs(BulletTracer._parts) do
-		if not t.part or not t.part.Parent then
-			table.insert(remove, i); continue
-		end
+		if not t.part or not t.part.Parent then rem[#rem+1]=i; continue end
 		local age = now - t.born
 		if age >= BulletTracer.Lifetime then
-			pcall(function() t.part:Destroy() end)
-			table.insert(remove, i)
+			pcall(function() t.part:Destroy() end); rem[#rem+1]=i
 		elseif BulletTracer.FadeOut then
-			local alpha = age / BulletTracer.Lifetime
+			local a = age / BulletTracer.Lifetime
 			pcall(function()
-				t.part.Transparency = BulletTracer.Transparency + (1 - BulletTracer.Transparency) * alpha
+				t.part.Transparency = BulletTracer.Transparency + (1-BulletTracer.Transparency)*a
 			end)
 		end
 	end
-	for i = #remove, 1, -1 do table.remove(BulletTracer._parts, remove[i]) end
+	for i = #rem, 1, -1 do table.remove(BulletTracer._parts, rem[i]) end
 end
 
 local function BT_Hook()
-	if not BulletService then return end
-	if BulletService._tracerHooked then return end
-
+	if not BulletService or BulletService._tracerHooked then return end
 	local existing = BulletService.Discharge
 	BulletService.Discharge = function(self, originCF, ...)
-		local results = {pcall(existing, self, originCF, ...)}
-
+		local res = {pcall(existing, self, originCF, ...)}
 		if BulletTracer.Enabled and originCF then
-			local muzzlePos = originCF.Position
+			local mPos = originCF.Position
 			local dir = originCF.LookVector
 			local rp = RaycastParams.new()
-			rp.FilterDescendantsInstances = {Camera}
-			if LocalPlayer.Character then
-				rp.FilterDescendantsInstances = {Camera, LocalPlayer.Character}
-			end
-			local ray = Workspace:Raycast(muzzlePos, dir * 2000, rp)
-			local endPos = ray and ray.Position or (muzzlePos + dir * 800)
-			task.spawn(BT_SpawnPart, muzzlePos, endPos)
+			rp.FilterDescendantsInstances = LocalPlayer.Character
+				and {Camera, LocalPlayer.Character} or {Camera}
+			local ray = Workspace:Raycast(mPos, dir*2000, rp)
+			task.spawn(BT_SpawnPart, mPos, ray and ray.Position or mPos+dir*800)
 		end
-
-		if results[1] then return table.unpack(results, 2) end
+		if res[1] then return table.unpack(res, 2) end
 	end
 	BulletService._tracerHooked = true
 end
 
-local btHb = RunService.Heartbeat:Connect(function()
+local _btHb = RunService.Heartbeat:Connect(function()
 	if #BulletTracer._parts > 0 then BT_Update() end
 end)
-table.insert(getgenv().Moon_Connections, btHb)
-
+table.insert(getgenv().Moon_Connections, _btHb)
 getgenv().BulletTracer = BulletTracer
 
 
 -- ==========================================
 -- VEHICLE TELEPORT v3
 -- ==========================================
-
-local VehicleTeleport = { X = -3772.173, Y = 64.953, Z = 1424.878 }
+local VehicleTeleport = { X=-3772.173, Y=64.953, Z=1424.878 }
 
 local function DoVehicleTeleport()
 	local targetPos = Vector3.new(VehicleTeleport.X, VehicleTeleport.Y, VehicleTeleport.Z)
@@ -2669,7 +2610,7 @@ local function DoVehicleTeleport()
 	local vehicle = nil
 	if VehicleService and VehicleService.Vehicles then
 		for _, veh in pairs(VehicleService.Vehicles) do
-			if veh.Controlling then vehicle = veh; break end
+			if veh.Controlling then vehicle=veh; break end
 		end
 	end
 	if not vehicle then
@@ -2677,9 +2618,9 @@ local function DoVehicleTeleport()
 		if not ok then ok, gc = pcall(function() return getgc(true) end) end
 		if ok and gc then
 			for _, obj in pairs(gc) do
-				if type(obj) == "table" and rawget(obj, "Controlling") == true
-					and (rawget(obj, "Hitbox") or rawget(obj, "CFrame")) then
-					vehicle = obj; break
+				if type(obj)=="table" and rawget(obj,"Controlling")==true
+					and (rawget(obj,"Hitbox") or rawget(obj,"CFrame")) then
+					vehicle=obj; break
 				end
 			end
 		end
@@ -2687,42 +2628,34 @@ local function DoVehicleTeleport()
 
 	if vehicle and vehicle.Hitbox then
 		pcall(function()
-			vehicle.Hitbox.AssemblyLinearVelocity = Vector3.new(0,0,0)
-			vehicle.Hitbox.AssemblyAngularVelocity = Vector3.new(0,0,0)
+			vehicle.Hitbox.AssemblyLinearVelocity = Vector3.new()
+			vehicle.Hitbox.AssemblyAngularVelocity = Vector3.new()
 			if sethiddenproperty then
-				pcall(function() sethiddenproperty(vehicle.Hitbox, "CFrame", newCF) end)
+				pcall(function() sethiddenproperty(vehicle.Hitbox,"CFrame",newCF) end)
 			end
 			vehicle.Hitbox.CFrame = newCF
 			vehicle.CFrame = newCF
-			if myActor then
-				myActor.SimulatedPosition = targetPos
-				myActor.CFrame = newCF
-			end
+			if myActor then myActor.SimulatedPosition=targetPos; myActor.CFrame=newCF end
 			if ControllerService and ControllerService.Controller then
 				local ctrl = ControllerService.Controller
-				pcall(function()
-					ctrl._position = targetPos
-					ctrl._lastSafePosition = targetPos
-					if ctrl._solver and ctrl._solver.SetState then
-						ctrl._solver:SetState(newCF, Vector3.new(), Vector3.new(), vehicle.ComponentReplicates or {})
-					end
-				end)
+				ctrl._position = targetPos
+				ctrl._lastSafePosition = targetPos
+				if ctrl._solver and ctrl._solver.SetState then
+					ctrl._solver:SetState(newCF, Vector3.new(), Vector3.new(), vehicle.ComponentReplicates or {})
+				end
 			end
 		end)
 	elseif myActor then
 		pcall(function()
 			if ControllerService and ControllerService.Controller then
 				local ctrl = ControllerService.Controller
-				ctrl._position = targetPos
-				ctrl._lastSafePosition = targetPos
+				ctrl._position=targetPos; ctrl._lastSafePosition=targetPos
 			end
-			myActor.SimulatedPosition = targetPos
-			myActor.CFrame = newCF
+			myActor.SimulatedPosition=targetPos; myActor.CFrame=newCF
 		end)
 	end
 	print("[VehicleTeleport] →", targetPos)
 end
-
 getgenv().VehicleTeleport = VehicleTeleport
 
 
@@ -2730,118 +2663,69 @@ getgenv().VehicleTeleport = VehicleTeleport
 -- UI
 -- ==========================================
 
--- AURA KILL — Combat tab
-local S_AuraKill = CombatTab:DrawSection({ Name = "Aura Kill", Position = "right" })
-
-S_AuraKill:AddToggle({
-	Name = "Enable Aura Kill", Flag = "AK_Enabled", Default = false,
-	Callback = function(v)
-		AuraKill.Enabled = v
-		if v then AuraKill.Start() else AuraKill.Stop() end
-	end
-})
-S_AuraKill:AddSlider({
-	Name = "Range (studs)", Flag = "AK_Range", Min = 5, Max = 150, Default = 20, Rounding = 0,
-	Callback = function(v) AuraKill.Range = v end
-})
-S_AuraKill:AddSlider({
-	Name = "Fire Rate (ms)", Flag = "AK_Interval", Min = 50, Max = 2000, Default = 150, Rounding = 0,
-	Callback = function(v) AuraKill.Interval = v / 1000 end
-})
-S_AuraKill:AddButton({
-	Name = "Rescan Slash",
-	Callback = function()
-		AuraKill._slashFn = nil
+-- AURA KILL
+local S_AuraKill = CombatTab:DrawSection({ Name="Aura Kill", Position="right" })
+S_AuraKill:AddToggle({ Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
+	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end })
+S_AuraKill:AddSlider({ Name="Range (studs)", Flag="AK_Range", Min=5, Max=150, Default=20, Rounding=0,
+	Callback=function(v) AuraKill.Range=v end })
+S_AuraKill:AddSlider({ Name="Fire Rate (ms)", Flag="AK_Interval", Min=50, Max=2000, Default=150, Rounding=0,
+	Callback=function(v) AuraKill.Interval=v/1000 end })
+S_AuraKill:AddButton({ Name="Rescan Melee",
+	Callback=function()
+		AuraKill._instance=nil
 		task.spawn(function()
-			local fn = AK_FindSlash()
+			AK_HookMeleeInventory()
 			Notifier.new({
-				Title = "AuraKill",
-				Content = fn and "Slash found!" or "Not found — equip melee rồi thử",
-				Duration = 3
+				Title="AuraKill",
+				Content=AuraKill._instance and "Instance found!" or "Equip melee rồi thử lại",
+				Duration=3
 			})
 		end)
-	end
-})
+	end })
 
--- GUN COSMETICS — Combat tab
-local S_GunCos = CombatTab:DrawSection({ Name = "Gun Cosmetics", Position = "left" })
+-- GUN COSMETICS
+local S_GunCos = CombatTab:DrawSection({ Name="Gun Cosmetics", Position="left" })
+S_GunCos:AddToggle({ Name="Enable", Flag="GC_Enabled", Default=false,
+	Callback=function(v) GunCosmetics.Enabled=v; if not v then GC_Restore() end end })
+S_GunCos:AddToggle({ Name="Rainbow", Flag="GC_Rainbow", Default=false,
+	Callback=function(v) GunCosmetics.Rainbow=v end })
+S_GunCos:AddSlider({ Name="Rainbow Speed", Flag="GC_RainbowSpeed", Min=1, Max=20, Default=1, Rounding=0,
+	Callback=function(v) GunCosmetics.RainbowSpeed=v end })
+S_GunCos:AddColorPicker({ Name="Gun Color", Flag="GC_Color", Default=GunCosmetics.Color,
+	Callback=function(v) GunCosmetics.Color=v end })
+S_GunCos:AddSlider({ Name="Transparency", Flag="GC_Transparency", Min=0, Max=100, Default=0, Rounding=0,
+	Callback=function(v) GunCosmetics.Transparency=v/100 end })
+S_GunCos:AddButton({ Name="Restore Original", Callback=function() GC_Restore() end })
 
-S_GunCos:AddToggle({
-	Name = "Enable", Flag = "GC_Enabled", Default = false,
-	Callback = function(v) GunCosmetics.Enabled = v; if not v then GC_Restore() end end
-})
-S_GunCos:AddToggle({
-	Name = "Rainbow", Flag = "GC_Rainbow", Default = false,
-	Callback = function(v) GunCosmetics.Rainbow = v end
-})
-S_GunCos:AddSlider({
-	Name = "Rainbow Speed", Flag = "GC_RainbowSpeed", Min = 1, Max = 20, Default = 1, Rounding = 0,
-	Callback = function(v) GunCosmetics.RainbowSpeed = v end
-})
-S_GunCos:AddColorPicker({
-	Name = "Gun Color", Flag = "GC_Color", Default = GunCosmetics.Color,
-	Callback = function(v) GunCosmetics.Color = v end
-})
-S_GunCos:AddSlider({
-	Name = "Transparency", Flag = "GC_Transparency", Min = 0, Max = 100, Default = 0, Rounding = 0,
-	Callback = function(v) GunCosmetics.Transparency = v / 100 end
-})
-S_GunCos:AddButton({
-	Name = "Restore Original",
-	Callback = function() GC_Restore() end
-})
-
--- BULLET TRACER — Misc tab
-local S_BT = MiscTab:DrawSection({ Name = "Bullet Tracer", Position = "right" })
-
-S_BT:AddToggle({
-	Name = "Enable Tracer", Flag = "BT_Enabled", Default = false,
-	Callback = function(v) BulletTracer.Enabled = v; if v then BT_Hook() end end
-})
-S_BT:AddSlider({
-	Name = "Lifetime (s)", Flag = "BT_Lifetime", Min = 1, Max = 20, Default = 3, Rounding = 0,
-	Callback = function(v) BulletTracer.Lifetime = v end
-})
-S_BT:AddSlider({
-	Name = "Transparency", Flag = "BT_Transparency", Min = 0, Max = 100, Default = 30, Rounding = 0,
-	Callback = function(v) BulletTracer.Transparency = v / 100 end
-})
-S_BT:AddSlider({
-	Name = "Width (x0.01 studs)", Flag = "BT_Width", Min = 1, Max = 50, Default = 5, Rounding = 0,
-	Callback = function(v) BulletTracer.Width = v / 100 end
-})
-S_BT:AddToggle({
-	Name = "Fade Out", Flag = "BT_FadeOut", Default = true,
-	Callback = function(v) BulletTracer.FadeOut = v end
-})
-S_BT:AddColorPicker({
-	Name = "Tracer Color", Flag = "BT_Color", Default = BulletTracer.Color,
-	Callback = function(v)
-		BulletTracer.Color = v
-		for _, t in ipairs(BulletTracer._parts) do
-			pcall(function() if t.part and t.part.Parent then t.part.Color = v end end)
+-- BULLET TRACER
+local S_BT = MiscTab:DrawSection({ Name="Bullet Tracer", Position="right" })
+S_BT:AddToggle({ Name="Enable Tracer", Flag="BT_Enabled", Default=false,
+	Callback=function(v) BulletTracer.Enabled=v; if v then BT_Hook() end end })
+S_BT:AddSlider({ Name="Lifetime (s)", Flag="BT_Lifetime", Min=1, Max=20, Default=3, Rounding=0,
+	Callback=function(v) BulletTracer.Lifetime=v end })
+S_BT:AddSlider({ Name="Transparency", Flag="BT_Transparency", Min=0, Max=100, Default=30, Rounding=0,
+	Callback=function(v) BulletTracer.Transparency=v/100 end })
+S_BT:AddSlider({ Name="Width (x0.01)", Flag="BT_Width", Min=1, Max=50, Default=5, Rounding=0,
+	Callback=function(v) BulletTracer.Width=v/100 end })
+S_BT:AddToggle({ Name="Fade Out", Flag="BT_FadeOut", Default=true,
+	Callback=function(v) BulletTracer.FadeOut=v end })
+S_BT:AddColorPicker({ Name="Tracer Color", Flag="BT_Color", Default=BulletTracer.Color,
+	Callback=function(v)
+		BulletTracer.Color=v
+		for _,t in ipairs(BulletTracer._parts) do
+			pcall(function() if t.part and t.part.Parent then t.part.Color=v end end)
 		end
-	end
-})
+	end })
 
--- VEHICLE TELEPORT — Vehicles tab
-local S_VehTeleport = VehicleTab:DrawSection({ Name = "Vehicle Teleport", Position = "right" })
+-- VEHICLE TELEPORT
+local S_VTP = VehicleTab:DrawSection({ Name="Vehicle Teleport", Position="right" })
+S_VTP:AddButton({ Name="Teleport Vehicle Here", Callback=function() DoVehicleTeleport() end })
+S_VTP:AddSlider({ Name="Target X", Flag="VT_X", Min=-10000, Max=10000, Default=-3772, Rounding=0,
+	Callback=function(v) VehicleTeleport.X=v end })
+S_VTP:AddSlider({ Name="Target Y", Flag="VT_Y", Min=0, Max=500, Default=65, Rounding=0,
+	Callback=function(v) VehicleTeleport.Y=v end })
+S_VTP:AddSlider({ Name="Target Z", Flag="VT_Z", Min=-10000, Max=10000, Default=1425, Rounding=0,
+	Callback=function(v) VehicleTeleport.Z=v end })
 
-S_VehTeleport:AddButton({
-	Name = "Teleport Vehicle Here",
-	Callback = function() DoVehicleTeleport() end
-})
-S_VehTeleport:AddSlider({
-	Name = "Target X", Flag = "VT_X", Min = -10000, Max = 10000, Default = -3772, Rounding = 0,
-	Callback = function(v) VehicleTeleport.X = v end
-})
-S_VehTeleport:AddSlider({
-	Name = "Target Y", Flag = "VT_Y", Min = 0, Max = 500, Default = 65, Rounding = 0,
-	Callback = function(v) VehicleTeleport.Y = v end
-})
-S_VehTeleport:AddSlider({
-	Name = "Target Z", Flag = "VT_Z", Min = -10000, Max = 10000, Default = 1425, Rounding = 0,
-	Callback = function(v) VehicleTeleport.Z = v end
-})
-
-print("[VehicleMods + AuraKill v5 + GunCosmetics + BulletTracer v3 + VehicleTeleport] Loaded")
+print("[All modules loaded: VehicleMods + AuraKill v6 + GunCosmetics + BulletTracer v3 + VehicleTeleport]")
