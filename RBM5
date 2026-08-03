@@ -1480,14 +1480,25 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	espData.LastUpdate=frameId
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
-	local distance=actor.LOD_Distance or 9999
-	if distance>cachedCfg.MaxDistance then
+	-- Tính distance thực nếu LOD_Distance không có
+	local distance = actor.LOD_Distance
+	if not distance or distance <= 0 then
+		local pos = actor.Position
+		if not pos and actor.Character and actor.Character.PrimaryPart then
+			pos = actor.Character.PrimaryPart.Position
+		end
+		if pos then
+			distance = (Camera.CFrame.Position - pos).Magnitude
+		else
+			distance = 0
+		end
+	end
+	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance>1500 and (frameId%4)~=0 then return end
-	if distance>500 and (frameId%2)~=0 then return end
+	if distance > 1500 and (frameId%2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1501,7 +1512,13 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos=actor.Position or (actor.RootPart and actor.RootPart.Position)
+	local worldPos = actor.Position
+	if not worldPos then
+		if actor.Character then
+			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
+			if pp then worldPos = pp.Position end
+		end
+	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
 	-- Chỉ dùng onScreen — reliable trên PC
