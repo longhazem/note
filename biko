@@ -1,0 +1,1366 @@
+-- ============================================
+-- BRM5 Parvus Hub - Rayfield UI Version
+-- Chuyển đổi từ UI cũ sang Rayfield Gen2
+-- ============================================
+
+-- Load Rayfield Gen2
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local PlayerService = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+
+-- Kiểm tra nếu đang ở menu
+if game.PlaceId == 2916899287 then
+    Rayfield:Notify({
+        Title = "Parvus Hub",
+        Content = "Vui lòng vào game!",
+        Duration = 5
+    })
+    return
+end
+
+-- Biến toàn cục
+local Camera = Workspace.CurrentCamera
+local LocalPlayer = PlayerService.LocalPlayer
+local Packages = ReplicatedStorage:WaitForChild("Packages")
+local Events = ReplicatedStorage:WaitForChild("Events")
+local RemoteEvent = Events:WaitForChild("RemoteEvent")
+local Server = require(Packages:WaitForChild("server"))
+local ServerSettings = Server._cache
+
+local Actors, RoundInterface, Network, NPCFolder, RaycastFolder = nil, nil, nil, Workspace:WaitForChild("Bots"), Workspace:WaitForChild("Raycast")
+local ProjectileSpeed, ProjectileGravity, GravityCorrection = 1000, Vector3.new(0, Workspace.Gravity, 0), 2
+local GroundTip, AircraftTip, NoClipEvent, NoClipObjects, WhiteColor = nil, nil, nil, {}, Color3.new(1, 1, 1)
+local SilentAim, Aimbot, Trigger = nil, false, false
+
+-- Danh sách Teleport
+local Teleports = {
+    {"Forward Operating Base", Vector3.new(-3993, 64, 757)},
+    {"Communications Tower", Vector3.new(-1800, 785, -4140)},
+    {"Department Of Utilities", Vector3.new(-54, 63, -3645)},
+    {"Vietnama Village", Vector3.new(739, 118, -92)},
+    {"Fort Ronograd", Vector3.new(6359, 190, -1468)},
+    {"Ronograd City", Vector3.new(3478, 176, 1073)},
+    {"Sochraina City", Vector3.new(93, 26, 3630)},
+    {"El Chara", Vector3.new(-4768, 108, 5218)},
+    {"Naval Docks", Vector3.new(6174, 130, 2099)},
+    {"Quarry", Vector3.new(331, 86, 2598)},
+    {"Nuclear Silo", Vector3.new(1024, 44, -5148)}
+}
+
+local KnownBodyParts = {
+    {"Head", true}, {"HumanoidRootPart", true},
+    {"UpperTorso", false}, {"LowerTorso", false},
+    {"RightUpperArm", false}, {"RightLowerArm", false}, {"RightHand", false},
+    {"LeftUpperArm", false}, {"LeftLowerArm", false}, {"LeftHand", false},
+    {"RightUpperLeg", false}, {"RightLowerLeg", false}, {"RightFoot", false},
+    {"LeftUpperLeg", false}, {"LeftLowerLeg", false}, {"LeftFoot", false}
+}
+
+-- ============================================
+-- TẠO WINDOW CHÍNH
+-- ============================================
+local Window = Rayfield:CreateWindow({
+    name = "Parvus Hub " .. utf8.char(8212) .. " " .. game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name,
+    configuration = {
+        autoSave = true,
+        autoLoad = true,
+        fileName = "ParvusHub_BRM5"
+    }
+})
+
+-- ============================================
+-- TAB: COMBAT
+-- ============================================
+local CombatTab = Window:CreateTab({
+    name = "Combat",
+    icon = "swords"
+})
+
+-- Section: Aimbot
+local AimbotSection = CombatTab:CreateSection("Aimbot")
+local aimbotEnabled = false
+local aimbotAlways = false
+local aimbotPrediction = false
+local aimbotTeamCheck = false
+local aimbotDistCheck = false
+local aimbotVisCheck = false
+local aimbotSens = 20
+local aimbotFOV = 100
+local aimbotDistLimit = 250
+local aimbotPriority = "Closest"
+local aimbotBodyParts = {}
+
+AimbotSection:CreateToggle({
+    name = "Enabled",
+    callback = function(v) aimbotEnabled = v end
+})
+AimbotSection:CreateKeybind({
+    name = "Keybind",
+    key = Enum.KeyCode.MouseButton2,
+    callback = function(key, keyDown)
+        if aimbotEnabled then
+            Aimbot = keyDown
+        end
+    end
+})
+AimbotSection:CreateToggle({
+    name = "Always Enabled",
+    callback = function(v) aimbotAlways = v end
+})
+AimbotSection:CreateToggle({
+    name = "Prediction",
+    callback = function(v) aimbotPrediction = v end
+})
+AimbotSection:CreateToggle({
+    name = "Team Check",
+    callback = function(v) aimbotTeamCheck = v end
+})
+AimbotSection:CreateToggle({
+    name = "Distance Check",
+    callback = function(v) aimbotDistCheck = v end
+})
+AimbotSection:CreateToggle({
+    name = "Visibility Check",
+    callback = function(v) aimbotVisCheck = v end
+})
+AimbotSection:CreateSlider({
+    name = "Sensitivity",
+    min = 0,
+    max = 100,
+    value = 20,
+    callback = function(v) aimbotSens = v end
+})
+AimbotSection:CreateSlider({
+    name = "Field Of View",
+    min = 0,
+    max = 500,
+    value = 100,
+    callback = function(v) aimbotFOV = v end
+})
+AimbotSection:CreateSlider({
+    name = "Distance Limit",
+    min = 25,
+    max = 1000,
+    value = 250,
+    callback = function(v) aimbotDistLimit = v end
+})
+AimbotSection:CreateDropdown({
+    name = "Priority",
+    options = {"Closest", "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso"},
+    current = "Closest",
+    callback = function(v) aimbotPriority = v end
+})
+
+-- Section: Aimbot FOV
+local AFOVSection = CombatTab:CreateSection("Aimbot FOV Circle")
+AFOVSection:CreateToggle({
+    name = "Enabled",
+    value = true
+})
+AFOVSection:CreateToggle({
+    name = "Filled",
+    value = false
+})
+AFOVSection:CreateColorPicker({
+    name = "Color",
+    color = Color3.fromRGB(255, 170, 255)
+})
+AFOVSection:CreateSlider({
+    name = "NumSides",
+    min = 3,
+    max = 100,
+    value = 14
+})
+AFOVSection:CreateSlider({
+    name = "Thickness",
+    min = 1,
+    max = 10,
+    value = 2
+})
+
+-- Section: Silent Aim
+local SilentAimSection = CombatTab:CreateSection("Silent Aim")
+local silentEnabled = false
+local silentPrediction = false
+local silentTeamCheck = false
+local silentDistCheck = false
+local silentVisCheck = false
+local silentHitChance = 100
+local silentFOV = 100
+local silentDistLimit = 250
+local silentPriority = "Closest"
+local silentBodyParts = {}
+
+SilentAimSection:CreateToggle({
+    name = "Enabled",
+    callback = function(v) silentEnabled = v end
+})
+SilentAimSection:CreateKeybind({
+    name = "Keybind",
+    key = Enum.KeyCode.LeftAlt,
+    callback = function(key, keyDown)
+        if silentEnabled then
+            SilentAim = keyDown and "active" or nil
+        end
+    end
+})
+SilentAimSection:CreateToggle({
+    name = "Prediction",
+    callback = function(v) silentPrediction = v end
+})
+SilentAimSection:CreateToggle({
+    name = "Team Check",
+    callback = function(v) silentTeamCheck = v end
+})
+SilentAimSection:CreateToggle({
+    name = "Distance Check",
+    callback = function(v) silentDistCheck = v end
+})
+SilentAimSection:CreateToggle({
+    name = "Visibility Check",
+    callback = function(v) silentVisCheck = v end
+})
+SilentAimSection:CreateSlider({
+    name = "Hit Chance",
+    min = 0,
+    max = 100,
+    value = 100,
+    callback = function(v) silentHitChance = v end
+})
+SilentAimSection:CreateSlider({
+    name = "Field Of View",
+    min = 0,
+    max = 500,
+    value = 100,
+    callback = function(v) silentFOV = v end
+})
+SilentAimSection:CreateSlider({
+    name = "Distance Limit",
+    min = 25,
+    max = 1000,
+    value = 250,
+    callback = function(v) silentDistLimit = v end
+})
+SilentAimSection:CreateDropdown({
+    name = "Priority",
+    options = {"Closest", "Random", "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso"},
+    current = "Closest",
+    callback = function(v) silentPriority = v end
+})
+
+-- Section: Silent Aim FOV
+local SAFOVSection = CombatTab:CreateSection("Silent Aim FOV Circle")
+SAFOVSection:CreateToggle({
+    name = "Enabled",
+    value = true
+})
+SAFOVSection:CreateToggle({
+    name = "Filled",
+    value = false
+})
+SAFOVSection:CreateColorPicker({
+    name = "Color",
+    color = Color3.fromRGB(170, 170, 255)
+})
+SAFOVSection:CreateSlider({
+    name = "NumSides",
+    min = 3,
+    max = 100,
+    value = 14
+})
+SAFOVSection:CreateSlider({
+    name = "Thickness",
+    min = 1,
+    max = 10,
+    value = 2
+})
+
+-- Section: Trigger
+local TriggerSection = CombatTab:CreateSection("Trigger")
+local triggerEnabled = false
+local triggerAlways = false
+local triggerHoldMouse = false
+local triggerPrediction = false
+local triggerTeamCheck = false
+local triggerDistCheck = false
+local triggerVisCheck = false
+local triggerDelay = 0.15
+local triggerDistLimit = 250
+local triggerFOV = 25
+local triggerPriority = "Closest"
+local triggerBodyParts = {}
+
+TriggerSection:CreateToggle({
+    name = "Enabled",
+    callback = function(v) triggerEnabled = v end
+})
+TriggerSection:CreateKeybind({
+    name = "Keybind",
+    key = Enum.KeyCode.MouseButton2,
+    callback = function(key, keyDown)
+        if triggerEnabled then
+            Trigger = keyDown
+        end
+    end
+})
+TriggerSection:CreateToggle({
+    name = "Always Enabled",
+    callback = function(v) triggerAlways = v end
+})
+TriggerSection:CreateToggle({
+    name = "Hold Mouse Button",
+    callback = function(v) triggerHoldMouse = v end
+})
+TriggerSection:CreateToggle({
+    name = "Prediction",
+    callback = function(v) triggerPrediction = v end
+})
+TriggerSection:CreateToggle({
+    name = "Team Check",
+    callback = function(v) triggerTeamCheck = v end
+})
+TriggerSection:CreateToggle({
+    name = "Distance Check",
+    callback = function(v) triggerDistCheck = v end
+})
+TriggerSection:CreateToggle({
+    name = "Visibility Check",
+    callback = function(v) triggerVisCheck = v end
+})
+TriggerSection:CreateSlider({
+    name = "Click Delay",
+    min = 0,
+    max = 1,
+    value = 0.15,
+    callback = function(v) triggerDelay = v end
+})
+TriggerSection:CreateSlider({
+    name = "Distance Limit",
+    min = 25,
+    max = 1000,
+    value = 250,
+    callback = function(v) triggerDistLimit = v end
+})
+TriggerSection:CreateSlider({
+    name = "Field Of View",
+    min = 0,
+    max = 500,
+    value = 25,
+    callback = function(v) triggerFOV = v end
+})
+TriggerSection:CreateDropdown({
+    name = "Priority",
+    options = {"Closest", "Random", "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso"},
+    current = "Closest",
+    callback = function(v) triggerPriority = v end
+})
+
+-- Section: Trigger FOV
+local TFOVSection = CombatTab:CreateSection("Trigger FOV Circle")
+TFOVSection:CreateToggle({
+    name = "Enabled",
+    value = true
+})
+TFOVSection:CreateToggle({
+    name = "Filled",
+    value = false
+})
+TFOVSection:CreateColorPicker({
+    name = "Color",
+    color = Color3.fromRGB(21, 170, 255)
+})
+TFOVSection:CreateSlider({
+    name = "NumSides",
+    min = 3,
+    max = 100,
+    value = 14
+})
+TFOVSection:CreateSlider({
+    name = "Thickness",
+    min = 1,
+    max = 10,
+    value = 2
+})
+
+-- Section: Other
+local MiscSection = CombatTab:CreateSection("Other")
+MiscSection:CreateToggle({
+    name = "NPC Mode",
+    value = true
+})
+
+-- ============================================
+-- TAB: VISUALS (ESP)
+-- ============================================
+local VisualsTab = Window:CreateTab({
+    name = "Visuals",
+    icon = "eye"
+})
+
+-- Section: Player ESP
+local PlayerESPSection = VisualsTab:CreateSection("Player ESP")
+PlayerESPSection:CreateToggle({
+    name = "Enabled",
+    value = false
+})
+PlayerESPSection:CreateToggle({
+    name = "Boxes",
+    value = true
+})
+PlayerESPSection:CreateToggle({
+    name = "Health Bar",
+    value = true
+})
+PlayerESPSection:CreateToggle({
+    name = "Names",
+    value = true
+})
+PlayerESPSection:CreateToggle({
+    name = "Distance",
+    value = true
+})
+PlayerESPSection:CreateToggle({
+    name = "Team Check",
+    value = true
+})
+PlayerESPSection:CreateToggle({
+    name = "Use Team Color",
+    value = false
+})
+PlayerESPSection:CreateToggle({
+    name = "Distance Check",
+    value = false
+})
+PlayerESPSection:CreateSlider({
+    name = "Distance",
+    min = 25,
+    max = 5000,
+    value = 250
+})
+PlayerESPSection:CreateColorPicker({
+    name = "Ally Color",
+    color = Color3.fromRGB(85, 170, 255)
+})
+PlayerESPSection:CreateColorPicker({
+    name = "Enemy Color",
+    color = Color3.fromRGB(255, 170, 255)
+})
+
+-- Section: NPC ESP
+local NPCESPSection = VisualsTab:CreateSection("NPC ESP")
+NPCESPSection:CreateToggle({
+    name = "Enabled",
+    value = false
+})
+NPCESPSection:CreateToggle({
+    name = "Boxes",
+    value = true
+})
+NPCESPSection:CreateToggle({
+    name = "Health Bar",
+    value = true
+})
+NPCESPSection:CreateToggle({
+    name = "Names",
+    value = true
+})
+NPCESPSection:CreateToggle({
+    name = "Distance",
+    value = true
+})
+NPCESPSection:CreateToggle({
+    name = "Hide Civilians",
+    value = true
+})
+NPCESPSection:CreateToggle({
+    name = "Distance Check",
+    value = true
+})
+NPCESPSection:CreateSlider({
+    name = "Distance",
+    min = 25,
+    max = 5000,
+    value = 250
+})
+NPCESPSection:CreateColorPicker({
+    name = "Civilian Color",
+    color = Color3.fromRGB(85, 191, 255)
+})
+NPCESPSection:CreateColorPicker({
+    name = "Enemy Color",
+    color = Color3.fromRGB(255, 191, 255)
+})
+
+-- ============================================
+-- TAB: MISCELLANEOUS
+-- ============================================
+local MiscTab = Window:CreateTab({
+    name = "Miscellaneous",
+    icon = "settings"
+})
+
+-- Section: Environment
+local EnvSection = MiscTab:CreateSection("Environment")
+EnvSection:CreateToggle({
+    name = "Enabled",
+    value = false
+})
+EnvSection:CreateToggle({
+    name = "Brightness",
+    value = false,
+    callback = function(v)
+        Lighting.GlobalShadows = not v
+    end
+})
+EnvSection:CreateSlider({
+    name = "Clock Time",
+    min = 0,
+    max = 24,
+    value = 12,
+    callback = function(v)
+        if EnvSection.Enabled then
+            Lighting.ClockTime = v
+        end
+    end
+})
+EnvSection:CreateSlider({
+    name = "Fog Density",
+    min = 0,
+    max = 1,
+    value = 0.255
+})
+
+-- Section: Intel ESP
+local IntelSection = MiscTab:CreateSection("Intel ESP")
+IntelSection:CreateToggle({
+    name = "Enabled",
+    value = false
+})
+IntelSection:CreateToggle({
+    name = "Distance Check",
+    value = false
+})
+IntelSection:CreateSlider({
+    name = "Distance",
+    min = 25,
+    max = 5000,
+    value = 1000
+})
+IntelSection:CreateColorPicker({
+    name = "Color",
+    color = Color3.fromRGB(255, 0, 255)
+})
+
+-- Section: Weapon
+local WeaponSection = MiscTab:CreateSection("Weapon")
+WeaponSection:CreateToggle({
+    name = "Recoil",
+    value = false
+})
+WeaponSection:CreateSlider({
+    name = "Recoil Percent",
+    min = 0,
+    max = 100,
+    value = 0
+})
+WeaponSection:CreateToggle({
+    name = "Instant Hit",
+    value = false
+})
+WeaponSection:CreateToggle({
+    name = "Unlock Firemodes",
+    value = false
+})
+WeaponSection:CreateToggle({
+    name = "Rapid Fire",
+    value = false
+})
+WeaponSection:CreateSlider({
+    name = "Round Per Minute",
+    min = 45,
+    max = 1000,
+    value = 1000
+})
+
+-- Section: Character
+local CharSection = MiscTab:CreateSection("Character")
+CharSection:CreateToggle({
+    name = "NoClip",
+    value = false,
+    callback = function(v)
+        if v and not NoClipEvent then
+            NoClipEvent = RunService.Stepped:Connect(function()
+                if not LocalPlayer.Character then return end
+                for _, obj in pairs(LocalPlayer.Character:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        if NoClipObjects[obj] == nil then
+                            NoClipObjects[obj] = obj.CanCollide
+                        end
+                        obj.CanCollide = false
+                    end
+                end
+            end)
+        elseif not v and NoClipEvent then
+            NoClipEvent:Disconnect()
+            NoClipEvent = nil
+            task.wait(0.1)
+            for obj, canCollide in pairs(NoClipObjects) do
+                obj.CanCollide = canCollide
+            end
+            table.clear(NoClipObjects)
+        end
+    end
+})
+CharSection:CreateKeybind({
+    name = "NoClip Keybind",
+    key = Enum.KeyCode.X
+})
+CharSection:CreateToggle({
+    name = "No NVG Effect",
+    value = false
+})
+CharSection:CreateToggle({
+    name = "No NVG Shape",
+    value = false
+})
+CharSection:CreateToggle({
+    name = "No Camera Bob",
+    value = false
+})
+CharSection:CreateToggle({
+    name = "No Stamina Loss",
+    value = false
+})
+CharSection:CreateToggle({
+    name = "Speedhack",
+    value = false
+})
+CharSection:CreateKeybind({
+    name = "Speedhack Keybind",
+    key = Enum.KeyCode.LeftShift
+})
+CharSection:CreateSlider({
+    name = "Speed",
+    min = 16,
+    max = 1000,
+    value = 120
+})
+
+-- Section: Teleports
+local TPSection = MiscTab:CreateSection("Teleports")
+for _, teleport in ipairs(Teleports) do
+    TPSection:CreateButton({
+        name = teleport[1],
+        callback = function()
+            local PrimaryPart = LocalPlayer.Character and LocalPlayer.Character.PrimaryPart
+            if not PrimaryPart then return end
+            
+            -- Tạm thời bật NoClip để teleport
+            local oldNoClip = CharSection.Enabled
+            CharSection.Enabled = true
+            
+            LocalPlayer.Character.Humanoid.Sit = true
+            PrimaryPart.CFrame = CFrame.new(PrimaryPart.Position + Vector3.new(0, 500, 0))
+            
+            -- Tạo AlignPosition để di chuyển mượt
+            local alignPos = Instance.new("AlignPosition")
+            alignPos.Mode = Enum.PositionAlignmentMode.OneAttachment
+            alignPos.Attachment0 = PrimaryPart.RootRigAttachment
+            alignPos.MaxVelocity = 500
+            alignPos.Position = teleport[2] + Vector3.new(0, 500, 0)
+            alignPos.Parent = PrimaryPart
+            
+            while task.wait() do
+                if (PrimaryPart.Position - alignPos.Position).Magnitude < 5 then
+                    break
+                end
+            end
+            
+            alignPos:Destroy()
+            PrimaryPart.CFrame = CFrame.new(teleport[2])
+            LocalPlayer.Character.Humanoid.Sit = false
+            
+            -- Khôi phục NoClip
+            CharSection.Enabled = oldNoClip
+        end
+    })
+end
+
+-- Section: Vehicle
+local VehSection = MiscTab:CreateSection("Vehicle")
+VehSection:CreateToggle({
+    name = "Enabled",
+    value = false
+})
+VehSection:CreateKeybind({
+    name = "Keybind",
+    key = Enum.KeyCode.B
+})
+VehSection:CreateSlider({
+    name = "Speed",
+    min = 0,
+    max = 1000,
+    value = 100
+})
+VehSection:CreateSlider({
+    name = "Acceleration",
+    min = 1,
+    max = 50,
+    value = 1
+})
+
+-- Section: Helicopter
+local HeliSection = MiscTab:CreateSection("Helicopter")
+HeliSection:CreateToggle({
+    name = "Enabled",
+    value = false
+})
+HeliSection:CreateKeybind({
+    name = "Keybind",
+    key = Enum.KeyCode.B
+})
+HeliSection:CreateSlider({
+    name = "Speed",
+    min = 0,
+    max = 500,
+    value = 200
+})
+
+-- Section: Aircraft
+local AirSection = MiscTab:CreateSection("Aircraft")
+AirSection:CreateToggle({
+    name = "Speed Enabled",
+    value = false
+})
+AirSection:CreateKeybind({
+    name = "Keybind",
+    key = Enum.KeyCode.LeftControl
+})
+AirSection:CreateSlider({
+    name = "Speed",
+    min = 130,
+    max = 950,
+    value = 130
+})
+AirSection:CreateToggle({
+    name = "Fly Enabled",
+    value = false
+})
+AirSection:CreateKeybind({
+    name = "Fly Keybind",
+    key = Enum.KeyCode.F
+})
+AirSection:CreateToggle({
+    name = "Fly Use Camera",
+    value = false
+})
+AirSection:CreateSlider({
+    name = "Fly Speed",
+    min = 145,
+    max = 500,
+    value = 200
+})
+AirSection:CreateButton({
+    name = "Setup Switches/Engines",
+    callback = function()
+        local Aircraft = require(Packages:WaitForChild("MovementService"))
+        if not Aircraft._handler or not Aircraft._handler._main then return end
+        Network:FireServer("CallInteraction", "Fire", "Canopy")
+        
+        local switches = {"cicu", "oxygen", "battery", "ac_r", "ac_l", "inverter", "take_apu", "apu", "engine_r", "engine_l", "fuel_r_l", "fuel_l_l", "fuel_r_r", "fuel_l_r"}
+        for _, sw in ipairs(switches) do
+            local CameraMod = require(Packages:WaitForChild("CameraService"))
+            if CameraMod._handler._buttons then
+                for _, btn in pairs(CameraMod._handler._buttons) do
+                    if btn._id == sw then
+                        btn:Update()
+                        btn:Select()
+                        CameraMod._switch = btn
+                        CameraMod._switch:Activate()
+                        CameraMod._switch:Unselect()
+                    end
+                end
+            end
+        end
+        
+        Rayfield:Notify({
+            Title = "Parvus Hub",
+            Content = "Vui lòng đợi động cơ khởi động...",
+            Duration = 30
+        })
+        
+        repeat task.wait() until Aircraft._handler._main.APU.engine.PlaybackSpeed == 1
+        Network:FireServer("CallInteraction", "Fire", "LeftEngine")
+        Network:FireServer("CallInteraction", "Fire", "RightEngine")
+    end
+})
+AirSection:CreateButton({
+    name = "Unlock Camera",
+    callback = function()
+        local Aircraft = require(Packages:WaitForChild("MovementService"))
+        local CameraMod = require(Packages:WaitForChild("CameraService"))
+        if Aircraft._handler and Aircraft._handler._controller then
+            CameraMod:Mount(Aircraft._handler._controller, "Character")
+            CameraMod._handler._zoom = 128
+        end
+    end
+})
+
+-- Section: Other
+local OtherSection = MiscTab:CreateSection("Other")
+OtherSection:CreateToggle({
+    name = "FirstPerson Locked",
+    value = ServerSettings["FIRSTPERSON_LOCKED"],
+    callback = function(v)
+        ServerSettings["FIRSTPERSON_LOCKED"] = v
+    end
+})
+OtherSection:CreateButton({
+    name = "Enable Fake RGE",
+    callback = function()
+        if not ServerSettings.CHEATS_ENABLED then
+            ServerSettings.CHEATS_ENABLED = true
+            for _, conn in ipairs(getconnections(RemoteEvent.OnClientEvent)) do
+                conn.Function("InitRGE")
+            end
+        end
+    end
+})
+OtherSection:CreateButton({
+    name = "Force Reset Character",
+    callback = function()
+        Network:FireServer("ResetCharacter")
+    end
+})
+
+-- ============================================
+-- HÀM HỖ TRỢ
+-- ============================================
+
+local function RequireModule(name)
+    for _, instance in ipairs(getmodules()) do
+        if instance.Name == name then
+            return require(instance)
+        end
+    end
+end
+
+local function HookFunction(moduleName, funcName, hook)
+    local module = nil
+    while task.wait() do
+        module = RequireModule(moduleName)
+        if module and module[funcName] then
+            local old = module[funcName]
+            module[funcName] = function(...)
+                return hook(old, ...)
+            end
+            break
+        end
+    end
+end
+
+local function HookSignal(signal, index, hook)
+    local conn = getconnections(signal)[index]
+    if not conn then return end
+    local old = conn.Function
+    if not old then return end
+    conn:Disable()
+    signal:Connect(function(...)
+        return hook(old, ...)
+    end)
+end
+
+local WallCheckParams = RaycastParams.new()
+WallCheckParams.FilterType = Enum.RaycastFilterType.Blacklist
+WallCheckParams.IgnoreWater = true
+
+local function Raycast(origin, direction, filter)
+    WallCheckParams.FilterDescendantsInstances = filter
+    return Workspace:Raycast(origin, direction, WallCheckParams)
+end
+
+local function GetTeam(player)
+    for _, teamData in pairs(RoundInterface.Teams) do
+        for userId, _ in pairs(teamData.Players) do
+            if tonumber(userId) == player.UserId then
+                return teamData
+            end
+        end
+    end
+end
+
+local function InEnemyTeam(enabled, player)
+    if not enabled then return true end
+    return not player.Neutral and LocalPlayer.Team ~= player.Team
+end
+
+local function IsDistanceLimited(enabled, distance, limit)
+    if not enabled then return false end
+    return distance >= limit
+end
+
+local function IsVisible(enabled, origin, position, character)
+    if not enabled then return true end
+    return not Raycast(origin, position - origin, {character, RaycastFolder, LocalPlayer.Character})
+end
+
+local function SolveTrajectory(origin, velocity, time, gravity)
+    return origin + velocity * time + gravity * time * time / GravityCorrection
+end
+
+local function GetClosest(enabled, teamCheck, visCheck, distCheck, distLimit, fov, priority, bodyParts, prediction, npcMode)
+    if not enabled then return end
+    local camPos = Camera.CFrame.Position
+    local closest = nil
+    local closestDist = math.huge
+    
+    for _, actor in pairs(Actors) do
+        local player = actor.Player
+        if player == LocalPlayer then continue end
+        
+        local char = actor.Character
+        local humanoid = actor.Humanoid
+        local rootPart = actor.RootPart
+        
+        if humanoid.Health <= 0 then continue end
+        
+        if npcMode then
+            if actor._isPlayer then continue end
+            local rootRig = rootPart:FindFirstChild("RootRigAttachment")
+            if not rootRig then continue end
+            if not rootPart:FindFirstChild("AlignOrientation") then continue end
+            if rootRig:FindFirstChildOfClass("ProximityPrompt") then continue end
+        else
+            if not actor._isPlayer then continue end
+            if not InEnemyTeam(teamCheck, player) then continue end
+        end
+        
+        -- Xác định body parts cần check
+        local partsToCheck = {}
+        if priority == "Closest" then
+            for _, partName in ipairs(bodyParts) do
+                local part = char:FindFirstChild(partName)
+                if part then table.insert(partsToCheck, part) end
+            end
+        else
+            local part = char:FindFirstChild(priority)
+            if part then table.insert(partsToCheck, part) end
+        end
+        
+        if #partsToCheck == 0 then continue end
+        
+        for _, part in ipairs(partsToCheck) do
+            local pos = part.Position
+            local dist = (pos - camPos).Magnitude
+            if IsDistanceLimited(distCheck, dist, distLimit) then continue end
+            if not IsVisible(visCheck, camPos, pos, char) then continue end
+            
+            if prediction then
+                pos = SolveTrajectory(pos, part.AssemblyLinearVelocity, dist / ProjectileSpeed, ProjectileGravity)
+            end
+            
+            local screenPos, onScreen = Camera:WorldToViewportPoint(pos)
+            if not onScreen then continue end
+            
+            local mousePos = UserInputService:GetMouseLocation()
+            local mag = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+            if mag >= fov then continue end
+            
+            if mag < closestDist then
+                closestDist = mag
+                closest = {player, char, part, screenPos}
+            end
+        end
+    end
+    
+    return closest
+end
+
+local function AimAt(hitbox, sensitivity)
+    if not hitbox then return end
+    local mousePos = UserInputService:GetMouseLocation()
+    mousemoverel(
+        (hitbox[4].X - mousePos.X) * sensitivity,
+        (hitbox[4].Y - mousePos.Y) * sensitivity
+    )
+end
+
+-- ============================================
+-- HOOKS
+-- ============================================
+
+-- Lấy Network
+task.spawn(function()
+    for _, tbl in ipairs(getgc(true)) do
+        if typeof(tbl) == "table" and rawget(tbl, "FireServer") and rawget(tbl, "InvokeServer") then
+            Network = tbl
+            break
+        end
+    end
+end)
+
+-- Lấy Actors và RoundInterface
+repeat task.wait() until RequireModule("RoundInterface")
+RoundInterface = RequireModule("RoundInterface")
+repeat task.wait() until RequireModule("ActorService")
+Actors = RequireModule("ActorService")._actors
+
+-- Hook ControllerClass
+HookFunction("ControllerClass", "LateUpdate", function(old, self, ...)
+    if CharSection.Enabled then
+        self.Speed = CharSection.Speed
+    end
+    return old(self, ...)
+end)
+
+-- Hook ViewmodelClass
+HookFunction("ViewmodelClass", "Update", function(old, self, ...)
+    local args = {...}
+    if CharSection.Enabled and args[2] then
+        args[2] = CFrame.new(args[2].Position)
+    end
+    return old(self, unpack(args))
+end)
+
+-- Hook CharacterCamera
+HookFunction("CharacterCamera", "Update", function(old, self, ...)
+    if CharSection.NoCameraBob then
+        self._bob = 0
+    end
+    if WeaponSection.Recoil then
+        self._recoil.Velocity = self._recoil.Velocity * (WeaponSection.RecoilPercent / 100)
+    end
+    return old(self, ...)
+end)
+
+-- Hook FirearmInventory
+HookFunction("FirearmInventory", "_firemode", function(old, self, ...)
+    if WeaponSection.UnlockFiremodes then
+        local config = self._config
+        for _, mode in ipairs({1, 2, 3}) do
+            if not table.find(config.Tune.Firemodes, mode) then
+                table.insert(config.Tune.Firemodes, mode)
+            end
+        end
+    end
+    return old(self, ...)
+end)
+
+HookFunction("FirearmInventory", "_discharge", function(old, self, ...)
+    if WeaponSection.RapidFire then
+        self._config.Tune.RPM = WeaponSection.RPM
+    end
+    if WeaponSection.InstantHit then
+        self._velocity = 1e6
+        self._range = 1e6
+    end
+    ProjectileSpeed = self._velocity
+    return old(self, ...)
+end)
+
+-- Hook CharacterMovement
+HookFunction("CharacterMovement", "Update", function(old, self, ...)
+    if CharSection.NoStaminaLoss then
+        self._exhausted = 0
+    end
+    return old(self, ...)
+end)
+
+-- Hook TurretMovement
+HookFunction("TurretMovement", "_discharge", function(old, self, ...)
+    if WeaponSection.InstantHit then
+        self._tune.Velocity = 1e6
+        self._tune.Range = 1e6
+    end
+    ProjectileSpeed = self._tune.Velocity
+    GroundTip = self._tip
+    return old(self, ...)
+end)
+
+-- Hook AircraftMovement
+HookFunction("AircraftMovement", "_discharge", function(old, self, ...)
+    if WeaponSection.InstantHit then
+        self._tune.Velocity = 1e6
+        self._tune.Range = 1e6
+    end
+    ProjectileSpeed = self._tune.Velocity
+    AircraftTip = self._tip
+    return old(self, ...)
+end)
+
+-- Hook GroundMovement (Vehicle)
+HookFunction("GroundMovement", "Update", function(old, self, ...)
+    if VehSection.Enabled then
+        local args = {...}
+        for _, motor in pairs(self._motors.f) do
+            motor.MotorMaxTorque = 200000 * VehSection.Speed
+            motor.AngularVelocity = -args[2].Y * VehSection.Speed
+        end
+        for _, motor in pairs(self._motors.b) do
+            motor.MotorMaxTorque = 200000 * VehSection.Speed
+            motor.AngularVelocity = -(-args[2].Y * VehSection.Speed)
+        end
+    end
+    return old(self, ...)
+end)
+
+-- Hook HelicopterMovement
+HookFunction("HelicopterMovement", "Update", function(old, self, ...)
+    if HeliSection.Enabled then
+        self._tune.Speed = HeliSection.Speed
+    end
+    return old(self, ...)
+end)
+
+-- Hook AircraftMovement (Speed & Fly)
+HookFunction("AircraftMovement", "Update", function(old, self, ...)
+    if AirSection.SpeedEnabled then
+        self._model.RPM.Value = AirSection.Speed
+    end
+    
+    if AirSection.FlyEnabled then
+        self._force.MaxForce = Vector3.new(1, 1, 1) * 40000000
+        local lookVec, rightVec = Camera.CFrame.LookVector * Vector3.new(1, 0, 1), Camera.CFrame.RightVector * Vector3.new(1, 0, 1)
+        local forward = UserInputService:IsKeyDown(Enum.KeyCode.W) and lookVec or Vector3.zero
+        local backward = UserInputService:IsKeyDown(Enum.KeyCode.S) and -lookVec or Vector3.zero
+        local left = UserInputService:IsKeyDown(Enum.KeyCode.A) and -rightVec or Vector3.zero
+        local right = UserInputService:IsKeyDown(Enum.KeyCode.D) and rightVec or Vector3.zero
+        local up = UserInputService:IsKeyDown(Enum.KeyCode.Space) and Vector3.new(0, 1, 0) or Vector3.zero
+        local down = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) and Vector3.new(0, -1, 0) or Vector3.zero
+        local vel = forward + backward + left + right + up + down
+        if vel.Magnitude > 0 then vel = vel.Unit end
+        self._force.Velocity = vel * AirSection.FlySpeed
+        
+        if AirSection.FlyUseCamera then
+            self._gyro.MaxTorque = Vector3.new(1, 1, 1) * 4000
+            self._gyro.CFrame = Camera.CFrame * CFrame.Angles(0, math.pi, 0)
+        end
+    end
+    
+    return old(self, ...)
+end)
+
+-- Hook EnvironmentService
+HookFunction("EnvironmentService", "Update", function(old, self, ...)
+    if EnvSection.Enabled then
+        self._atmospheres.Default.Density = EnvSection.FogDensity
+        if self._atmospheres.Desert and self._atmospheres.Snow then
+            self._atmospheres.Desert.Density = EnvSection.FogDensity
+            self._atmospheres.Snow.Density = EnvSection.FogDensity
+        end
+    end
+    return old(self, ...)
+end)
+
+-- Hook RemoteEvent cho NVG
+HookSignal(RemoteEvent.OnClientEvent, 1, function(old, ...)
+    local args = {...}
+    if args[1] == "ReplicateNVG" then
+        if CharSection.NoNVGEffect then
+            args[2] = false
+        end
+        if CharSection.NoNVGShape then
+            args[3] = ""
+        end
+    end
+    return old(unpack(args))
+end)
+
+-- Hook __namecall cho Silent Aim
+local oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    if SilentAim and getnamecallmethod() == "Raycast" then
+        if math.random(100) <= silentHitChance then
+            local args = {...}
+            if args[1] == Camera.CFrame.Position then
+                args[2] = SilentAim[3].Position - Camera.CFrame.Position
+            elseif AircraftTip and args[1] == AircraftTip.WorldCFrame.Position then
+                args[2] = SilentAim[3].Position - AircraftTip.WorldCFrame.Position
+            elseif GroundTip and args[1] == GroundTip.WorldCFrame.Position then
+                args[2] = SilentAim[3].Position - GroundTip.WorldCFrame.Position
+            end
+            return oldNamecall(self, unpack(args))
+        end
+    end
+    return oldNamecall(self, ...)
+end)
+
+-- ============================================
+-- VÒNG LẶP CHÍNH
+-- ============================================
+
+-- Aimbot Loop
+task.spawn(function()
+    while task.wait() do
+        if not (Aimbot or aimbotAlways) then
+            task.wait(0.1)
+        else
+            AimAt(GetClosest(
+                aimbotEnabled,
+                aimbotTeamCheck,
+                aimbotVisCheck,
+                aimbotDistCheck,
+                aimbotDistLimit,
+                aimbotFOV,
+                aimbotPriority,
+                KnownBodyParts,
+                aimbotPrediction,
+                true
+            ), aimbotSens / 100)
+        end
+    end
+end)
+
+-- Silent Aim Loop
+task.spawn(function()
+    while task.wait() do
+        SilentAim = GetClosest(
+            silentEnabled,
+            silentTeamCheck,
+            silentVisCheck,
+            silentDistCheck,
+            silentDistLimit,
+            silentFOV,
+            silentPriority,
+            KnownBodyParts,
+            silentPrediction,
+            true
+        )
+    end
+end)
+
+-- Trigger Loop
+task.spawn(function()
+    while task.wait() do
+        if not (Trigger or triggerAlways) then
+            task.wait(0.1)
+        else
+            if not isrbxactive() then
+                task.wait(0.1)
+            else
+                local target = GetClosest(
+                    triggerEnabled,
+                    triggerTeamCheck,
+                    triggerVisCheck,
+                    triggerDistCheck,
+                    triggerDistLimit,
+                    triggerFOV,
+                    triggerPriority,
+                    KnownBodyParts,
+                    triggerPrediction,
+                    true
+                )
+                
+                if target then
+                    task.wait(triggerDelay)
+                    mouse1press()
+                    if triggerHoldMouse then
+                        while task.wait() do
+                            local newTarget = GetClosest(
+                                triggerEnabled,
+                                triggerTeamCheck,
+                                triggerVisCheck,
+                                triggerDistCheck,
+                                triggerDistLimit,
+                                triggerFOV,
+                                triggerPriority,
+                                KnownBodyParts,
+                                triggerPrediction,
+                                true
+                            )
+                            if not newTarget or not Trigger then break end
+                        end
+                    end
+                    mouse1release()
+                end
+            end
+        end
+    end
+end)
+
+-- Lighting Changed
+Lighting.Changed:Connect(function(property)
+    if property == "OutdoorAmbient" and EnvSection.Brightness and Lighting.OutdoorAmbient ~= WhiteColor then
+        Lighting.OutdoorAmbient = WhiteColor
+    end
+    if property == "ClockTime" and EnvSection.Enabled and Lighting.ClockTime ~= EnvSection.ClockTime then
+        Lighting.ClockTime = EnvSection.ClockTime
+    end
+end)
+
+-- Camera Changed
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    Camera = Workspace.CurrentCamera
+end)
+
+-- ============================================
+-- ESP - Intel
+-- ============================================
+for _, item in ipairs(RaycastFolder:GetChildren()) do
+    if item:GetAttribute("Compound") then
+        -- TODO: Thêm ESP cho Intel
+    end
+end
+
+RaycastFolder.ChildAdded:Connect(function(item)
+    task.wait(1)
+    if item:GetAttribute("Compound") then
+        -- TODO: Thêm ESP cho Intel
+    end
+end)
+
+RaycastFolder.ChildRemoved:Connect(function(item)
+    -- TODO: Xóa ESP cho Intel
+end)
+
+-- ============================================
+-- ESP - NPC
+-- ============================================
+for _, npc in ipairs(NPCFolder:GetChildren()) do
+    task.spawn(function()
+        if npc:WaitForChild("HumanoidRootPart", 5) and npc.HumanoidRootPart:WaitForChild("AlignOrientation", 5) then
+            -- TODO: Thêm ESP cho NPC
+        end
+    end)
+end
+
+NPCFolder.ChildAdded:Connect(function(npc)
+    if npc:WaitForChild("HumanoidRootPart", 5) and npc.HumanoidRootPart:WaitForChild("AlignOrientation", 5) then
+        -- TODO: Thêm ESP cho NPC
+    end
+end)
+
+NPCFolder.ChildRemoved:Connect(function(npc)
+    -- TODO: Xóa ESP cho NPC
+end)
+
+-- ============================================
+-- ESP - Player
+-- ============================================
+for _, player in ipairs(PlayerService:GetPlayers()) do
+    if player ~= LocalPlayer then
+        -- TODO: Thêm ESP cho Player
+    end
+end
+
+PlayerService.PlayerAdded:Connect(function(player)
+    -- TODO: Thêm ESP cho Player
+end)
+
+PlayerService.PlayerRemoving:Connect(function(player)
+    -- TODO: Xóa ESP cho Player
+end)
+
+-- ============================================
+-- NOTIFICATION
+-- ============================================
+Rayfield:Notify({
+    Title = "Parvus Hub",
+    Content = "Đã tải thành công!",
+    Duration = 3
+})
