@@ -2461,3 +2461,181 @@ S_AutoTree:AddButton({
 })
 
 print("[AutoRemoveTree] Loaded")
+
+-- ==========================================
+-- AURA KILL — Direct Remote Fire
+-- Key: {34,25,56,43,37} | Code: runtime từ _events upvalue
+-- Packet: [code, "InventoryAction", "Slash", 1] → encrypt → FireServer
+-- ==========================================
+local AuraKill = {
+	Enabled = false,
+	Range = 20,
+	Interval = 0.15,
+	_key = nil,
+	_code = nil,
+	_remote = nil,
+	_lastFire = 0,
+	_connection = nil,
+	_running = false,
+}
+
+-- Tìm network object có _key + _code + _events
+local function AK_FindNet()
+	if AuraKill._key and AuraKill._code then return true end
+
+	local ok, gc = pcall(function() return filtergc("table") end)
+	if not ok then ok, gc = pcall(function() return getgc(true) end) end
+	if not ok or not gc then return false end
+
+	for _, v in pairs(gc) do
+		if type(v) ~= "table" then continue end
+		local k = rawget(v, "_key")
+		local co = rawget(v, "_code")
+		local ev = rawget(v, "_events")
+		if k and co and ev
+			and type(k) == "table" and #k >= 5
+			and type(co) == "string"
+			and type(ev) == "table"
+		then
+			AuraKill._key = k
+			AuraKill._code = co
+			print("[AuraKill] Net found, code:", co:sub(1,8).."...")
+			return true
+		end
+	end
+	return false
+end
+
+local function AK_GetRemote()
+	if AuraKill._remote and AuraKill._remote.Parent then
+		return AuraKill._remote
+	end
+	local re = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+	if re then
+		local rem = re:FindFirstChild("RemoteEvent")
+		if rem then AuraKill._remote = rem; return rem end
+	end
+	return nil
+end
+
+-- Encrypt: JSONEncode → Caesar shift key[1..4] → pad key[5] random chars
+local function AK_Encrypt(data, key)
+	local hs = game:GetService("HttpService")
+	local ok, raw = pcall(function() return hs:JSONEncode(data) end)
+	if not ok or not raw then return nil end
+	local result = ""
+	for i = 1, #raw do
+		local ki = ((i-1) % 4) + 1
+		local nb = (string.byte(raw, i) - 32 + key[ki]) % 95 + 32
+		result = result .. string.char(nb)
+	end
+	local padLen = key[5] or 37
+	for i = 1, padLen do
+		result = result .. string.char(math.random(33, 126))
+	end
+	return result
+end
+
+local function AK_Fire()
+	if not AK_FindNet() then return end
+	local remote = AK_GetRemote()
+	if not remote then return end
+
+	-- Packet đã verify: [code, "InventoryAction", "Slash", 1] = 68 chars trước pad
+	local packet = { AuraKill._code, "InventoryAction", "Slash", 1 }
+	local encrypted = AK_Encrypt(packet, AuraKill._key)
+	if encrypted then
+		pcall(function() remote:FireServer(encrypted) end)
+	end
+end
+
+local function AK_Tick()
+	if not AuraKill.Enabled then return end
+	local now = tick()
+	if now - AuraKill._lastFire < AuraKill.Interval then return end
+
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local myPos = myActor.Position or Camera.CFrame.Position
+
+	local inRange = false
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if actor and actor.Alive then
+				local pos = actor.Position
+				if not pos and actor.Character and actor.Character.PrimaryPart then
+					pos = actor.Character.PrimaryPart.Position
+				end
+				if pos and (pos - myPos).Magnitude <= AuraKill.Range then
+					inRange = true; break
+				end
+			end
+		end
+	end
+	if not inRange then return end
+
+	AK_Fire()
+	AuraKill._lastFire = now
+end
+
+function AuraKill.Start()
+	if AuraKill._running then return end
+	AuraKill._running = true
+	task.spawn(AK_FindNet)
+	task.spawn(AK_GetRemote)
+	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
+	table.insert(getgenv().Moon_Connections, AuraKill._connection)
+	print("[AuraKill] Started")
+end
+
+function AuraKill.Stop()
+	AuraKill._running = false
+	if AuraKill._connection then
+		pcall(function() AuraKill._connection:Disconnect() end)
+		AuraKill._connection = nil
+	end
+end
+
+getgenv().AuraKill = AuraKill
+
+-- UI — Combat tab
+local S_AuraKill = CombatTab:DrawSection({ Name="Aura Kill", Position="right" })
+
+S_AuraKill:AddToggle({
+	Name = "Enable Aura Kill", Flag = "AK_Enabled", Default = false,
+	Callback = function(v)
+		AuraKill.Enabled = v
+		if v then AuraKill.Start() else AuraKill.Stop() end
+	end
+})
+
+S_AuraKill:AddSlider({
+	Name = "Range (studs)", Flag = "AK_Range",
+	Min = 5, Max = 150, Default = 20, Rounding = 0,
+	Callback = function(v) AuraKill.Range = v end
+})
+
+S_AuraKill:AddSlider({
+	Name = "Fire Rate (ms)", Flag = "AK_Interval",
+	Min = 50, Max = 2000, Default = 150, Rounding = 0,
+	Callback = function(v) AuraKill.Interval = v / 1000 end
+})
+
+S_AuraKill:AddButton({
+	Name = "Rescan Network",
+	Callback = function()
+		AuraKill._key = nil; AuraKill._code = nil; AuraKill._remote = nil
+		task.spawn(function()
+			local ok = AK_FindNet()
+			local re = AK_GetRemote()
+			Notifier.new({
+				Title = "AuraKill",
+				Content = ok and re and "Ready! Code: "..(AuraKill._code or "?"):sub(1,8).."..."
+					or (not re and "Remote not found" or "Network key not found"),
+				Duration = 4
+			})
+		end)
+	end
+})
+
+print("[AuraKill Direct] Loaded")
