@@ -800,7 +800,9 @@ local function HookController(controller)
 end
 
 local FOVCircle=Drawing.new("Circle")
-FOVCircle.Thickness=1; FOVCircle.NumSides=60; FOVCircle.Radius=Config.SilentAimFOV
+FOVCircle.Thickness=1
+pcall(function() FOVCircle.NumSides=60 end)
+FOVCircle.Radius=Config.SilentAimFOV
 FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
 
 getgenv().VelocityCache={}
@@ -1408,7 +1410,7 @@ local function CreateHighlight(actor,color)
 	if not actor.Character then return nil end
 	local highlight=Instance.new("Highlight")
 	highlight.FillColor=color; highlight.FillTransparency=0.9; highlight.OutlineColor=color
-	highlight.OutlineTransparency=0; highlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.OutlineTransparency=0; pcall(function() highlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop end)
 	highlight.Parent=actor.Character; return highlight
 end
 
@@ -1502,8 +1504,8 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	local worldPos=actor.Position or (actor.RootPart and actor.RootPart.Position)
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	local engineVisible=onScreen or actor.ViewportOnScreen or (distance<128)
-	if not engineVisible or not onScreen then SetAllVisible(drawings,espData,false); return end
+	-- Chỉ dùng onScreen — reliable trên PC
+	if not onScreen then SetAllVisible(drawings,espData,false); return end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
