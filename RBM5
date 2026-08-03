@@ -2375,3 +2375,70 @@ S_BT:AddColorPicker({ Name="Tracer Color", Flag="BT_Color", Default=BulletTracer
 	end })
 
 print("[VehicleMods + BulletTracer + FOV Screen-Center] Loaded")
+
+-- ==========================================
+-- AUTO REMOVE TREE
+-- ==========================================
+local _TreePrefixes = {"arb", "qradbiq", "oradbbig", "oragedbbig"}
+local _AutoTree = { Enabled = false, _connection = nil }
+
+local function _startsWith(str, prefix)
+	return string.sub(str:lower(), 1, #prefix) == prefix
+end
+
+local function _DeleteTrees()
+	local toDelete = {}
+	local parentMark = {}
+	for _, obj in pairs(Workspace:GetDescendants()) do
+		local name = obj.Name:lower()
+		local matched = false
+		for _, p in ipairs(_TreePrefixes) do
+			if _startsWith(name, p) then matched = true; break end
+		end
+		if matched then
+			if obj:IsA("Model") or obj:IsA("Folder") then
+				table.insert(toDelete, obj)
+				parentMark[obj] = true
+			else
+				local parent = obj.Parent
+				if parent and not parentMark[parent] then
+					table.insert(toDelete, obj)
+				end
+			end
+		end
+	end
+	for _, obj in pairs(toDelete) do
+		if obj and obj.Parent then pcall(function() obj:Destroy() end) end
+	end
+end
+
+local S_AutoTree = MiscTab:DrawSection({ Name="Auto Remove Tree", Position="left" })
+
+S_AutoTree:AddToggle({
+	Name = "Enable",
+	Flag = "AT_Enabled",
+	Default = false,
+	Callback = function(v)
+		_AutoTree.Enabled = v
+		if v then
+			if not _AutoTree._connection then
+				_AutoTree._connection = RunService.Heartbeat:Connect(function()
+					if _AutoTree.Enabled then _DeleteTrees() end
+				end)
+				table.insert(getgenv().Moon_Connections, _AutoTree._connection)
+			end
+		else
+			if _AutoTree._connection then
+				pcall(function() _AutoTree._connection:Disconnect() end)
+				_AutoTree._connection = nil
+			end
+		end
+	end
+})
+
+S_AutoTree:AddButton({
+	Name = "Delete Once",
+	Callback = function() _DeleteTrees() end
+})
+
+print("[AutoRemoveTree] Loaded")
