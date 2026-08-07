@@ -2603,3 +2603,92 @@ S_HitSound:AddButton({
 
 getgenv().HitSound = HitSound
 print("[HitSound] Loaded — ID: 79887435989574")
+
+-- ==========================================
+-- ANTI FALL DAMAGE
+-- Tận dụng CharacterController — zero gravity khi đang rơi
+-- ==========================================
+local AntiFall = { Enabled = false }
+
+local function AF_Hook()
+	local TargetController = nil
+
+	if CharacterController and CharacterController.Update then
+		TargetController = CharacterController
+	elseif ControllerService and ControllerService.Controller then
+		local ctrl = ControllerService.Controller
+		if ctrl.Update then TargetController = ctrl
+		else
+			local meta = getmetatable(ctrl)
+			local index = meta and (meta.__index or meta)
+			if type(index) == "table" and index.Update then TargetController = index end
+		end
+	end
+
+	if not TargetController then
+		-- Fallback: scan GC
+		local ok, gc = pcall(function() return filtergc("table") end)
+		if not ok then ok, gc = pcall(function() return getgc(true) end) end
+		if ok and gc then
+			for _, obj in pairs(gc) do
+				if type(obj) == "table" and rawget(obj, "Update")
+					and rawget(obj, "VelocityGravity") ~= nil then
+					TargetController = obj; break
+				end
+			end
+		end
+	end
+
+	if not TargetController then
+		warn("[AntiFall] Controller not found — retry after 2s")
+		task.delay(2, AF_Hook)
+		return
+	end
+
+	-- Hook Update đã có sẵn (từ fly/speed controller)
+	-- Thêm anti-fall logic vào đầu — không override hook cũ
+	local existingUpdate = TargetController.Update
+	if TargetController._antiFallHooked then return end
+
+	TargetController.Update = function(self, viewInput, dt, ...)
+		if AntiFall.Enabled then
+			local myActor = ReplicatorService and ReplicatorService.LocalActor
+			-- Chỉ can thiệp khi đang rơi (velocity âm và không grounded)
+			local isFalling = self.VelocityGravity and self.VelocityGravity < -10
+			local notGrounded = not self.IsGrounded and self.HeightState ~= 0
+
+			if isFalling or notGrounded then
+				-- Zero gravity velocity — giống fly nhưng không thay đổi position
+				self.VelocityGravity = 0
+				-- Giữ HeightState để server không detect fall damage
+				self.HeightState = 0
+				if myActor then
+					myActor.Grounded = true
+				end
+			end
+		end
+		return existingUpdate(self, viewInput, dt, ...)
+	end
+
+	TargetController._antiFallHooked = true
+	print("[AntiFall] Hooked successfully")
+end
+
+-- Hook sau khi services init xong
+task.delay(3, AF_Hook)
+
+getgenv().AntiFall = AntiFall
+
+-- UI — Character tab
+local S_AntiFall = CharacterTab:DrawSection({ Name="Anti Fall", Position="right" })
+
+S_AntiFall:AddToggle({
+	Name = "Enable Anti Fall",
+	Flag = "AF_AntiFall",
+	Default = false,
+	Callback = function(v)
+		AntiFall.Enabled = v
+	end
+})
+
+print("[AntiFall] Loaded")
