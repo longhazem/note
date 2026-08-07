@@ -2651,28 +2651,19 @@ local function AF_Hook()
 	if TargetController._antiFallHooked then return end
 
 	TargetController.Update = function(self, viewInput, dt, ...)
-		-- Chạy update bình thường trước — rơi tự nhiên
-		local result = {existingUpdate(self, viewInput, dt, ...)}
-
 		if AntiFall.Enabled then
+			-- Update _lastSafePosition liên tục khi đang rơi
+			-- Game tính fall damage = khoảng cách từ _lastSafePosition đến chỗ chạm đất
+			-- Nếu _lastSafePosition luôn = vị trí hiện tại thì khoảng cách = 0 → không damage
+			if self._position then
+				self._lastSafePosition = self._position
+			end
 			local myActor = ReplicatorService and ReplicatorService.LocalActor
-			-- Sau khi update: nếu vừa chạm đất (IsGrounded vừa true)
-			-- reset FallHeight/FallVelocity để server không tính damage
-			if self.IsGrounded then
-				self.FallHeight = 0
-				self.FallVelocity = 0
-				self.FallDistance = 0
-				self._fallHeight = 0
-				self._fallVelocity = 0
-				self._maxFallVelocity = 0
-				if myActor then
-					myActor.FallHeight = 0
-					myActor.FallVelocity = 0
-				end
+			if myActor then
+				myActor.Grounded = true
 			end
 		end
-
-		return table.unpack(result)
+		return existingUpdate(self, viewInput, dt, ...)
 	end
 
 	TargetController._antiFallHooked = true
