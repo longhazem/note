@@ -2651,19 +2651,25 @@ local function AF_Hook()
 	if TargetController._antiFallHooked then return end
 
 	TargetController.Update = function(self, viewInput, dt, ...)
+		-- Chạy physics bình thường
+		local result = {existingUpdate(self, viewInput, dt, ...)}
+
 		if AntiFall.Enabled then
-			-- Update _lastSafePosition liên tục khi đang rơi
-			-- Game tính fall damage = khoảng cách từ _lastSafePosition đến chỗ chạm đất
-			-- Nếu _lastSafePosition luôn = vị trí hiện tại thì khoảng cách = 0 → không damage
-			if self._position then
+			-- HeightState = 7 (Falling) là trigger để server tính fall damage
+			-- Giữ HeightState = 0 (Standing) → server không bao giờ biết mình đang rơi
+			self.HeightState = 0
+			self.IsGrounded = true
+			if self._lastSafePosition and self._position then
 				self._lastSafePosition = self._position
 			end
 			local myActor = ReplicatorService and ReplicatorService.LocalActor
 			if myActor then
 				myActor.Grounded = true
+				myActor.HeightState = 0
 			end
 		end
-		return existingUpdate(self, viewInput, dt, ...)
+
+		return table.unpack(result)
 	end
 
 	TargetController._antiFallHooked = true
@@ -2672,6 +2678,31 @@ end
 
 -- Hook sau khi services init xong
 task.delay(3, AF_Hook)
+
+-- Heartbeat riêng reset HeightState trên actor mỗi frame
+local _antiFallHb = RunService.Heartbeat:Connect(function()
+	if not AntiFall.Enabled then return end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	-- Reset HeightState = 0 (Standing) trực tiếp trên actor
+	-- Server đọc field này để quyết định có tính fall damage không
+	pcall(function()
+		myActor.HeightState = 0
+		myActor.Grounded = true
+	end)
+	-- Reset trên controller
+	if ControllerService and ControllerService.Controller then
+		local ctrl = ControllerService.Controller
+		pcall(function()
+			ctrl.HeightState = 0
+			ctrl.IsGrounded = true
+			if ctrl._position then
+				ctrl._lastSafePosition = ctrl._position
+			end
+		end)
+	end
+end)
+table.insert(getgenv().Moon_Connections, _antiFallHb)
 
 getgenv().AntiFall = AntiFall
 
