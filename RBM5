@@ -2651,23 +2651,28 @@ local function AF_Hook()
 	if TargetController._antiFallHooked then return end
 
 	TargetController.Update = function(self, viewInput, dt, ...)
+		-- Chạy update bình thường trước — rơi tự nhiên
+		local result = {existingUpdate(self, viewInput, dt, ...)}
+
 		if AntiFall.Enabled then
 			local myActor = ReplicatorService and ReplicatorService.LocalActor
-			-- Chỉ can thiệp khi đang rơi (velocity âm và không grounded)
-			local isFalling = self.VelocityGravity and self.VelocityGravity < -10
-			local notGrounded = not self.IsGrounded and self.HeightState ~= 0
-
-			if isFalling or notGrounded then
-				-- Zero gravity velocity — giống fly nhưng không thay đổi position
-				self.VelocityGravity = 0
-				-- Giữ HeightState để server không detect fall damage
-				self.HeightState = 0
+			-- Sau khi update: nếu vừa chạm đất (IsGrounded vừa true)
+			-- reset FallHeight/FallVelocity để server không tính damage
+			if self.IsGrounded then
+				self.FallHeight = 0
+				self.FallVelocity = 0
+				self.FallDistance = 0
+				self._fallHeight = 0
+				self._fallVelocity = 0
+				self._maxFallVelocity = 0
 				if myActor then
-					myActor.Grounded = true
+					myActor.FallHeight = 0
+					myActor.FallVelocity = 0
 				end
 			end
 		end
-		return existingUpdate(self, viewInput, dt, ...)
+
+		return table.unpack(result)
 	end
 
 	TargetController._antiFallHooked = true
