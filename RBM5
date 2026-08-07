@@ -2719,3 +2719,213 @@ S_AntiFall:AddToggle({
 })
 
 print("[AntiFall] Loaded")
+
+-- ==========================================
+-- NOCLIP
+-- Bypass server position rejection bằng cách
+-- liên tục update _lastSafePosition = _position
+-- Disable collision trên character parts
+-- ==========================================
+local Noclip = { Enabled = false, _connection = nil }
+
+local function Noclip_SetCollision(enabled)
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	local char = myActor and myActor.Character
+	if not char then
+		-- Fallback: LocalPlayer character
+		char = LocalPlayer.Character
+	end
+	if not char then return end
+
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			pcall(function() part.CanCollide = enabled end)
+		end
+	end
+end
+
+local function Noclip_Start()
+	if Noclip._connection then return end
+
+	Noclip_SetCollision(false)
+
+	Noclip._connection = RunService.Heartbeat:Connect(function()
+		if not Noclip.Enabled then return end
+
+		-- Disable collision mỗi frame — game reset CanCollide liên tục
+		Noclip_SetCollision(false)
+
+		-- Key: update _lastSafePosition = _position liên tục
+		-- Server dùng _lastSafePosition để detect "teleport hack"
+		-- Nếu luôn update thì không bao giờ bị reject/teleport về
+		if ControllerService and ControllerService.Controller then
+			local ctrl = ControllerService.Controller
+			pcall(function()
+				if ctrl._position then
+					ctrl._lastSafePosition = ctrl._position
+				end
+			end)
+		end
+
+		-- Sync LocalActor
+		local myActor = ReplicatorService and ReplicatorService.LocalActor
+		if myActor then
+			pcall(function()
+				myActor.Grounded = true
+				if myActor._lastSafePosition and myActor.SimulatedPosition then
+					myActor._lastSafePosition = myActor.SimulatedPosition
+				end
+			end)
+		end
+	end)
+
+	table.insert(getgenv().Moon_Connections, Noclip._connection)
+	print("[Noclip] Started")
+end
+
+local function Noclip_Stop()
+	Noclip_SetCollision(true)
+	if Noclip._connection then
+		pcall(function() Noclip._connection:Disconnect() end)
+		Noclip._connection = nil
+	end
+	print("[Noclip] Stopped")
+end
+
+-- Restore collision khi character respawn
+LocalPlayer.CharacterAdded:Connect(function()
+	if not Noclip.Enabled then return end
+	task.wait(1)
+	Noclip_SetCollision(false)
+end)
+
+getgenv().Noclip = Noclip
+
+-- UI — Character tab
+S_Movement:AddToggle({
+	Name = "Noclip",
+	Flag = "Char_Noclip",
+	Default = false,
+	Callback = function(v)
+		Noclip.Enabled = v
+		if v then Noclip_Start() else Noclip_Stop() end
+	end
+})
+
+print("[Noclip] Loaded")
+
+-- ==========================================
+-- NOCLIP
+-- Bypass server collision rollback bằng cách:
+-- 1. Set CanCollide = false trên character parts
+-- 2. Update _lastSafePosition liên tục để server không rollback
+-- 3. Giữ Grounded = true để bypass ground check
+-- ==========================================
+local Noclip = {
+	Enabled = false,
+	_connection = nil,
+	_origCollide = {},  -- backup CanCollide gốc
+}
+
+local function NC_SetCollision(enabled)
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	local char = myActor and myActor.Character
+	if not char then
+		-- Fallback: dùng LocalPlayer character
+		char = LocalPlayer.Character
+	end
+	if not char then return end
+
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			if not enabled then
+				-- Backup rồi tắt collision
+				if Noclip._origCollide[part] == nil then
+					Noclip._origCollide[part] = part.CanCollide
+				end
+				pcall(function() part.CanCollide = false end)
+			else
+				-- Restore
+				local orig = Noclip._origCollide[part]
+				if orig ~= nil then
+					pcall(function() part.CanCollide = orig end)
+				end
+			end
+		end
+	end
+end
+
+local function NC_Start()
+	if Noclip._connection then return end
+
+	Noclip._connection = RunService.Heartbeat:Connect(function()
+		if not Noclip.Enabled then return end
+
+		-- 1. Tắt collision mỗi frame (game có thể reset CanCollide)
+		NC_SetCollision(false)
+
+		-- 2. Update _lastSafePosition = vị trí hiện tại
+		-- Server dùng cái này để detect "invalid position" và rollback
+		-- Nếu luôn update thì server nghĩ vị trí hiện tại là hợp lệ
+		if ControllerService and ControllerService.Controller then
+			local ctrl = ControllerService.Controller
+			pcall(function()
+				if ctrl._position then
+					ctrl._lastSafePosition = ctrl._position
+				end
+			end)
+		end
+
+		-- 3. Sync SimulatedPosition trên actor
+		local myActor = ReplicatorService and ReplicatorService.LocalActor
+		if myActor then
+			pcall(function()
+				if myActor.Character and myActor.Character.PrimaryPart then
+					local curPos = myActor.Character.PrimaryPart.Position
+					myActor.SimulatedPosition = curPos
+				end
+			end)
+		end
+	end)
+
+	table.insert(getgenv().Moon_Connections, Noclip._connection)
+	print("[Noclip] Started")
+end
+
+local function NC_Stop()
+	-- Restore collision
+	NC_SetCollision(true)
+	Noclip._origCollide = {}
+
+	if Noclip._connection then
+		pcall(function() Noclip._connection:Disconnect() end)
+		Noclip._connection = nil
+	end
+	print("[Noclip] Stopped")
+end
+
+-- Khi character respawn, reset collision backup
+LocalPlayer.CharacterAdded:Connect(function()
+	if Noclip.Enabled then
+		Noclip._origCollide = {}
+		task.wait(1)
+		NC_SetCollision(false)
+	end
+end)
+
+getgenv().Noclip = Noclip
+
+-- UI — Character tab
+local S_Noclip = CharacterTab:DrawSection({ Name="Noclip", Position="right" })
+
+S_Noclip:AddToggle({
+	Name = "Enable Noclip",
+	Flag = "NC_Enabled",
+	Default = false,
+	Callback = function(v)
+		Noclip.Enabled = v
+		if v then NC_Start() else NC_Stop() end
+	end
+})
+
+print("[Noclip] Loaded")
