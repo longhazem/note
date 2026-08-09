@@ -1,7 +1,6 @@
 -- --- AuraKill.lua ---
--- Hook thẳng _use() của MeleeInventory instance đang equip
--- Khi _use chạy, nó tự raycast + fire Impact đúng cách
--- Chỉ cần spam _use với target trong aura radius
+-- p179 = weapon item UID (bắt từ hookmetamethod khi swing tay 1 lần)
+-- Sau đó replay Slash + Impact liên tục
 
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
@@ -13,31 +12,78 @@ local AuraRadius  = 15
 local AuraCooldown = 0.6
 local lastHit     = {}
 
+local Network       = nil
+local weaponUID     = nil  -- UUID của melee weapon đang cầm
+local ReplicatorSvc = nil
+
 -- ============================================
--- TÌM MeleeInventory INSTANCE ĐANG EQUIP
+-- BULK SCAN
 -- ============================================
 
-local function getMeleeInventory()
-    local ok, gc = pcall(function() return getgc(true) end)
-    if not ok then return nil end
-
+local function BulkScan()
+    local ok, gc = pcall(function() return filtergc("table") end)
+    if not ok then ok, gc = pcall(function() return getgc(true) end) end
+    if not ok then return end
+    local count = 0
     for _, obj in pairs(gc) do
+        count = count + 1
+        if count % 8000 == 0 then task.wait() end
         if type(obj) ~= "table" then continue end
-        -- Signature MeleeInventory instance: có _actor, _swinging, _looping, _delay, _distance
-        local ok1, actor   = pcall(function() return obj._actor end)
-        local ok2, timer   = pcall(function() return obj._timer end)
-        local ok3, delay   = pcall(function() return obj._delay end)
-        local ok4, dist    = pcall(function() return obj._distance end)
-        local ok5, build   = pcall(function() return obj._build end)
+        if not Network and rawget(obj, "FireServer") and rawget(obj, "_events") then
+            Network = obj
+            print("[Aura] Network found")
+        end
+        if not ReplicatorSvc and rawget(obj, "Actors") and rawget(obj, "LocalActor") then
+            ReplicatorSvc = obj
+            print("[Aura] ReplicatorService found")
+        end
+        if Network and ReplicatorSvc then break end
+    end
+end
 
-        if ok1 and ok2 and ok3 and ok4 and ok5
-        and actor ~= nil and type(timer) == "number"
-        and type(delay) == "number" and type(dist) == "number"
-        and type(build) == "string" then
-            -- Verify _actor adalah LocalPlayer's actor
-            local char = LocalPlayer.Character
-            if char and actor.Character == char then
-                return obj
+-- ============================================
+-- HOOK — bắt weaponUID từ swing tay đầu tiên
+-- ============================================
+
+local function setupHook()
+    if not Network then return end
+    local origFireServer = Network.FireServer
+    Network.FireServer = function(self, action, subAction, ...)
+        -- Bắt: Network:FireServer("InventoryAction", "Slash", slashNum)
+        -- arg1 = "InventoryAction", arg2 = "Slash"
+        -- NHƯNG theo InventoryService: FireServer(uid, "InventoryAction", action, ...)
+        -- Thực ra format: Network:FireServer(uid, action, ...)
+        -- uid là arg đầu tiên
+        if not weaponUID and action and type(action) == "string"
+        and #action == 36 and action:find("%-")
+        and subAction == "InventoryAction" then
+            weaponUID = action
+            print("[Aura] WeaponUID: " .. weaponUID)
+        end
+        return origFireServer(self, action, subAction, ...)
+    end
+    print("[Aura] Hook active — swing melee 1 lần để capture weaponUID")
+end
+
+-- ============================================
+-- vector3toTable
+-- ============================================
+
+local function v3t(v) return {v.X, v.Y, v.Z} end
+
+-- ============================================
+-- ACTOR UID
+-- ============================================
+
+local function getActorUID(character)
+    if not ReplicatorSvc then return nil end
+    for _, actor in pairs(ReplicatorSvc.Actors or {}) do
+        if type(actor) ~= "table" then continue end
+        if actor.Character == character or actor.Model == character then
+            for _, v in pairs(actor) do
+                if type(v) == "string" and #v == 36 and v:find("%-") then
+                    return v
+                end
             end
         end
     end
@@ -45,144 +91,49 @@ local function getMeleeInventory()
 end
 
 -- ============================================
--- HOOK _use — force swing ke arah target
+-- HIT SEQUENCE
 -- ============================================
 
-local Network = nil
+local function doAuraHit(eRoot, eChar)
+    if not Network or not weaponUID then return end
 
-local function findNetwork()
-    local ok, gc = pcall(function() return filtergc("table") end)
-    if not ok then ok, gc = pcall(function() return getgc(true) end) end
-    if not ok then return end
-    for _, obj in pairs(gc) do
-        if type(obj) == "table"
-        and rawget(obj, "FireServer")
-        and rawget(obj, "_events") then
-            Network = obj
-            print("[Aura] Network found")
-            return
-        end
-    end
-end
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
 
--- vector3toTable sama dengan v_u_7 di game
-local function v3t(v) return {v.X, v.Y, v.Z} end
+    local actorUID = getActorUID(eChar)
+    if not actorUID then return end
 
-local function doAuraHit(meleeInv, targetRoot)
-    if not meleeInv or not Network then return end
-    if not targetRoot or not targetRoot.Parent then return end
-
-    local actor = meleeInv._actor
-    if not actor then return end
-
-    -- Slash dulu (random 1-3 seperti game asli)
     local slashNum = math.random(1, 3)
+
+    -- Slash
     pcall(function()
-        Network:FireServer("InventoryAction", "Slash", slashNum)
+        Network:FireServer(weaponUID, "InventoryAction", "Slash", slashNum)
     end)
 
-    -- Delay lalu Impact — tapi kita pakai Raycast sendiri
-    -- karena _actor:Action butuh equipped item
-    local delay = meleeInv._delay or 0.1
-    local dist  = meleeInv._distance or 5
+    -- Impact sau delay
+    task.delay(0.1, function()
+        if not eRoot.Parent then return end
+        local hitPos = eRoot.Position + Vector3.new(0, 1, 0)
 
-    task.delay(delay, function()
-        if not targetRoot.Parent then return end
-
-        -- Hitung direction dari karakter kita ke target
-        local myChar = LocalPlayer.Character
-        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-        if not myRoot then return end
-
-        local origin = myRoot.Position + Vector3.new(0, 2.5, 0)
-        local direction = (targetRoot.Position - origin).Unit * dist
-
-        -- Raycast
+        -- Raycast từ mình đến target
+        local origin = myRoot.Position + Vector3.new(0, 1.5, 0)
+        local dir = (hitPos - origin)
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Exclude
         params.FilterDescendantsInstances = { myChar }
+        local result = workspace:Raycast(origin, dir, params)
 
-        local result = workspace:Raycast(origin, direction, params)
-            or workspace:Spherecast(origin, 1, direction, params)
+        local finalPos = result and result.Position or hitPos
+        local finalPart = result and result.Instance and result.Instance.Name or "Head"
 
-        if result and result.Instance then
-            -- Cari actor UID dari hit instance
-            local hitPart = result.Instance
-            local hitPos  = result.Position
-            local partName = hitPart.Name
-
-            -- Cari actor dari target character
-            local ReplicatorService = nil
-            local ok2, gc2 = pcall(function() return getgc(true) end)
-            if ok2 then
-                for _, obj in pairs(gc2) do
-                    if type(obj) == "table"
-                    and rawget(obj, "Actors")
-                    and rawget(obj, "LocalActor") then
-                        ReplicatorService = obj
-                        break
-                    end
-                end
-            end
-
-            local actorUID = nil
-            if ReplicatorService then
-                local targetChar = targetRoot.Parent
-                for _, a in pairs(ReplicatorService.Actors or {}) do
-                    if type(a) == "table" and (a.Character == targetChar or a.Model == targetChar) then
-                        for k, v in pairs(a) do
-                            if type(v) == "string" and #v == 36 and v:find("%-") then
-                                actorUID = v; break
-                            end
-                        end
-                        break
-                    end
-                end
-            end
-
-            if actorUID then
-                pcall(function()
-                    Network:FireServer("InventoryAction", "Impact",
-                        v3t(hitPos),
-                        actorUID,
-                        partName
-                    )
-                end)
-            end
-        else
-            -- Miss raycast — kirim ke posisi target langsung
-            local ReplicatorService = nil
-            local ok2, gc2 = pcall(function() return getgc(true) end)
-            if ok2 then
-                for _, obj in pairs(gc2) do
-                    if type(obj) == "table"
-                    and rawget(obj, "Actors")
-                    and rawget(obj, "LocalActor") then
-                        ReplicatorService = obj; break
-                    end
-                end
-            end
-            if ReplicatorService then
-                local targetChar = targetRoot.Parent
-                for _, a in pairs(ReplicatorService.Actors or {}) do
-                    if type(a) == "table" and (a.Character == targetChar or a.Model == targetChar) then
-                        for k, v in pairs(a) do
-                            if type(v) == "string" and #v == 36 and v:find("%-") then
-                                pcall(function()
-                                    Network:FireServer("InventoryAction", "Impact",
-                                        v3t(targetRoot.Position),
-                                        v,
-                                        "Head"
-                                    )
-                                end)
-                                break
-                            end
-                        end
-                        break
-                    end
-                end
-            end
-        end
+        pcall(function()
+            Network:FireServer(weaponUID, "InventoryAction", "Impact",
+                v3t(finalPos),
+                actorUID,
+                finalPart
+            )
+        end)
     end)
 end
 
@@ -190,30 +141,13 @@ end
 -- AURA LOOP
 -- ============================================
 
-local ReplicatorService = nil
-
-task.spawn(function()
-    task.wait(1.5)
-    findNetwork()
-    -- Cache ReplicatorService
-    local ok, gc = pcall(function() return filtergc("table") end)
-    if not ok then ok, gc = pcall(function() return getgc(true) end) end
-    if ok then
-        for _, obj in pairs(gc) do
-            if type(obj) == "table"
-            and rawget(obj, "Actors")
-            and rawget(obj, "LocalActor") then
-                ReplicatorService = obj
-                print("[Aura] ReplicatorService found")
-                break
-            end
-        end
-    end
-    print("[Aura] Ready. E = bật/tắt | Radius: " .. AuraRadius)
-end)
-
 RunService.Heartbeat:Connect(function()
-    if not enabled or not Network then return end
+    if not enabled then return end
+    if not Network then return end
+    if not weaponUID then
+        warn("[Aura] Swing melee 1 lần trước")
+        return
+    end
 
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
@@ -221,9 +155,6 @@ RunService.Heartbeat:Connect(function()
 
     local now = tick()
     local myPos = myRoot.Position
-
-    -- Lấy melee inventory 1 lần mỗi frame
-    local meleeInv = getMeleeInventory()
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
@@ -235,15 +166,31 @@ RunService.Heartbeat:Connect(function()
         if (myPos - eRoot.Position).Magnitude > AuraRadius then continue end
         if lastHit[player] and (now - lastHit[player]) < AuraCooldown then continue end
         lastHit[player] = now
-
-        task.spawn(doAuraHit, meleeInv, eRoot)
+        task.spawn(doAuraHit, eRoot, eChar)
     end
 end)
+
+-- ============================================
+-- TOGGLE + INIT
+-- ============================================
 
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == Enum.KeyCode.E then
+        if not weaponUID then
+            warn("[Aura] Swing melee 1 lần trước để capture weaponUID")
+            return
+        end
         enabled = not enabled
         print("[Aura] " .. (enabled and "ON" or "OFF"))
     end
+end)
+
+task.spawn(function()
+    task.wait(1.5)
+    BulkScan()
+    task.wait(0.3)
+    setupHook()
+    print("[Aura] Bước 1: Equip melee → swing 1 lần → weaponUID captured")
+    print("[Aura] Bước 2: E = bật/tắt | Radius: " .. AuraRadius)
 end)
