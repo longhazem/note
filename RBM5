@@ -2725,16 +2725,17 @@ print("[AntiFall] Loaded")
 
 
 -- ==========================================
--- AURA KILL — Melee Remote Packet
--- Slash(1,2,3) → Impact(pos, uid, part)
--- Packet: [code, "InventoryAction", "Slash"/Impact", ...]
+-- AURA KILL — Melee (theo dump thật)
+-- Packet RAW JSON (không encrypt):
+-- Slash: [code, "InventoryAction", "Slash", 1/2/3]
+-- Impact: [code, "InventoryAction", "Impact", [x,y,z], actorUID, partName]
+-- Code = session UUID, UID = per-actor UUID
 -- ==========================================
 local AuraKill = {
 	Enabled = false,
 	Range = 20,
-	Interval = 0.3,
+	Interval = 0.35,
 	TargetPart = "Head",
-	_key = nil,
 	_code = nil,
 	_remote = nil,
 	_lastFire = 0,
@@ -2742,74 +2743,75 @@ local AuraKill = {
 	_running = false,
 }
 
-local function AK_FindNet()
-	if AuraKill._key and AuraKill._code then return true end
+-- Tìm network code (session UUID) từ _events table
+local function AK_FindCode()
+	if AuraKill._code then return AuraKill._code end
+
 	local ok, gc = pcall(function() return filtergc("table") end)
 	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if not ok or not gc then return false end
+	if not ok or not gc then return nil end
+
 	for _, v in pairs(gc) do
 		if type(v) ~= "table" then continue end
-		local k = rawget(v, "_key")
 		local co = rawget(v, "_code")
 		local ev = rawget(v, "_events")
-		if k and co and ev
-			and type(k) == "table" and #k >= 5
-			and type(co) == "string"
-			and type(ev) == "table"
+		-- Verify: _code là UUID string, _events là table
+		if co and ev and type(co) == "string" and type(ev) == "table"
+			and #co > 30  -- UUID dài ~36 chars
 		then
-			AuraKill._key = k
 			AuraKill._code = co
-			print("[AuraKill] Net found, code:", co:sub(1,8).."...")
-			return true
+			print("[AuraKill] Code found:", co:sub(1,8).."...")
+			return co
 		end
-	end
-	return false
-end
-
-local function AK_GetRemote()
-	if AuraKill._remote and AuraKill._remote.Parent then return AuraKill._remote end
-	local re = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
-	if re then
-		local rem = re:FindFirstChild("RemoteEvent")
-		if rem then AuraKill._remote = rem; return rem end
 	end
 	return nil
 end
 
-local function AK_Encrypt(data, key)
-	local hs = game:GetService("HttpService")
-	local ok, raw = pcall(function() return hs:JSONEncode(data) end)
-	if not ok or not raw then return nil end
-	local result = ""
-	for i = 1, #raw do
-		local ki = ((i-1) % 4) + 1
-		local nb = (string.byte(raw, i) - 32 + key[ki]) % 95 + 32
-		result = result .. string.char(nb)
+-- Tìm RemoteEvent
+local function AK_GetRemote()
+	if AuraKill._remote and AuraKill._remote.Parent then return AuraKill._remote end
+	local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+	if ev then
+		local re = ev:FindFirstChild("RemoteEvent")
+		if re then AuraKill._remote = re; return re end
 	end
-	local padLen = key[5] or 37
-	for i = 1, padLen do
-		result = result .. string.char(math.random(33, 126))
+	-- Fallback scan
+	for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+		if v:IsA("RemoteEvent") then AuraKill._remote = v; return v end
 	end
-	return result
+	return nil
 end
 
--- Lấy UID của actor — game dùng actor.UID hoặc actor.Id
-local function AK_GetActorUID(actor)
-	return actor.UID or actor.Id or tostring(actor)
+-- Lấy actor UID — từ dump: UUID string như "1526bba0-be5f-4212-b0e4-a3be7459084c"
+-- Game dùng actor.UID hoặc trong _events table
+local function AK_GetUID(actor)
+	-- actor.UID thường là UUID string trong BRM5
+	if actor.UID and type(actor.UID) == "string" and #actor.UID > 10 then
+		return actor.UID
+	end
+	-- Fallback: scan _events của actor
+	if actor._events then
+		for k, v in pairs(actor._events) do
+			if type(k) == "string" and #k > 30 then return k end
+		end
+	end
+	-- Fallback: actor.Id
+	if actor.Id then return tostring(actor.Id) end
+	return nil
 end
 
+-- Fire melee attack vào 1 actor
 local function AK_Fire(actor)
-	if not AK_FindNet() then return false end
+	local code = AK_FindCode()
+	if not code then return false end
+
 	local remote = AK_GetRemote()
 	if not remote then return false end
 
-	local key = AuraKill._key
-	local code = AuraKill._code
-
-	-- Lấy target position và part
 	local char = actor.Character
 	if not char then return false end
 
+	-- Lấy target part
 	local targetPart = char:FindFirstChild(AuraKill.TargetPart)
 		or char:FindFirstChild("Head")
 		or char:FindFirstChild("UpperTorso")
@@ -2817,33 +2819,30 @@ local function AK_Fire(actor)
 	if not targetPart then return false end
 
 	local pos = targetPart.Position
-	local uid = AK_GetActorUID(actor)
+	local uid = AK_GetUID(actor)
+	if not uid then return false end
+
 	local partName = targetPart.Name
 
-	-- Step 1: Fire Slash 1, 2, 3 (animation frames)
+	-- Fire Slash 1, 2, 3 trước (animation frames theo dump)
 	for i = 1, 3 do
-		local slashPacket = {code, "InventoryAction", "Slash", i}
-		local enc = AK_Encrypt(slashPacket, key)
-		if enc then
-			pcall(function() remote:FireServer(enc) end)
-		end
+		pcall(function()
+			remote:FireServer({code, "InventoryAction", "Slash", i})
+		end)
 		task.wait(0.05)
 	end
 
-	-- Step 2: Fire Impact packet
-	-- Format: [code, "InventoryAction", "Impact", [x,y,z], actorUID, partName]
-	local impactPacket = {
-		code,
-		"InventoryAction",
-		"Impact",
-		{pos.X, pos.Y, pos.Z},
-		uid,
-		partName
-	}
-	local encImpact = AK_Encrypt(impactPacket, key)
-	if encImpact then
-		pcall(function() remote:FireServer(encImpact) end)
-	end
+	-- Fire Impact với tọa độ + UID + part
+	pcall(function()
+		remote:FireServer({
+			code,
+			"InventoryAction",
+			"Impact",
+			{pos.X, pos.Y, pos.Z},
+			uid,
+			partName
+		})
+	end)
 
 	return true
 end
@@ -2857,6 +2856,7 @@ local function AK_Tick()
 	if not myActor then return end
 	local myPos = myActor.Position or Camera.CFrame.Position
 
+	-- Tìm enemy gần nhất trong range
 	local closestActor = nil
 	local closestDist = AuraKill.Range
 
@@ -2878,10 +2878,15 @@ local function AK_Tick()
 
 	if not closestActor then return end
 
-	-- Fire async để không block Heartbeat
+	-- Update lastFire trước để tránh spam
+	AuraKill._lastFire = now
+
 	task.spawn(function()
-		if AK_Fire(closestActor) then
-			AuraKill._lastFire = tick()
+		local ok = AK_Fire(closestActor)
+		if not ok then
+			-- Retry: rescan code nếu fire fail
+			AuraKill._code = nil
+			AK_FindCode()
 		end
 	end)
 end
@@ -2889,11 +2894,12 @@ end
 function AuraKill.Start()
 	if AuraKill._running then return end
 	AuraKill._running = true
-	task.spawn(AK_FindNet)
+	-- Pre-cache
+	task.spawn(AK_FindCode)
 	task.spawn(AK_GetRemote)
 	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
 	table.insert(getgenv().Moon_Connections, AuraKill._connection)
-	print("[AuraKill] Started")
+	print("[AuraKill] Started — range:", AuraKill.Range)
 end
 
 function AuraKill.Stop()
@@ -2902,11 +2908,12 @@ function AuraKill.Stop()
 		pcall(function() AuraKill._connection:Disconnect() end)
 		AuraKill._connection = nil
 	end
+	print("[AuraKill] Stopped")
 end
 
 getgenv().AuraKill = AuraKill
 
--- UI
+-- UI — Combat tab
 local S_AuraKill = CombatTab:DrawSection({ Name="Aura Kill", Position="right" })
 
 S_AuraKill:AddToggle({
@@ -2925,7 +2932,7 @@ S_AuraKill:AddSlider({
 
 S_AuraKill:AddSlider({
 	Name = "Attack Rate (ms)", Flag = "AK_Interval",
-	Min = 100, Max = 2000, Default = 300, Rounding = 0,
+	Min = 100, Max = 2000, Default = 350, Rounding = 0,
 	Callback = function(v) AuraKill.Interval = v / 1000 end
 })
 
@@ -2939,18 +2946,19 @@ S_AuraKill:AddDropdown({
 S_AuraKill:AddButton({
 	Name = "Rescan Network",
 	Callback = function()
-		AuraKill._key = nil; AuraKill._code = nil; AuraKill._remote = nil
+		AuraKill._code = nil; AuraKill._remote = nil
 		task.spawn(function()
-			local ok = AK_FindNet()
+			local code = AK_FindCode()
 			local re = AK_GetRemote()
 			Notifier.new({
 				Title = "AuraKill",
-				Content = ok and re and "Ready! Code: "..(AuraKill._code or "?"):sub(1,8).."..."
-					or "Không tìm được — thử lại sau",
+				Content = code and re
+					and "Ready! Code: "..code:sub(1,8).."..."
+					or (not code and "Code not found" or "Remote not found"),
 				Duration = 4
 			})
 		end)
 	end
 })
 
-print("[AuraKill Melee] Loaded — Slash x3 → Impact")
+print("[AuraKill Melee] Loaded")
