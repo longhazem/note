@@ -1,1140 +1,158 @@
--- ==============================================================================
--- TOKAI HUB - FIXED & OPTIMIZED KILL / COMBAT SYSTEM (FIXED "AURA KILL" BUG)
--- ==============================================================================
+-- --- AuraKill.lua ---
+-- Source: MeleeInventory.lua decompiled
+-- v_u_2 = network, v_u_7 = vector3toTable
+-- Slash(random 1-3) → delay → Impact(pos_table, actorUID, part)
 
-local Repository = "https://raw.githubusercontent.com/longhazem/libba/main/"
-
-local function GetLoadstringSource(Url)
-	local function tryRequest(fn, args)
-		if not fn then return nil end
-		local ok, r = pcall(fn, args)
-		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
-	end
-	local body = tryRequest(request, {Url=Url,Method="GET"})
-		or tryRequest(http_request, {Url=Url,Method="GET"})
-		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
-		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
-	if not body then
-		local ok, r = pcall(function() return game:HttpGet(Url) end)
-		if ok and typeof(r) == "string" then body = r
-		elseif ok and typeof(r) == "Instance" then
-			local iok, src = pcall(function() return r.Source end)
-			if iok and typeof(src) == "string" then body = src end
-		end
-	end
-	if not body then error("[TokaiHub] HTTP failed: " .. tostring(Url), 2) end
-	if body:match("^429") or body:lower():match("rate limit") then
-		warn("[TokaiHub] Rate limit — cho 10s roi thu lai")
-		task.wait(10)
-		return GetLoadstringSource(Url)
-	end
-	if body:match("^<!DOCTYPE") or body:match("^<html") then
-		error("[TokaiHub] Server tra ve HTML — URL sai hoac repo loi", 2)
-	end
-	return body
-end
-
-local function PatchObsidianSource(Source)
-	Source = Source:gsub("Instance%[key%] = value", [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
-	return Source
-end
-
-local function LoadRemote(Url)
-	local Source = GetLoadstringSource(Url)
-	if string.find(Url, "/source.lua", 1, true) then Source = PatchObsidianSource(Source) end
-	local Chunk, LoadError = loadstring(Source)
-	if not Chunk then error("loadstring failed for " .. tostring(Url) .. ": " .. tostring(LoadError), 2) end
-	return Chunk()
-end
-
-local Library = LoadRemote(Repository .. "source.lua")
-local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
-local SaveManager = LoadRemote(Repository .. "addons/SaveManager.lua")
-
-local Options = getgenv().Options or {}
-local Toggles = getgenv().Toggles or {}
-
-local MoonUI = { Scale = { Window = 1 } }
-function MoonUI:SetTheme() end
-function MoonUI:RefreshCurrentColor() end
-function MoonUI:ConfigManager(Data) return Data or {} end
-function MoonUI.newNotify()
-	return { new = function(Data)
-		local text = (Data and Data.Title) or "Tokaihub"
-		if Data and (Data.Content or Data.Description) then text = text .. " — " .. (Data.Content or Data.Description) end
-		pcall(function() Library:Notify(text, (Data and Data.Duration) or 5) end)
-	end }
-end
-
-local function NormalizeUIString(Value, Fallback)
-	if typeof(Value) == "EnumItem" then return Value.Name end
-	if Value == nil then return Fallback end
-	return tostring(Value)
-end
-local function NormalizeKey(Value, Fallback)
-	if typeof(Value) == "EnumItem" then return Value.Name end
-	if Value == nil then return Fallback or "None" end
-	return tostring(Value)
-end
-
-local function WrapSection(Groupbox)
-	local Section = {}
-	function Section:AddToggle(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Toggle")
-		local Toggle = Groupbox:AddToggle(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = Data.Default or false, Tooltip = Data.Tooltip })
-		if Data.Callback then Toggle:OnChanged(Data.Callback) end
-		return { Instance = Toggle, Link = { AddKeybind = function(_, KeyData)
-			local KeyFlag = NormalizeUIString(KeyData.Flag or KeyData.Name or (Flag.."_Key"), Flag.."_Key")
-			Toggle:AddKeyPicker(KeyFlag, { Default = NormalizeKey(KeyData.Default,"None"), Text = NormalizeUIString(KeyData.Name or "Keybind","Keybind"), Mode = NormalizeUIString(KeyData.Mode or "Toggle","Toggle"), NoUI = KeyData.NoUI or false, SyncToggleState = true })
-			if KeyData.Callback and Options[KeyFlag] then Options[KeyFlag]:OnChanged(KeyData.Callback) end
-			return Options[KeyFlag]
-		end } }
-	end
-	function Section:AddSlider(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Slider")
-		local Slider = Groupbox:AddSlider(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = Data.Default or Data.Min or 0, Min = Data.Min or 0, Max = Data.Max or 100, Rounding = Data.Rounding or 0, Suffix = Data.Suffix, Compact = Data.Compact or false })
-		if Data.Callback then Slider:OnChanged(Data.Callback) end
-		return Slider
-	end
-	function Section:AddDropdown(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Dropdown")
-		local Dropdown = Groupbox:AddDropdown(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Values = Data.Values or {}, Default = Data.Default, Multi = Data.Multi or false, Tooltip = Data.Tooltip })
-		if Data.Callback then Dropdown:OnChanged(Data.Callback) end
-		return Dropdown
-	end
-	function Section:AddColorPicker(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "ColorPicker")
-		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
-		Label:AddColorPicker(Flag, { Default = Data.Default or Color3.new(1,1,1) })
-		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
-		return Options[Flag]
-	end
-	function Section:AddKeybind(Data)
-		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Keybind")
-		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
-		Label:AddKeyPicker(Flag, { Default = NormalizeKey(Data.Default,"None"), Text = NormalizeUIString(Data.Name or Flag, Flag), NoUI = Data.NoUI or false, Mode = NormalizeUIString(Data.Mode or "Toggle","Toggle") })
-		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
-		return Options[Flag]
-	end
-	function Section:AddButton(Data)
-		return Groupbox:AddButton(Data.Name or Data.Text or "Button", Data.Callback or Data.Func or function() end)
-	end
-	return Section
-end
-
-local function WrapTab(Tab)
-	return { DrawSection = function(_, Data)
-		local Name = Data.Name or "Section"
-		local Position = string.lower(Data.Position or "left")
-		if Position == "right" then return WrapSection(Tab:AddRightGroupbox(Name))
-		else return WrapSection(Tab:AddLeftGroupbox(Name)) end
-	end }
-end
-
-function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Tokaihub", Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2 })
-	local SettingsTab
-	local Wrapped = {
-		Raw = Window,
-		DrawTab = function(_, TabData)
-			local Name = TabData.Name or "Tab"
-			local Tab = Window:AddTab(Name)
-			if Name == "Settings" or Name == "System" then SettingsTab = Tab end
-			return WrapTab(Tab)
-		end,
-		DrawConfig = function(_, ConfigData)
-			SettingsTab = SettingsTab or Window:AddTab("Settings")
-			ThemeManager:SetLibrary(Library); SaveManager:SetLibrary(Library)
-			SaveManager:IgnoreThemeSettings(); SaveManager:SetIgnoreIndexes({"MenuKeybind"})
-			ThemeManager:SetFolder("Tokaihub"); SaveManager:SetFolder("Tokaihub/specific-game")
-			if SaveManager.SetSubFolder then SaveManager:SetSubFolder("specific-place") end
-			SaveManager:BuildConfigSection(SettingsTab); ThemeManager:ApplyToTab(SettingsTab)
-			SaveManager:LoadAutoloadConfig()
-			return { Init = function() end }
-		end,
-		SetMenuKey = function(_, Key) task.defer(function() Library.ToggleKeybind = getgenv().Options and getgenv().Options.MenuKeybind end) end,
-		Unload = function() Library:Unload() end,
-	}
-	return Wrapped
-end
-
--- Singleton cleanup
-local scriptId = tick()
-getgenv().Moon_ScriptId = scriptId
-if getgenv().Moon_Connections then
-	for _, conn in pairs(getgenv().Moon_Connections) do if conn then pcall(function() conn:Disconnect() end) end end
-end
-getgenv().Moon_Connections = {}
-
--- Localize Services & Variables
-local Vector3_new = Vector3.new; local Vector2_new = Vector2.new; local CFrame_new = CFrame.new
-local Color3_new = Color3.new; local Color3_fromHSV = Color3.fromHSV
-local math_floor = math.floor; local math_clamp = math.clamp; local math_abs = math.abs
-local pairs = pairs; local ipairs = ipairs; local type = type; local tick = tick
-local os_clock = os.clock; local string_format = string.format; local rawget = rawget
-local pcall = pcall; local tostring = tostring; local getgenv = getgenv
-local getgc = getgc; local filtergc = filtergc
-local Drawing = Drawing; local Drawing_new = Drawing and Drawing.new
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local CollectionService = game:GetService("CollectionService")
 
-local Camera = Workspace.CurrentCamera
-local LocalPlayer = Players.LocalPlayer
+local LocalPlayer  = Players.LocalPlayer
+local enabled      = false
+local AuraRadius   = 15
+local AuraCooldown = 0.6
+local lastHit      = {}
 
--- Ballistic solver
-local SolveLead = function(origin, target, targetVelocity, projectileSpeed, gravity)
-	local displacement = target - origin
-	local vSq = projectileSpeed * projectileSpeed
-	local g = gravity
-	local x = Vector3_new(displacement.X, 0, displacement.Z).Magnitude
-	local y = displacement.Y
-	local time = x / projectileSpeed
-	local predictedTarget = target + (targetVelocity * time)
-	displacement = predictedTarget - origin
-	x = Vector3_new(displacement.X, 0, displacement.Z).Magnitude
-	y = displacement.Y
-	local root = vSq * vSq - g * (g * x * x + 2 * y * vSq)
-	if root < 0 then return predictedTarget + Vector3_new(0, 0.5 * g * time * time, 0), time end
-	local rootSqrt = math.sqrt(root)
-	local theta = math.atan((vSq - rootSqrt) / (g * x))
-	local vx = projectileSpeed * math.cos(theta)
-	local vy = projectileSpeed * math.sin(theta)
-	if vx <= 0 then return predictedTarget, time end
-	local realTime = x / vx
-	local drop = 0.5 * g * realTime * realTime
-	return predictedTarget + Vector3_new(0, drop, 0), realTime
-end
+-- ============================================
+-- TÌM NETWORK OBJECT (v_u_2) VÀ REPLICATOR
+-- ============================================
 
-local WeaponManager = { Equipped = nil, Logic = {}, Visuals = {}, LastScan = 0, Connection = nil }
-local ESPElements = {}; local CurrentFrameId = 0; local ESPEnabled = false
-local ActorManager = { Enemies = {}, Teammates = {}, Vehicles = {}, Initialized = false, SelectedTarget = nil, SelectedActor = nil }
-
-local SetupHooks, EnableSpeedController, GetSecureContainer, DetectMapType
-local SecureESPContainer = nil; local RefreshFirearmControllers
-
-local InventoryService, ReplicatorService, ClientService, WorldService, BulletService
-local CharacterController, ControllerService, FirearmInventoryClass, ActorClass, Recoiler, EffectsService
-local CalibersTable, VehicleService, FirearmInventory, EnvironmentService, CharacterCamera
-
-local Config = {
-	ShowPlayers = true, ShowZombies = true, ShowNPCs = true, ShowSquadMembers = false,
-	ShowVehicles = false, VehicleColor = Color3_new(0,1,1), VehicleHealthColor = Color3_new(0,1,0), IgnoreLocalVehicle = true,
-	UseBoxESP = true, SimpleESP = false, UseHighlight = false, UseTracers = false,
-	ShowNames = true, ShowDistance = true, ShowHealth = true, ShowWeaponInfo = true, BoxStyle = "Full",
-	TextScale = 1.20, DynamicTextScaling = true, MaxDistance = 2000,
-	NoRecoil = false, NoSpread = false, UnlockFiremodes = false, CustomRPM = false, RPMValue = 800,
-	SilentAim = false, SilentAimFOV = 100, SilentAimHitChance = 100, SilentAimTargetPart = "Head",
-	RageMode = false, Rage_LookAt = false, Rage_FOV = 360, Rage_Range = 500, Rage_TargetPart = "Head",
-	ShowFOV = false, Prediction = false, BulletDrop = false, ShowPrediction = false,
-	PredictionColor = Color3.fromRGB(255,0,0),
-	InfStamina = false, AutoReload = false,
-	Character_Fly = false, Character_FlySpeed = 50, Character_WalkSpeedEnabled = false, Character_WalkSpeed = 16,
-	Character_SprintSpeedEnabled = false, Character_SprintSpeed = 25,
-	AlwaysDay = false, NoFog = false,
-	BoxColor = nil, HealthBarColor = nil,
-	PlayerColor = Color3_new(1,0.65,0), TeammateColor = Color3_new(0,1,0), ZombieColor = Color3_new(1,0,0),
-	NPCColor = Color3_new(1,1,0), SquadColor = Color3_new(0,1,0), TracerColor = Color3_new(1,1,1),
-	ZombieColors = { [1]=Color3_new(0.58,0.29,0), [2]=Color3_new(1,1,0), [3]=Color3_new(1,0,0), [4]=Color3_new(0.58,0,1) },
-	BoxScale = 1.0, HealthBarSide = "Left", UseHealthGradient = true,
-	AutoDetectMap = true, CurrentMapType = "Unknown", CurrentMapName = "Unknown",
-}
-
-local Places = {
-	["Menu"]={16173503753,2916899287}, ["CM_Mission1"]={83829699029749,4843465225},
-	["OW_Ronograd"]={95595459346841,3701546109}, ["OW_Blank"]={0,5899968224},
-	["HQ_Seychelles"]={139188553486454,14014688944}, ["PVP_Coast"]={99240342190508,5480112241},
-	["PVP_Favela"]={123576346999506,5468388011}, ["PVP_NYC"]={71499109870653,3826587512},
-	["PVP_Tokyo"]={125537938344868,4524359706}, ["PVP_Office"]={113296614204646,5289429734},
-	["PVP_Blank"]={0,10938546013}, ["ZMP_NYC"]={84460047957624,4747446334},
-	["ZME_NYC"]={84460047957624,4747446334}
-}
-
-local gcCache = nil; local lastScan = 0; local lastCollections = nil
+local Network           = nil
+local ReplicatorService = nil
 
 local function BulkScan()
-	local now = tick()
-	if gcCache and (now - lastScan) < 10 then
-		return { ReplicatorService = ReplicatorService, BulletService = BulletService }, lastCollections
-	end
-	local startTime = os_clock()
-	local success, res = pcall(function() return filtergc("table") end)
-	if not success then success, res = pcall(function() return getgc(true) end) end
-	if not success or type(res) ~= "table" then return end
-	gcCache = res; lastScan = now
-	local found = {}
-	local collections = { FirearmInventoryClass={}, FirearmInventoryReplicator={}, FirearmInventory={}, TurretController={} }
-	local count = 0
-	for _, obj in pairs(res) do
-		count = count + 1
-		if count % 8000 == 0 then task.wait() end
-		if type(obj) == "table" then
-			if not found.ReplicatorService and rawget(obj,"Actors") and rawget(obj,"LocalActor") then found.ReplicatorService=obj
-			elseif not found.BulletService and rawget(obj,"_multithreadSend") then found.BulletService=obj
-			elseif not found.WorldService and rawget(obj,"InactiveWorld") then found.WorldService=obj
-			elseif not found.ClientService and rawget(obj,"Clients") and rawget(obj,"LocalClient") then found.ClientService=obj
-			elseif not found.VehicleService and rawget(obj,"Vehicles") and rawget(obj,"Changed") then found.VehicleService=obj
-			elseif not found.EnvironmentService and rawget(obj,"RainDensity") and (rawget(obj,"_lights") or rawget(obj,"_clouds")) then found.EnvironmentService=obj
-			elseif not found.InventoryService and rawget(obj,"Inventories") and (rawget(obj,"_hasRadio") or rawget(obj,"_droppedItems")) then found.InventoryService=obj
-			elseif not found.CalibersTable and rawget(obj,"shotgun_12gauge_00buck") then found.CalibersTable=obj
-			elseif not found.EffectsService and rawget(obj,"BulletLand") and rawget(obj,"BulletFired") then found.EffectsService=obj
-			elseif not found.Network and rawget(obj,"FireServer") and rawget(obj,"_events") then found.Network=obj
-			elseif rawget(obj,"SetCFrame") and rawget(obj,"SetVehicleGoal") then
-				if rawget(obj,"__index")==obj or not rawget(obj,"Parent") then found.CharacterController=obj end
-			elseif rawget(obj,"Equip") and rawget(obj,"Unequip") and rawget(obj,"Discharge") then found.FirearmInventoryClass=obj
-			elseif rawget(obj,"Impulse") and rawget(obj,"TimeSkip") and rawget(obj,"GetCameraAdjustment") then found.Recoiler=obj
-			elseif rawget(obj,"Update") and rawget(obj,"_updateLOD") then found.ActorClass=obj
-			elseif rawget(obj,"Update") and rawget(obj,"Render") and rawget(obj,"Watch") then found.CharacterCamera=obj
-			elseif rawget(obj,"_discharge") and rawget(obj,"Discharge") then found.TurretController=obj
-			elseif rawget(obj,"_firearm") and rawget(obj,"_actor") then table.insert(collections.FirearmInventoryReplicator,obj)
-			elseif rawget(obj,"_firearm") and rawget(obj,"_bulletsShot") then table.insert(collections.FirearmInventory,obj)
-			elseif rawget(obj,"_turret") and rawget(obj,"_config") then table.insert(collections.TurretController,obj)
-			end
-		end
-	end
-	local function logService(name,obj) if obj then return obj end end
-	ReplicatorService = logService("ReplicatorService",found.ReplicatorService) or ReplicatorService
-	BulletService = logService("BulletService",found.BulletService) or BulletService
-	WorldService = logService("WorldService",found.WorldService) or WorldService
-	ClientService = logService("ClientService",found.ClientService) or ClientService
-	VehicleService = logService("VehicleService",found.VehicleService) or VehicleService
-	EnvironmentService = logService("EnvironmentService",found.EnvironmentService) or EnvironmentService
-	InventoryService = logService("InventoryService",found.InventoryService) or InventoryService
-	CalibersTable = logService("CalibersTable",found.CalibersTable) or CalibersTable
-	EffectsService = logService("EffectsService",found.EffectsService) or EffectsService
-	CharacterController = logService("CharacterController",found.CharacterController) or CharacterController
-	FirearmInventoryClass = logService("FirearmInventoryClass",found.FirearmInventoryClass) or FirearmInventoryClass
-	Recoiler = logService("Recoiler",found.Recoiler) or Recoiler
-	ActorClass = logService("ActorClass",found.ActorClass) or ActorClass
-	CharacterCamera = logService("CharacterCamera",found.CharacterCamera) or (shared.Engine and shared.Engine.CharacterCamera)
-	FirearmInventory = collections.FirearmInventory; lastCollections = collections
-	return found, collections
+    local ok, gc = pcall(function() return filtergc("table") end)
+    if not ok then ok, gc = pcall(function() return getgc(true) end) end
+    if not ok then warn("[Aura] getgc failed"); return end
+
+    local count = 0
+    for _, obj in pairs(gc) do
+        count = count + 1
+        if count % 8000 == 0 then task.wait() end
+        if type(obj) ~= "table" then continue end
+
+        -- Network object: có FireServer và _events (RBM5 signature)
+        if not Network and rawget(obj, "FireServer") and rawget(obj, "_events") then
+            Network = obj
+            print("[Aura] Network found")
+        end
+
+        -- ReplicatorService: có Actors và LocalActor
+        if not ReplicatorService and rawget(obj, "Actors") and rawget(obj, "LocalActor") then
+            ReplicatorService = obj
+            print("[Aura] ReplicatorService found")
+        end
+
+        if Network and ReplicatorService then break end
+    end
 end
 
-function GetMuzzlePosition()
-	if WeaponManager.Equipped then
-		local handler = WeaponManager.Equipped
-		if handler._originalMuzzle then
-			local success,cf = pcall(handler._originalMuzzle,handler)
-			if success and cf then return cf.Position end
-		elseif handler.GetMuzzleCFrame then
-			local success,cf = pcall(handler.GetMuzzleCFrame,handler)
-			if success and cf then return cf.Position end
-		end
-	end
-	return Camera.CFrame.Position
+-- ============================================
+-- vector3toTable — y chang v_u_7 trong game
+-- ============================================
+
+local function vector3toTable(v)
+    return { v.X, v.Y, v.Z }
 end
 
-function GetSecureContainer()
-	if SecureESPContainer and SecureESPContainer.Parent then return SecureESPContainer end
-	local function TryCreate(parent)
-		local success,result = pcall(function()
-			local f = parent:FindFirstChild("ESP_Cache")
-			if not f then
-				f = Instance.new("ScreenGui"); f.Name = "ESP_Cache"; f.ResetOnSpawn = false
-				if (parent.Name=="CoreGui" or parent.Name=="RobloxGui") and type(syn)=="table" and syn.protect_gui then
-					pcall(function() syn.protect_gui(f) end)
-				end
-				f.Parent = parent
-			end
-			return f
-		end)
-		if success and result then return result end; return nil
-	end
-	local s,hui = pcall(function() return gethui() end)
-	if s and hui then local f=TryCreate(hui); if f then SecureESPContainer=f; return f end end
-	local s2,core = pcall(function() return game:GetService("CoreGui") end)
-	if s2 and core then local f=TryCreate(core); if f then SecureESPContainer=f; return f end end
-	if LocalPlayer then
-		local pGui = LocalPlayer:FindFirstChild("PlayerGui")
-		if pGui then local f=TryCreate(pGui); if f then SecureESPContainer=f; return f end end
-	end
-	return nil
+-- ============================================
+-- LẤY ACTOR UID CỦA ENEMY
+-- ============================================
+
+local function getActorUID(character)
+    if not ReplicatorService then return nil end
+    for _, actor in pairs(ReplicatorService.Actors or {}) do
+        if type(actor) ~= "table" then continue end
+        if actor.Character == character or actor.Model == character then
+            for k, v in pairs(actor) do
+                if type(v) == "string" and #v == 36 and v:find("%-") then
+                    return v
+                end
+            end
+        end
+    end
+    return nil
 end
 
-RefreshFirearmControllers = function(silent)
-	if tick()-WeaponManager.LastScan < 0.2 then return end
-	WeaponManager.LastScan = tick()
-	local _,collections = BulkScan()
-	if not collections then return end
-	WeaponManager.Visuals = collections.FirearmInventoryReplicator
-	WeaponManager.Logic = collections.FirearmInventory
-	FirearmInventory = WeaponManager.Logic
-	if InventoryService and InventoryService.Equipped then
-		WeaponManager.Equipped = InventoryService.Equipped.Handler
-	end
+-- ============================================
+-- HIT SEQUENCE — copy logic từ _use()
+-- Slash(1~3) → task.delay → Impact(pos, uid, part)
+-- ============================================
+
+local function doAuraHit(targetChar)
+    if not Network then return end
+
+    local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return end
+
+    local uid = getActorUID(targetChar)
+    if not uid then return end
+
+    local slashNum = math.random(1, 3)
+
+    -- Slash
+    pcall(function()
+        Network:FireServer("InventoryAction", "Slash", slashNum)
+    end)
+
+    -- Delay rồi Impact — y chang task.delay trong _use()
+    local hitPos = targetRoot.Position
+    task.delay(0.1, function()
+        if not targetChar.Parent then return end
+        pcall(function()
+            Network:FireServer(
+                "InventoryAction",
+                "Impact",
+                vector3toTable(hitPos), -- v_u_7(v15)
+                uid,                    -- v16: actor UID
+                "Head"                  -- v17: body part
+            )
+        end)
+    end)
 end
 
-local function GetEntityType(actor)
-	if actor.Zombie==true then return "Zombie" end
-	if actor.Owner and Players:GetPlayerByUserId(actor.Owner.UserId) then return "Player" end
-	if actor.Owner or actor.OwnerName then return "NPC" end
-	return "Unknown"
-end
+-- ============================================
+-- AURA LOOP
+-- ============================================
 
-local function IsTeammate(actor,cachedLocalSquad)
-	if actor.Zombie==true then return false end
-	local ownerPlayer = actor.Owner and Players:GetPlayerByUserId(actor.Owner.UserId)
-	local isRealPlayer = ownerPlayer~=nil
-	if isRealPlayer and (Config.CurrentMapName=="OW_Ronograd" or Config.CurrentMapName=="ZME_NYC") then return true end
-	if isRealPlayer and ownerPlayer.Team and LocalPlayer.Team and ownerPlayer.Team==LocalPlayer.Team then return true end
-	if isRealPlayer and cachedLocalSquad and cachedLocalSquad~="" then
-		if ClientService and ClientService.Clients and ClientService.Clients[ownerPlayer] then
-			return ClientService.Clients[ownerPlayer].Squad==cachedLocalSquad
-		end
-	end
-	return false
-end
+RunService.Heartbeat:Connect(function()
+    if not enabled or not Network then return end
 
-local function GetSectorKey(position,sectorSize)
-	return math.floor(position.X/sectorSize).."_"..math.floor(position.Z/sectorSize)
-end
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
 
-local function GetNearbySectors(playerSectorKey,sectorSize)
-	local sectors={}
-	local px,pz = playerSectorKey:match("(-?%d+)_(-?%d+)")
-	if not px or not pz then return sectors end
-	px,pz = tonumber(px),tonumber(pz)
-	for dx=-1,1 do for dz=-1,1 do table.insert(sectors,(px+dx).."_"..(pz+dz)) end end
-	return sectors
-end
+    local now = tick()
+    local myPos = myRoot.Position
 
-function ActorManager:Update(dt)
-	if not ReplicatorService or not ReplicatorService.Actors then return end
-	local now = tick()
-	if not self._sectors then
-		self._sectors={}; self._sectorSize=512; self._playerSector=nil; self._lastSectorUpdate=0
-	end
-	if not self._lastMapUpdate or (now-self._lastMapUpdate>10) then
-		Config.CurrentMapType=DetectMapType(); self._lastMapUpdate=now
-	end
-	if not self._lastListUpdate or (now-self._lastListUpdate>0.5) then
-		table.clear(self.Enemies); table.clear(self.Teammates); table.clear(self.Vehicles); table.clear(self._sectors)
-		local localSquad=nil
-		if ClientService and ClientService.LocalClient then localSquad=ClientService.LocalClient.Squad end
-		for _,actor in pairs(ReplicatorService.Actors) do
-			if not actor or not actor.Alive or not actor.Character then continue end
-			if actor.Owner==LocalPlayer then continue end
-			actor._entityType=GetEntityType(actor); actor._isTeammate=IsTeammate(actor,localSquad)
-			if actor._isTeammate then
-				table.insert(self.Teammates,actor)
-			else
-				table.insert(self.Enemies,actor)
-				local actorPos=actor.Position or (actor.Character and actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
-				if actorPos then
-					local sk=GetSectorKey(actorPos,self._sectorSize)
-					if not self._sectors[sk] then self._sectors[sk]={} end
-					table.insert(self._sectors[sk],actor)
-				end
-			end
-		end
-		if VehicleService and VehicleService.Vehicles then
-			for _,veh in pairs(VehicleService.Vehicles) do table.insert(self.Vehicles,veh) end
-		end
-		self._playerSector=GetSectorKey(Camera.CFrame.Position,self._sectorSize)
-		self._lastListUpdate=now; self.Initialized=true
-	end
-	if self.Initialized and (not self._lastTargetUpdate or (now-self._lastTargetUpdate>0.05)) then
-		if GetCombatTarget then
-			if Config.SilentAim or Config.ShowPrediction then
-				local target,actor=GetCombatTarget("SilentAim")
-				self.SelectedTarget_SA=target; self.SelectedActor_SA=actor
-			else self.SelectedTarget_SA=nil; self.SelectedActor_SA=nil end
-		end
-		self._lastTargetUpdate=now
-	end
-	if self.Initialized and Config.RageMode and GetCombatTarget then
-		local updateInterval=0.016
-		if not self._lastRageUpdate or (now-self._lastRageUpdate>updateInterval) then
-			local currentTarget=self.SelectedTarget_RB; local currentActor=self.SelectedActor_RB; local shouldRescan=true
-			if currentTarget and currentTarget.Parent and currentActor and currentActor.Alive then
-				local dist=currentActor.LOD_Distance
-				if not dist or dist<=0 then
-					local char=currentActor.Character
-					if char and char.PrimaryPart then dist=(char.PrimaryPart.Position-Camera.CFrame.Position).Magnitude end
-				end
-				if dist and dist<(Config.Rage_Range*1.2) then shouldRescan=false end
-			end
-			if shouldRescan then
-				local target,actor=GetCombatTarget("Rage")
-				if target~=self.SelectedTarget_RB then
-					if actor and self._rageBurst and self._rageBurst[actor.UID] then self._rageBurst[actor.UID].shots=0 end
-				end
-				self.SelectedTarget_RB=target; self.SelectedActor_RB=actor
-			end
-			self._lastRageUpdate=now
-		end
-	elseif not Config.RageMode then
-		self.SelectedTarget_RB=nil; self.SelectedActor_RB=nil
-	end
-end
-
--- Wallcheck & Combat Target Resolver
-local VisCache={}; local VisRayParams=RaycastParams.new()
-VisRayParams.FilterType=Enum.RaycastFilterType.Exclude; VisRayParams.IgnoreWater=true
-local LastVisCacheCleanup=0; local VisFilterTable=table.create(16)
-
-local function IsIgnored(part)
-	if not part then return false end
-	if part.Material==Enum.Material.Glass then return true end
-	if part.Name=="Glass" or part.Name=="Window" then return true end
-	if part.Transparency>0.5 then return true end
-	if CollectionService:HasTag(part,"GlassShatter") then return true end
-	if CollectionService:HasTag(part,"Door") then return true end
-	if part.Parent and (part.Parent.Name=="Doors" or part.Parent.Name=="Glass") then return true end
-	return false
-end
-
-local function IsVisible(targetActor,targetPart,origin,isPriority)
-	if not targetPart or not targetPart.Parent then return false end
-	local now=tick(); local uid=targetActor.UID
-	if now-LastVisCacheCleanup>2 then
-		for k,v in pairs(VisCache) do if now-v.last>5 then VisCache[k]=nil end end
-		LastVisCacheCleanup=now
-	end
-	if not isPriority then
-		if VisCache[uid] and (now-VisCache[uid].last<0.05) then return VisCache[uid].result end
-	end
-	local character=targetPart.Parent
-	local originPos=origin or Camera.CFrame.Position
-	local direction=(targetPart.Position-originPos)
-	local dist=direction.Magnitude
-	if not targetActor.ViewportOnScreen and (dist>100) then
-		VisCache[uid]={result=false,last=now}; return false
-	end
-	table.clear(VisFilterTable); table.insert(VisFilterTable,Camera)
-	if LocalPlayer.Character then table.insert(VisFilterTable,LocalPlayer.Character) end
-	table.insert(VisFilterTable,character)
-	VisRayParams.FilterDescendantsInstances=VisFilterTable
-	local isVisible=false
-	local result=Workspace:Raycast(originPos,direction,VisRayParams)
-	if not result then isVisible=true
-	elseif result.Instance:IsDescendantOf(character) then isVisible=true
-	else
-		local penetrations=0; local dirUnit=direction.Unit
-		while penetrations<2 do
-			if not result then isVisible=true; break end
-			local hitPart=result.Instance
-			if hitPart:IsDescendantOf(character) then isVisible=true; break end
-			if IsIgnored(hitPart) then
-				table.insert(VisFilterTable,hitPart)
-				VisRayParams.FilterDescendantsInstances=VisFilterTable
-				penetrations=penetrations+1
-				result=Workspace:Raycast(result.Position+(dirUnit*0.1),direction-(result.Position-originPos),VisRayParams)
-			else isVisible=false; break end
-		end
-	end
-	VisCache[uid]={result=isVisible,last=now}; return isVisible
-end
-
-GetCombatTarget = function(mode)
-	local cfg=Config
-	local targetPartName=(mode=="Rage") and cfg.Rage_TargetPart or cfg.SilentAimTargetPart or "Head"
-	local useFOV=(mode=="SilentAim")
-	local fovLimit=cfg.SilentAimFOV; local fovLimitSq=fovLimit*fovLimit
-	local maxDistance=(mode=="Rage") and cfg.Rage_Range or cfg.MaxDistance or 2000
-	local checkOrigin=Camera.CFrame.Position
-	local muzzle=GetMuzzlePosition(); if muzzle then checkOrigin=muzzle end
-	if not ActorManager.Enemies or #ActorManager.Enemies==0 then return nil,nil end
-	if mode=="Rage" and ActorManager.SelectedActor_RB then
-		local activeActor=ActorManager.SelectedActor_RB
-		if activeActor.Alive and activeActor.Character then
-			local dist=activeActor.LOD_Distance
-			if not dist or dist<=0 then dist=(activeActor.Position-checkOrigin).Magnitude end
-			if dist<=maxDistance then
-				local targetPart=activeActor.Parts and activeActor.Parts[targetPartName]
-				if targetPart and IsVisible(activeActor,targetPart,checkOrigin,true) then return targetPart,activeActor end
-			end
-		end
-		ActorManager.SelectedActor_RB=nil; ActorManager.SelectedTarget_RB=nil
-	end
-	local candidates=getgenv()._targetCandidates or table.create(64)
-	table.clear(candidates); getgenv()._targetCandidates=candidates
-	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouseX,mouseY
-	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
-	local enemyList = ActorManager.Enemies
-	for _,actor in pairs(enemyList) do
-		if not actor.Alive then continue end
-		if ignoredTargets then
-			local ignoreUntil=ignoredTargets[actor.UID]
-			if ignoreUntil then
-				if now<ignoreUntil then continue else ignoredTargets[actor.UID]=nil end
-			end
-		end
-		local char=actor.Character; if not char then continue end
-		local dist=actor.LOD_Distance
-		if not dist or dist<=0 then
-			local root=char.PrimaryPart or char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
-			if not root then continue end
-			local delta=root.Position-checkOrigin
-			dist=math.sqrt(delta.X*delta.X+delta.Y*delta.Y+delta.Z*delta.Z)
-		end
-		if dist>maxDistance then continue end
-		local score=dist
-		if useFOV then
-			if not actor.ViewportOnScreen and dist>50 then continue end
-			local root=char.PrimaryPart or char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
-			if not root then continue end
-			local pos,onScreen=Camera:WorldToViewportPoint(root.Position)
-			if not onScreen then continue end
-			local dx=pos.X-mouseX; local dy=pos.Y-mouseY
-			local screenDistSq=(dx*dx)+(dy*dy)
-			if screenDistSq>fovLimitSq then continue end
-			score=screenDistSq
-		end
-		table.insert(candidates,{actor=actor,score=score,char=char,dist=dist})
-	end
-	if #candidates==0 then return nil,nil end
-	table.sort(candidates,function(a,b) return a.score<b.score end)
-	for i=1,#candidates do
-		local candle=candidates[i]; local actor=candle.actor; local char=candle.char
-		local part=char:FindFirstChild(targetPartName)
-		if not part then part=char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") end
-		if part and part.Parent then
-			if IsVisible(actor,part,checkOrigin) then return part,actor end
-		end
-	end
-	return nil,nil
-end
-
-local function HookController(controller)
-	if type(controller)~="table" then return end
-	if controller._hookedMuzzle then return end
-	if rawget(controller,"_turret") or rawget(controller,"_config") then return end
-	if controller.GetMuzzleCFrame then
-		controller._originalMuzzle=controller.GetMuzzleCFrame
-		controller.GetMuzzleCFrame=function(self,...)
-			local muzzleCF,v2,v3=controller._originalMuzzle(self,...)
-			local isVehicleWeapon=false
-			if self._actor and not self._actor.IsLocalPlayer and ReplicatorService and ReplicatorService.LocalActor and ReplicatorService.LocalActor.Character then
-				local hum=ReplicatorService.LocalActor.Character:FindFirstChild("male")
-				if hum and hum.SeatPart and hum.SeatPart.Parent==self._actor then isVehicleWeapon=true end
-			end
-			local isYours=false
-			if self._actor and self._actor.IsLocalPlayer then isYours=true end
-			if not isYours and isVehicleWeapon then isYours=true end
-			local combatTarget=ActorManager.SelectedTarget_RB or ActorManager.SelectedTarget_SA
-			local targetActor=ActorManager.SelectedActor_RB or ActorManager.SelectedActor_SA
-			if (Config.SilentAim or Config.RageMode) and combatTarget and targetActor then
-				local targetPos=combatTarget.Position; local gravity=32.2; local muzzle_velocity=2000
-				if self._firearm and self._firearm.Tune then
-					local caliberName=self._firearm.Tune.Caliber; local barrelLen=self._firearm.Tune.Barrel
-					if BulletService and BulletService.GetInfo then
-						local success,vel=pcall(function() return BulletService:GetInfo(caliberName,barrelLen) end)
-						if success and vel then muzzle_velocity=vel end
-					end
-				end
-				local targetVelocity=Vector3_new(0,0,0)
-				if targetActor._oldDirection then targetVelocity=targetActor._oldDirection*60
-				elseif combatTarget.Parent and combatTarget.Parent.PrimaryPart then
-					targetVelocity=combatTarget.Parent.PrimaryPart.AssemblyLinearVelocity or Vector3_new(0,0,0)
-				end
-				local aimPos,_=SolveLead(muzzleCF.Position,targetPos,targetVelocity,muzzle_velocity,gravity)
-				local zeroAngle=0; local actor=self._actor
-				if actor and actor.ADS and actor.ViewModel and actor.ViewModel.Zero then
-					local zeroData=actor.ViewModel.Zero; local zeroDist=zeroData
-					if type(zeroData)=="table" then zeroDist=zeroData[4] end
-					if zeroDist then
-						local v177=zeroDist*gravity/(muzzle_velocity^2)
-						zeroAngle=math.asin(math.clamp(v177,-1,1))*0.5
-					end
-				end
-				muzzleCF=CFrame_new(muzzleCF.Position,aimPos)*CFrame.Angles(-zeroAngle,0,0)
-			end
-			return muzzleCF,v2,v3
-		end
-		controller._hookedMuzzle=true
-	end
-end
-
--- FOV & Prediction Visual Elements
-local FOVCircle=Drawing.new("Circle")
-FOVCircle.Thickness=1
-pcall(function() FOVCircle.NumSides=60 end)
-FOVCircle.Radius=Config.SilentAimFOV
-FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
-
-getgenv().PredictionDot=Drawing.new("Circle")
-getgenv().PredictionDot.Thickness=1; getgenv().PredictionDot.NumSides=10
-getgenv().PredictionDot.Radius=2; getgenv().PredictionDot.Filled=true
-getgenv().PredictionDot.Visible=false; getgenv().PredictionDot.Color=Config.PredictionColor
-
-local WeaponInfoText=Drawing.new("Text")
-WeaponInfoText.Size=18; WeaponInfoText.Center=false; WeaponInfoText.Outline=true
-WeaponInfoText.Color=Color3.fromRGB(0,255,255)
-WeaponInfoText.Position=Vector2_new(50,Camera.ViewportSize.Y-100)
-WeaponInfoText.Visible=false; WeaponInfoText.Font=2
-
-local SpeedControllerConnection=nil
-function EnableSpeedController()
-	if SpeedControllerConnection then return end
-	SpeedControllerConnection=RunService.Heartbeat:Connect(function()
-		local actor=nil
-		if ReplicatorService and ReplicatorService.LocalActor then actor=ReplicatorService.LocalActor
-		elseif ControllerService and ControllerService.Controller and ControllerService.Controller._localActor then
-			actor=ControllerService.Controller._localActor
-		end
-		if not actor then return end
-		local walkEnabled=Config.Character_WalkSpeedEnabled; local sprintEnabled=Config.Character_SprintSpeedEnabled
-		if not walkEnabled and not sprintEnabled then
-			if actor.SpeedPenalty then actor.SpeedPenalty=nil end; return
-		end
-		local controller=ControllerService and ControllerService.Controller
-		local isSprinting=controller and controller.IsSprinting
-		local multiplier=1
-		if sprintEnabled and isSprinting then multiplier=(Config.Character_SprintSpeed or 25)/16.8
-		elseif walkEnabled and not isSprinting then multiplier=(Config.Character_WalkSpeed or 16)/12 end
-		actor.SpeedPenalty=multiplier
-	end)
-	table.insert(getgenv().Moon_Connections,SpeedControllerConnection)
-end
-
-local function ApplyGunMods(firearm,force)
-	if not firearm or not firearm._firearm or not firearm._firearm.Tune then return end
-	firearm._LastTuneTime=tick()
-	local tune=firearm._firearm.Tune; local caliber=firearm._caliber; local override=firearm._firearm.OverrideTune
-	if not tune._Originals then
-		tune._Originals={
-			Recoil_X=tune.Recoil_X,Recoil_Z=tune.Recoil_Z,Recoil_Camera=tune.Recoil_Camera,
-			RecoilForce_Tap=tune.RecoilForce_Tap,RecoilForce_Impulse=tune.RecoilForce_Impulse,
-			Recoil_Range=tune.Recoil_Range,Recoil_KickBack=tune.Recoil_KickBack,
-			Barrel_Spread=tune.Barrel_Spread,Spread=tune.Spread,RPM=tune.RPM,Firemodes=tune.Firemodes,
-			Bolt=tune.Bolt,Bolt_Action_Pause=tune.Bolt_Action_Pause,
-			Hipfire_Spread=tune.Hipfire_Spread,Move_Spread=tune.Move_Spread,Jump_Spread=tune.Jump_Spread
-		}
-	end
-	if Config.NoRecoil or Config.SilentAim then
-		tune.Recoil_X=0;tune.Recoil_Y=0;tune.Recoil_Z=0;tune.Recoil_Camera=0
-		tune.RecoilForce_Tap=0;tune.RecoilForce_Impulse=0
-		tune.Recoil_Range=Vector2_new(0,0);tune.Recoil_KickBack=0
-		if override then
-			override.Recoil_X=0;override.Recoil_Y=0;override.Recoil_Z=0;override.Recoil_Camera=0
-		end
-	end
-	if Config.NoSpread then
-		tune.Barrel_Spread=0;tune.Spread=0;tune.MinSpread=0;tune.MaxSpread=0
-	end
-	if Config.CustomRPM and Config.RPMValue then
-		tune.RPM=Config.RPMValue; if override then override.RPM=Config.RPMValue end
-	end
-end
-
-local function SetupAggressiveHooks()
-	local fc=FirearmInventoryClass
-	if fc and type(fc)=="table" then
-		if not fc._OriginalEquip then fc._OriginalEquip=fc.Equip end
-		if fc._OriginalEquip then fc.Equip=function(self,...) ApplyGunMods(self,true); return fc._OriginalEquip(self,...) end end
-	end
-	local rc=Recoiler
-	if rc and type(rc)=="table" then
-		if not rc._OriginalImpulse then rc._OriginalImpulse=rc.Impulse end
-		if rc._OriginalImpulse then rc.Impulse=function(self,...) if Config.NoRecoil then return end; return rc._OriginalImpulse(self,...) end end
-	end
-end
-
-function SetupHooks()
-	SetupAggressiveHooks()
-end
-
-local function InitializeServices()
-	local found,collections=BulkScan()
-	if not found then return false end
-	CalibersTable=found.CalibersTable
-	RefreshFirearmControllers(true); SetupHooks()
-	if BulletService then
-		if not BulletService._originalDischarge then BulletService._originalDischarge=BulletService.Discharge end
-		local lastUsedCaliber,lastUsedVelocity=nil,2000
-		BulletService.Discharge=function(self,originCF,p49,p50,p51,p52,p53,p54,p55,p56,p57)
-			local muzzlePos
-			if (p51) and (Config.SilentAim or Config.RageMode) and (math.random(1,100)<=Config.SilentAimHitChance) then
-				p57=false
-				local targetHead=ActorManager.SelectedTarget_RB or ActorManager.SelectedTarget_SA
-				if targetHead then
-					local targetPos=targetHead.Position; local muzzle_velocity=2000
-					if p49==lastUsedCaliber then muzzle_velocity=lastUsedVelocity
-					elseif p49 and BulletService.GetInfo then
-						local vel=BulletService:GetInfo(p49,p50)
-						if vel and vel>0 then muzzle_velocity=vel; lastUsedCaliber=p49; lastUsedVelocity=vel end
-					end
-					local targetVelocity=getgenv()._lastPredVel or Vector3_new(0,0,0); local gravity=32.2
-					if originCF then muzzlePos=originCF.Position end
-					if not muzzlePos and GetMuzzlePosition then muzzlePos=GetMuzzlePosition() end
-					if muzzlePos and targetPos then
-						local aimPos,_=SolveLead(muzzlePos,targetPos,targetVelocity,muzzle_velocity,gravity)
-						originCF=CFrame_new(muzzlePos,aimPos)
-					end
-				end
-			end
-			return BulletService._originalDischarge(self,originCF,p49,p50,p51,p52,p53,p54,p55,p56,p57)
-		end
-		getgenv()._BulletServiceHooked=true
-	end
-	return true
-end
-
-local function UpdateCombat(frameId)
-	local cfg=Config; local activeVelocity=2000
-	local showWeaponInfo=cfg.ShowWeaponInfo
-	local showPred=cfg.ShowPrediction or (cfg.SilentAim and cfg.Prediction)
-	local equippedController=WeaponManager.Equipped
-	if InventoryService and not WeaponManager.Connection then
-		local InterfaceStateChanged=InventoryService.OnInterfaceStateChanged
-		if typeof(InterfaceStateChanged)=="RBXScriptSignal" then
-			WeaponManager.Connection=InterfaceStateChanged:Connect(function()
-				WeaponManager.Equipped=InventoryService.Equipped and InventoryService.Equipped.Handler
-			end)
-			table.insert(getgenv().Moon_Connections,WeaponManager.Connection)
-		end
-		WeaponManager.Equipped=InventoryService.Equipped and InventoryService.Equipped.Handler
-	end
-	equippedController=WeaponManager.Equipped or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
-	local targetPart_RB=ActorManager.SelectedTarget_RB; local targetPart_SA=ActorManager.SelectedTarget_SA
-	if equippedController then
-		ApplyGunMods(equippedController,false)
-
-		-- Auto Reload loop (Safe manual override support, non-interfering with manual R key)
-		if Config.AutoReload then
-			local now_ar = tick()
-			if (now_ar - (getgenv()._autoReloadTick or 0)) > 0.2 then
-				getgenv()._autoReloadTick = now_ar
-				local magCapacity = equippedController._mag and (equippedController._mag.Capacity or 0) or 0
-				local magEmpty = magCapacity == 0
-				local isReloading = equippedController._reloading == true
-				if magEmpty and not isReloading then
-					pcall(function()
-						if equippedController._getMags and equippedController._reload then
-							local mags = equippedController:_getMags()
-							if mags and #mags > 0 then
-								equippedController:_reload()
-							end
-						end
-					end)
-				end
-			end
-		end
-
-		if (Config.SilentAim or Config.RageMode) and not equippedController._isHookedESP then
-			HookController(equippedController); equippedController._isHookedESP=true
-		end
-		
-		-- FIXED AURA KILL / RAGEBOT LOOP BUG (Ensuring clean rapid hits without freezing the stack)
-		if Config.RageMode and ActorManager.SelectedTarget_RB then
-			local targetActor=ActorManager.SelectedActor_RB
-			if targetActor and targetActor.Alive then
-				local uid=targetActor.UID; local weaponRPM=600
-				if equippedController._firearm and equippedController._firearm.Tune then weaponRPM=equippedController._firearm.Tune.RPM or 600 end
-				local magCount=equippedController._mag and equippedController._mag.Capacity or 0
-				local inChamber=(equippedController._item and equippedController._item.MetaData and equippedController._item.MetaData.Chamber) and 1 or 0
-				local totalAmmo=magCount+inChamber
-				if totalAmmo<=0 then
-					if equippedController.Reload and not equippedController._reloading then pcall(function() equippedController:Reload() end) end
-				else
-					local now=os.clock()
-					local effectiveRPM=math.max(weaponRPM, 1200)
-					local fireDelay=60/effectiveRPM
-					ActorManager._rageLast=ActorManager._rageLast or {}
-					local lastShot=ActorManager._rageLast[uid] or 0
-					if now-lastShot>=fireDelay then
-						ActorManager._rageLast[uid]=now
-						pcall(function()
-							if equippedController.Discharge then
-								equippedController:Discharge()
-							elseif equippedController._discharge then
-								equippedController:_discharge(true)
-							end
-						end)
-					end
-				end
-			end
-		end
-	end
-	if (showWeaponInfo or showPred) and (frameId%5==0) then
-		if type(equippedController)=="table" and equippedController._firearm then
-			local firearm=equippedController._firearm; local activeTune=firearm.Tune
-			if activeTune then
-				local velocity=activeTune.Velocity or (activeTune.MuzzleVelocity and activeTune.MuzzleVelocity.Value) or 2000
-				activeVelocity=velocity
-				if showWeaponInfo then
-					local weaponName=firearm.Name or activeTune.Name or "Unknown"
-					local velocityMS=math_floor(velocity*0.3048+0.5)
-					local infoText=string_format("Weapon: %s\nVelocity: %d m/s",weaponName,velocityMS)
-					if WeaponInfoText.Text~=infoText then WeaponInfoText.Text=infoText end
-					WeaponInfoText.Position=Vector2_new(50,Camera.ViewportSize.Y-120); WeaponInfoText.Visible=true
-				else WeaponInfoText.Visible=false end
-			else WeaponInfoText.Visible=false end
-		else WeaponInfoText.Visible=false end
-	end
-	if FOVCircle then
-		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
-		local fovShow=Config.SilentAim and Config.ShowFOV
-		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
-	end
-	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
-	if targetPart then
-		local rawVel=Vector3_new(0,0,0)
-		if targetActor and targetActor._oldDirection then rawVel=targetActor._oldDirection*60
-		elseif targetPart.Parent and targetPart.Parent.PrimaryPart then
-			rawVel=targetPart.Parent.PrimaryPart.AssemblyLinearVelocity or Vector3_new(0,0,0)
-		end
-		if not getgenv()._lastPredVel then getgenv()._lastPredVel=rawVel
-		else getgenv()._lastPredVel=getgenv()._lastPredVel:Lerp(rawVel,0.15) end
-	end
-	if getgenv().PredictionDot then
-		local dot=getgenv().PredictionDot
-		if Config.ShowPrediction and targetPart then
-			local muzzlePos=GetMuzzlePosition() or Camera.CFrame.Position
-			local targetPos=targetPart.Position; local targetVel=getgenv()._lastPredVel or Vector3_new(0,0,0)
-			local gravity=32.2; local aimPos,_=SolveLead(muzzlePos,targetPos,targetVel,activeVelocity,gravity)
-			local screenPos,onScreen=Camera:WorldToViewportPoint(aimPos)
-			if onScreen then dot.Position=Vector2_new(screenPos.X,screenPos.Y); dot.Color=cfg.PredictionColor or Color3_fromHSV(0.33,1,1); dot.Visible=true
-			else dot.Visible=false end
-		else dot.Visible=false end
-	end
-end
-
-local function GetEntityColor(actor,entityType,cachedLocalSquad)
-	if entityType=="Player" then
-		if IsTeammate(actor,cachedLocalSquad) then return Config.SquadColor or Config.TeammateColor or Color3_new(0,1,0) end
-		return Config.PlayerColor or Color3_new(1,0.65,0)
-	elseif entityType=="Zombie" then
-		return Config.ZombieColor or Color3_new(1,0,0)
-	elseif entityType=="NPC" then return Config.NPCColor or Color3_new(1,1,0) end
-	return Color3_new(1,1,1)
-end
-
-DetectMapType=function()
-	local currentId=game.PlaceId
-	for name,data in pairs(Places) do
-		if data[1]==currentId or data[2]==currentId then
-			Config.CurrentMapName=name
-			if name:find("PVP_") then return "PVP" end
-			if name:find("ZM") then return "Zombie" end
-			if name:find("OW_") then return "OpenWorld" end
-			if name:find("HQ_") or name:find("CM_") then return "Headquarters" end
-			if name=="Menu" then return "Menu" end
-		end
-	end
-	return "Unknown"
-end
-
-local function ShouldShowEntity(actor,entityType,cachedLocalSquad)
-	if entityType=="Player" then
-		if IsTeammate(actor,cachedLocalSquad) and not Config.ShowSquadMembers then return false end
-		return Config.ShowPlayers
-	elseif entityType=="Zombie" then return Config.ShowZombies
-	elseif entityType=="NPC" then return Config.ShowNPCs end
-	return false
-end
-
-local function CreateHighlight(actor,color)
-	if not actor.Character then return nil end
-	local highlight=Instance.new("Highlight")
-	highlight.FillColor=color; highlight.FillTransparency=0.9; highlight.OutlineColor=color
-	highlight.OutlineTransparency=0; pcall(function() highlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop end)
-	highlight.Parent=actor.Character; return highlight
-end
-
-local function CreateDrawingESP()
-	local esp={BoxOutline=Drawing_new("Square"),Box=Drawing_new("Square"),HealthBarOutline=Drawing_new("Square"),HealthBar=Drawing_new("Square"),Name=Drawing_new("Text"),Distance=Drawing_new("Text")}
-	esp.BoxOutline.Visible=false;esp.BoxOutline.Color=Color3.new(0,0,0);esp.BoxOutline.Thickness=3;esp.BoxOutline.Transparency=1;esp.BoxOutline.Filled=false;esp.BoxOutline.ZIndex=1
-	esp.Box.Visible=false;esp.Box.Color=Color3.new(1,1,1);esp.Box.Thickness=1;esp.Box.Transparency=1;esp.Box.Filled=false;esp.Box.ZIndex=2
-	esp.HealthBarOutline.Visible=false;esp.HealthBarOutline.Color=Color3.new(0,0,0);esp.HealthBarOutline.Thickness=1;esp.HealthBarOutline.Filled=true;esp.HealthBarOutline.Transparency=1;esp.HealthBarOutline.ZIndex=1
-	esp.HealthBar.Visible=false;esp.HealthBar.Color=Color3.new(0,1,0);esp.HealthBar.Thickness=1;esp.HealthBar.Filled=true;esp.HealthBar.ZIndex=2
-	esp.Name.Visible=false;esp.Name.Color=Color3.new(1,1,1);esp.Name.Size=13;esp.Name.Center=true;esp.Name.Outline=true;esp.Name.Font=2;esp.Name.ZIndex=3
-	esp.Distance.Visible=false;esp.Distance.Color=Color3.new(1,1,1);esp.Distance.Size=12;esp.Distance.Center=true;esp.Distance.Outline=true;esp.Distance.Font=2;esp.Distance.ZIndex=3
-	esp.Tracer=Drawing.new("Line");esp.Tracer.Visible=false;esp.Tracer.Color=Color3.new(1,1,1);esp.Tracer.Thickness=1;esp.Tracer.Transparency=1
-	esp.Corners={}
-	for i=1,8 do local line=Drawing.new("Line");line.Visible=false;line.Thickness=1;line.Color=Color3.new(1,1,1);table.insert(esp.Corners,line) end
-	return esp
-end
-
-local function CreateSimpleESP(espData)
-	local box=Instance.new("BoxHandleAdornment"); box.Name="ESPBox"; box.AlwaysOnTop=true; box.ZIndex=5; box.Transparency=0.6; box.Color3=espData.Color
-	local container=GetSecureContainer(); if not container then return end
-	box.Parent=container; espData.SimpleESP={Box=box,Container=container}
-end
-
-local function CreateESPForActor(actor,cachedLocalSquad)
-	local entityType=GetEntityType(actor)
-	if not ShouldShowEntity(actor,entityType,cachedLocalSquad) then return end
-	local color=GetEntityColor(actor,entityType,cachedLocalSquad)
-	local espData={Actor=actor,EntityType=entityType,Color=color}
-	if Config.UseHighlight then espData.Highlight=CreateHighlight(actor,color) end
-	espData.Drawing=CreateDrawingESP(); CreateSimpleESP(espData)
-	ESPElements[actor.UID]=espData
-end
-
-local function SetAllVisible(drawings,espData,visible)
-	if espData._visible==visible then return end
-	espData._visible=visible
-	local boxOn=visible and Config.UseBoxESP
-	drawings.Box.Visible=boxOn; drawings.BoxOutline.Visible=boxOn
-	drawings.Name.Visible=visible and Config.ShowNames; drawings.Distance.Visible=visible and Config.ShowDistance
-	local healthOn=visible and Config.ShowHealth
-	drawings.HealthBar.Visible=healthOn; drawings.HealthBarOutline.Visible=healthOn
-	drawings.Tracer.Visible=visible and Config.UseTracers
-	if espData.Highlight then espData.Highlight.Enabled=visible and Config.UseHighlight end
-	if not visible then for _,line in ipairs(drawings.Corners) do line.Visible=false end end
-end
-
-local function RemoveESP(uid)
-	local espData=ESPElements[uid]; if not espData then return end
-	if espData.Highlight then pcall(function() espData.Highlight:Destroy() end) end
-	if espData.SimpleESP then pcall(function() espData.SimpleESP.Box:Destroy() end) end
-	if espData.Drawing then
-		local d=espData.Drawing
-		if d.Box then pcall(function() d.Box:Remove() end) end
-		if d.BoxOutline then pcall(function() d.BoxOutline:Remove() end) end
-		if d.Name then pcall(function() d.Name:Remove() end) end
-		if d.Distance then pcall(function() d.Distance:Remove() end) end
-		if d.HealthBar then pcall(function() d.HealthBar:Remove() end) end
-		if d.HealthBarOutline then pcall(function() d.HealthBarOutline:Remove() end) end
-		if d.Tracer then pcall(function() d.Tracer:Remove() end) end
-		if d.Corners then for _,line in ipairs(d.Corners) do pcall(function() line:Remove() end) end end
-	end
-	ESPElements[uid]=nil
-end
-
-local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
-	local actor=espData.Actor; local entityType=actor._entityType or "Unknown"
-	espData.LastUpdate=frameId
-	if not actor or not actor.Alive then RemoveESP(uid); return end
-	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
-	local distance = actor.LOD_Distance
-	if not distance or distance <= 0 then
-		local pos = actor.Position
-		if not pos and actor.Character and actor.Character.PrimaryPart then
-			pos = actor.Character.PrimaryPart.Position
-		end
-		if pos then distance = (Camera.CFrame.Position - pos).Magnitude else distance = 0 end
-	end
-	if distance > cachedCfg.MaxDistance then
-		SetAllVisible(espData.Drawing,espData,false)
-		return
-	end
-	local drawings=espData.Drawing
-	local worldPos = actor.Position
-	if not worldPos and actor.Character then
-		local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
-		if pp then worldPos = pp.Position end
-	end
-	if not worldPos then SetAllVisible(drawings,espData,false); return end
-	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	if not onScreen then SetAllVisible(drawings,espData,false); return end
-	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
-	SetAllVisible(drawings,espData,true)
-	local height=6.5; local hState=actor.HeightState
-	if hState==1 then height=4.5 elseif hState==2 then height=2.5 end
-	local top_point=Camera:WorldToViewportPoint(worldPos+Vector3_new(0,height*0.5,0))
-	local bottom_point=Camera:WorldToViewportPoint(worldPos-Vector3_new(0,height*0.5,0))
-	local scale=cachedCfg.BoxScale or 1
-	local boxHeight=math_abs(bottom_point.Y-top_point.Y)*scale; local boxWidth=boxHeight*0.6
-	local boxPosition=Vector2_new(screenPos.X-boxWidth*0.5,screenPos.Y-boxHeight*0.5)
-	local boxColor=cachedCfg.BoxColor or espData.Color
-	if cachedCfg.UseBoxESP then
-		drawings.BoxOutline.Size=Vector2_new(boxWidth,boxHeight);drawings.BoxOutline.Position=boxPosition;drawings.BoxOutline.Visible=true
-		drawings.Box.Size=Vector2_new(boxWidth,boxHeight);drawings.Box.Position=boxPosition;drawings.Box.Color=boxColor;drawings.Box.Visible=true
-	else
-		drawings.Box.Visible=false;drawings.BoxOutline.Visible=false
-	end
-	if cachedCfg.ShowNames then
-		local displayName=actor.OwnerName or "AI"
-		drawings.Name.Text=displayName; drawings.Name.Position=Vector2_new(screenPos.X,boxPosition.Y-16)
-		drawings.Name.Color=espData.Color; drawings.Name.Visible=true
-	else drawings.Name.Visible=false end
-end
-
-local function UpdateESP()
-	if not ESPEnabled then return end
-	if not ReplicatorService then return end
-	CurrentFrameId=CurrentFrameId+1
-	local localSquad=ClientService and ClientService.LocalClient and ClientService.LocalClient.Squad
-	local cachedCfg={
-		MaxDistance=Config.MaxDistance or 1000, UseBoxESP=Config.UseBoxESP, BoxScale=Config.BoxScale or 1,
-		ShowNames=Config.ShowNames, ShowDistance=Config.ShowDistance, ShowHealth=Config.ShowHealth,
-	}
-	local function Process(list)
-		for _,actor in ipairs(list) do
-			local uid=actor.UID; if not uid then continue end
-			if not ESPElements[uid] then CreateESPForActor(actor,localSquad) end
-			local espData=ESPElements[uid]
-			if espData then
-				UpdateESPForActor(uid,espData,CurrentFrameId,cachedCfg,localSquad)
-			end
-		end
-	end
-	if ActorManager.Initialized then Process(ActorManager.Enemies); Process(ActorManager.Teammates) end
-	for uid,espData in pairs(ESPElements) do
-		if espData.LastUpdate~=CurrentFrameId then RemoveESP(uid) end
-	end
-end
-
--- Initialize and setup background loops
-task.spawn(function()
-	pcall(InitializeServices)
-	RunService.Heartbeat:Connect(function(dt)
-		pcall(function()
-			if ReplicatorService then
-				ActorManager:Update(dt)
-				UpdateCombat(CurrentFrameId)
-			end
-		end)
-	end)
-	RunService.RenderStepped:Connect(function()
-		pcall(UpdateESP)
-	end)
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local eChar = player.Character
+        if not eChar then continue end
+        local eRoot = eChar:FindFirstChild("HumanoidRootPart")
+        local hum   = eChar:FindFirstChildOfClass("Humanoid")
+        if not eRoot or not hum or hum.Health <= 0 then continue end
+        if (myPos - eRoot.Position).Magnitude > AuraRadius then continue end
+        if lastHit[player] and (now - lastHit[player]) < AuraCooldown then continue end
+        lastHit[player] = now
+        task.spawn(doAuraHit, eChar)
+    end
 end)
 
--- UI Setup & Interface Implementation
-local Notifier=MoonUI.newNotify()
-local Window=MoonUI.new({ Name="Tokaihub", Keybind="LeftAlt", Scale=MoonUI.Scale.Window, TextSize=14 })
-local _ConfigManager=MoonUI:ConfigManager({ Directory="Tokaihub", Config="Tokaihub" })
+-- ============================================
+-- TOGGLE + INIT
+-- ============================================
 
-local CombatTab=Window:DrawTab({ Name="Combat", Icon="swords", Type="Double" })
-local S_Rage=CombatTab:DrawSection({ Name="Ragebot & Aura Kill", Position="right" })
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.E then
+        enabled = not enabled
+        print("[Aura] " .. (enabled and "ON" or "OFF"))
+    end
+end)
 
-S_Rage:AddToggle({ Name="Enabled (Aura/Rage)", Flag="Rage_Enabled", Default=false, Callback = function(v)
-	Config.RageMode = v
-	Notifier.new({ Title = "Tokaihub", Content = "Aura/Rage Kill: " .. (v and "ENABLED" or "DISABLED"), Duration = 3 })
-end })
-
-S_Rage:AddSlider({ Name="Range", Flag="Rage_Range", Default=500, Min=50, Max=2000, Rounding=0, Callback = function(v)
-	Config.Rage_Range = v
-end })
-
-local S_Silent=CombatTab:DrawSection({ Name="Silent Aim", Position="left" })
-S_Silent:AddToggle({ Name="Enabled", Flag="SilentAim", Default=false, Callback = function(v)
-	Config.SilentAim = v
-end })
-S_Silent:AddSlider({ Name="FOV", Flag="SilentAimFOV", Default=100, Min=10, Max=500, Rounding=0, Callback = function(v)
-	Config.SilentAimFOV = v
-end })
-S_Silent:AddToggle({ Name="Show FOV", Flag="ShowFOV", Default=false, Callback = function(v)
-	Config.ShowFOV = v
-end })
-
-local VisualsTab=Window:DrawTab({ Name="Visuals", Icon="eye", Type="Double" })
-local S_ESP=VisualsTab:DrawSection({ Name="ESP Settings", Position="left" })
-S_ESP:AddToggle({ Name="Enabled ESP", Flag="ESP_Enabled", Default=false, Callback = function(v)
-	ESPEnabled = v
-end })
-S_ESP:AddToggle({ Name="Box ESP", Flag="UseBoxESP", Default=true, Callback = function(v)
-	Config.UseBoxESP = v
-end })
-S_ESP:AddToggle({ Name="Names", Flag="ShowNames", Default=true, Callback = function(v)
-	Config.ShowNames = v
-end })
-S_ESP:AddSlider({ Name="Max Distance", Flag="MaxDistance", Default=2000, Min=100, Max=5000, Rounding=0, Callback = function(v)
-	Config.MaxDistance = v
-end })
-
-local SettingsTab=Window:DrawTab({ Name="Settings", Icon="settings", Type="Double" })
-Window:DrawConfig({})
-Window:SetMenuKey(Enum.KeyCode.LeftAlt)
-
-Notifier.new({ Title = "Tokaihub Loaded", Content = "Aura Kill & Combat Fixed Successfully!", Duration = 5 })
+task.spawn(function()
+    task.wait(1.5)
+    BulkScan()
+    print("[Aura] E = bật/tắt | Radius: " .. AuraRadius)
+end)
