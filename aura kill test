@@ -11,7 +11,8 @@ local AuraCooldown = 0.5
 local lastHit      = {}
 
 -- ============================================
--- TÌM MeleeInventory TABLE
+-- TÌM MeleeInventory — TABLE 3 signature
+-- Keys: Slash=function, Impact=function, _weld, _actor, _primary, _belt, Replicator
 -- ============================================
 
 local MeleeInventory = nil
@@ -26,34 +27,28 @@ local function findMeleeInventory()
         if count % 5000 == 0 then task.wait() end
         if type(v) ~= "table" then continue end
 
-        -- Signature: có đủ Slash + Impact + GetSwingTwist
-        if type(rawget(v, "Slash")) == "function"
-        and type(rawget(v, "Impact")) == "function"
-        and type(rawget(v, "GetSwingTwist")) == "function" then
+        local ok1, slash  = pcall(function() return v.Slash end)
+        local ok2, impact = pcall(function() return v.Impact end)
+        local ok3, actor  = pcall(function() return v._actor end)
+        local ok4, belt   = pcall(function() return v._belt end)
+
+        if ok1 and ok2 and ok3 and ok4
+        and type(slash)  == "function"
+        and type(impact) == "function"
+        and actor ~= nil
+        and belt  ~= nil then
             MeleeInventory = v
             print("[Aura] MeleeInventory found: " .. tostring(v))
+            print("[Aura] _actor: " .. tostring(actor))
             break
         end
     end
 
-    if not MeleeInventory then
-        -- Fallback: có Slash + InventoryAction
-        for _, v in pairs(gc) do
-            if type(v) ~= "table" then continue end
-            if type(rawget(v, "Slash")) == "function"
-            and type(rawget(v, "InventoryAction")) == "function" then
-                MeleeInventory = v
-                print("[Aura] MeleeInventory found (fallback): " .. tostring(v))
-                break
-            end
-        end
-    end
-
-    if not MeleeInventory then warn("[Aura] MeleeInventory not found") end
+    if not MeleeInventory then warn("[Aura] Not found") end
 end
 
 -- ============================================
--- LẤY ACTOR UID CỦA ENEMY
+-- LẤY ACTOR UID
 -- ============================================
 
 local ReplicatorService = nil
@@ -76,16 +71,12 @@ local function bulkScan()
     end
 end
 
-local function getActorUID(character)
+local function getActorFromChar(character)
     if not ReplicatorService then return nil end
     for _, actor in pairs(ReplicatorService.Actors or {}) do
         if type(actor) ~= "table" then continue end
         if actor.Character == character or actor.Model == character then
-            for k, v in pairs(actor) do
-                if type(v) == "string" and #v == 36 and v:find("%-") then
-                    return v
-                end
-            end
+            return actor
         end
     end
     return nil
@@ -93,7 +84,6 @@ end
 
 -- ============================================
 -- HIT SEQUENCE
--- Slash 1→2→3 → Impact
 -- ============================================
 
 local function doAuraHit(targetChar)
@@ -102,10 +92,10 @@ local function doAuraHit(targetChar)
     local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
     if not targetRoot then return end
 
-    local uid = getActorUID(targetChar)
+    local targetActor = getActorFromChar(targetChar)
     local pos = targetRoot.Position
 
-    -- Slash 1, 2, 3
+    -- Slash 1 → 2 → 3
     pcall(function() MeleeInventory:Slash(1) end)
     task.wait(0.05)
     pcall(function() MeleeInventory:Slash(2) end)
@@ -113,11 +103,11 @@ local function doAuraHit(targetChar)
     pcall(function() MeleeInventory:Slash(3) end)
     task.wait(0.05)
 
-    -- Impact với position + uid + part
+    -- Impact: thử các cách gọi khác nhau
     pcall(function()
         MeleeInventory:Impact(
             Vector3.new(pos.X, pos.Y, pos.Z),
-            uid,
+            targetActor,
             "Head"
         )
     end)
