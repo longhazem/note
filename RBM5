@@ -2722,80 +2722,235 @@ print("[AntiFall] Loaded")
 
 
 
+
+
 -- ==========================================
--- NOCLIP
--- Không tắt CanCollide (block movement)
--- Chỉ bypass server rollback qua _lastSafePosition
+-- AURA KILL — Melee Remote Packet
+-- Slash(1,2,3) → Impact(pos, uid, part)
+-- Packet: [code, "InventoryAction", "Slash"/Impact", ...]
 -- ==========================================
-local Noclip = { Enabled = false, _connection = nil }
+local AuraKill = {
+	Enabled = false,
+	Range = 20,
+	Interval = 0.3,
+	TargetPart = "Head",
+	_key = nil,
+	_code = nil,
+	_remote = nil,
+	_lastFire = 0,
+	_connection = nil,
+	_running = false,
+}
 
-local function NC_Start()
-	if Noclip._connection then return end
-	Noclip._connection = RunService.Heartbeat:Connect(function()
-		if not Noclip.Enabled then return end
-
-		-- _lastSafePosition update liên tục = server không rollback vị trí
-		if ControllerService and ControllerService.Controller then
-			local ctrl = ControllerService.Controller
-			pcall(function()
-				if ctrl._position then
-					ctrl._lastSafePosition = ctrl._position
-				end
-			end)
+local function AK_FindNet()
+	if AuraKill._key and AuraKill._code then return true end
+	local ok, gc = pcall(function() return filtergc("table") end)
+	if not ok then ok, gc = pcall(function() return getgc(true) end) end
+	if not ok or not gc then return false end
+	for _, v in pairs(gc) do
+		if type(v) ~= "table" then continue end
+		local k = rawget(v, "_key")
+		local co = rawget(v, "_code")
+		local ev = rawget(v, "_events")
+		if k and co and ev
+			and type(k) == "table" and #k >= 5
+			and type(co) == "string"
+			and type(ev) == "table"
+		then
+			AuraKill._key = k
+			AuraKill._code = co
+			print("[AuraKill] Net found, code:", co:sub(1,8).."...")
+			return true
 		end
+	end
+	return false
+end
 
-		-- Sync SimulatedPosition
-		local myActor = ReplicatorService and ReplicatorService.LocalActor
-		if myActor and myActor.Character and myActor.Character.PrimaryPart then
-			pcall(function()
-				myActor.SimulatedPosition = myActor.Character.PrimaryPart.Position
-			end)
+local function AK_GetRemote()
+	if AuraKill._remote and AuraKill._remote.Parent then return AuraKill._remote end
+	local re = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+	if re then
+		local rem = re:FindFirstChild("RemoteEvent")
+		if rem then AuraKill._remote = rem; return rem end
+	end
+	return nil
+end
+
+local function AK_Encrypt(data, key)
+	local hs = game:GetService("HttpService")
+	local ok, raw = pcall(function() return hs:JSONEncode(data) end)
+	if not ok or not raw then return nil end
+	local result = ""
+	for i = 1, #raw do
+		local ki = ((i-1) % 4) + 1
+		local nb = (string.byte(raw, i) - 32 + key[ki]) % 95 + 32
+		result = result .. string.char(nb)
+	end
+	local padLen = key[5] or 37
+	for i = 1, padLen do
+		result = result .. string.char(math.random(33, 126))
+	end
+	return result
+end
+
+-- Lấy UID của actor — game dùng actor.UID hoặc actor.Id
+local function AK_GetActorUID(actor)
+	return actor.UID or actor.Id or tostring(actor)
+end
+
+local function AK_Fire(actor)
+	if not AK_FindNet() then return false end
+	local remote = AK_GetRemote()
+	if not remote then return false end
+
+	local key = AuraKill._key
+	local code = AuraKill._code
+
+	-- Lấy target position và part
+	local char = actor.Character
+	if not char then return false end
+
+	local targetPart = char:FindFirstChild(AuraKill.TargetPart)
+		or char:FindFirstChild("Head")
+		or char:FindFirstChild("UpperTorso")
+		or char.PrimaryPart
+	if not targetPart then return false end
+
+	local pos = targetPart.Position
+	local uid = AK_GetActorUID(actor)
+	local partName = targetPart.Name
+
+	-- Step 1: Fire Slash 1, 2, 3 (animation frames)
+	for i = 1, 3 do
+		local slashPacket = {code, "InventoryAction", "Slash", i}
+		local enc = AK_Encrypt(slashPacket, key)
+		if enc then
+			pcall(function() remote:FireServer(enc) end)
 		end
+		task.wait(0.05)
+	end
 
-		-- Tắt CanCollide chỉ trên các part không phải root/humanoid
-		-- HumanoidRootPart giữ nguyên để movement không bị ảnh hưởng
-		local char = myActor and myActor.Character or LocalPlayer.Character
-		if char then
-			for _, part in ipairs(char:GetDescendants()) do
-				if part:IsA("BasePart")
-					and part.Name ~= "HumanoidRootPart"
-					and part.Name ~= "RootPart"
-				then
-					pcall(function() part.CanCollide = false end)
-				end
+	-- Step 2: Fire Impact packet
+	-- Format: [code, "InventoryAction", "Impact", [x,y,z], actorUID, partName]
+	local impactPacket = {
+		code,
+		"InventoryAction",
+		"Impact",
+		{pos.X, pos.Y, pos.Z},
+		uid,
+		partName
+	}
+	local encImpact = AK_Encrypt(impactPacket, key)
+	if encImpact then
+		pcall(function() remote:FireServer(encImpact) end)
+	end
+
+	return true
+end
+
+local function AK_Tick()
+	if not AuraKill.Enabled then return end
+	local now = tick()
+	if now - AuraKill._lastFire < AuraKill.Interval then return end
+
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local myPos = myActor.Position or Camera.CFrame.Position
+
+	local closestActor = nil
+	local closestDist = AuraKill.Range
+
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if not actor or not actor.Alive or not actor.Character then continue end
+			local pos = actor.Position
+			if not pos and actor.Character.PrimaryPart then
+				pos = actor.Character.PrimaryPart.Position
 			end
+			if not pos then continue end
+			local dist = (pos - myPos).Magnitude
+			if dist < closestDist then
+				closestDist = dist
+				closestActor = actor
+			end
+		end
+	end
+
+	if not closestActor then return end
+
+	-- Fire async để không block Heartbeat
+	task.spawn(function()
+		if AK_Fire(closestActor) then
+			AuraKill._lastFire = tick()
 		end
 	end)
-	table.insert(getgenv().Moon_Connections, Noclip._connection)
 end
 
-local function NC_Stop()
-	if Noclip._connection then
-		pcall(function() Noclip._connection:Disconnect() end)
-		Noclip._connection = nil
-	end
-	-- Restore CanCollide
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	local char = myActor and myActor.Character or LocalPlayer.Character
-	if char then
-		for _, part in ipairs(char:GetDescendants()) do
-			if part:IsA("BasePart") then
-				pcall(function() part.CanCollide = true end)
-			end
-		end
+function AuraKill.Start()
+	if AuraKill._running then return end
+	AuraKill._running = true
+	task.spawn(AK_FindNet)
+	task.spawn(AK_GetRemote)
+	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
+	table.insert(getgenv().Moon_Connections, AuraKill._connection)
+	print("[AuraKill] Started")
+end
+
+function AuraKill.Stop()
+	AuraKill._running = false
+	if AuraKill._connection then
+		pcall(function() AuraKill._connection:Disconnect() end)
+		AuraKill._connection = nil
 	end
 end
 
-getgenv().Noclip = Noclip
+getgenv().AuraKill = AuraKill
 
--- UI — Character tab, left side (tránh duplicate với Anti Fall ở right)
-local S_Noclip = CharacterTab:DrawSection({ Name="Noclip", Position="left" })
-S_Noclip:AddToggle({
-	Name = "Enable Noclip", Flag = "NC_Enabled", Default = false,
+-- UI
+local S_AuraKill = CombatTab:DrawSection({ Name="Aura Kill", Position="right" })
+
+S_AuraKill:AddToggle({
+	Name = "Enable Aura Kill", Flag = "AK_Enabled", Default = false,
 	Callback = function(v)
-		Noclip.Enabled = v
-		if v then NC_Start() else NC_Stop() end
+		AuraKill.Enabled = v
+		if v then AuraKill.Start() else AuraKill.Stop() end
 	end
 })
 
-print("[Noclip] Loaded")
+S_AuraKill:AddSlider({
+	Name = "Range (studs)", Flag = "AK_Range",
+	Min = 5, Max = 150, Default = 20, Rounding = 0,
+	Callback = function(v) AuraKill.Range = v end
+})
+
+S_AuraKill:AddSlider({
+	Name = "Attack Rate (ms)", Flag = "AK_Interval",
+	Min = 100, Max = 2000, Default = 300, Rounding = 0,
+	Callback = function(v) AuraKill.Interval = v / 1000 end
+})
+
+S_AuraKill:AddDropdown({
+	Name = "Target Part", Flag = "AK_TargetPart",
+	Default = "Head",
+	Values = {"Head", "UpperTorso", "LowerTorso"},
+	Callback = function(v) AuraKill.TargetPart = v end
+})
+
+S_AuraKill:AddButton({
+	Name = "Rescan Network",
+	Callback = function()
+		AuraKill._key = nil; AuraKill._code = nil; AuraKill._remote = nil
+		task.spawn(function()
+			local ok = AK_FindNet()
+			local re = AK_GetRemote()
+			Notifier.new({
+				Title = "AuraKill",
+				Content = ok and re and "Ready! Code: "..(AuraKill._code or "?"):sub(1,8).."..."
+					or "Không tìm được — thử lại sau",
+				Duration = 4
+			})
+		end)
+	end
+})
+
+print("[AuraKill Melee] Loaded — Slash x3 → Impact")
