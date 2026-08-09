@@ -1,0 +1,201 @@
+-- --- AuraKill.lua ---
+
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer  = Players.LocalPlayer
+local Remote       = ReplicatedStorage.Events.RemoteEvent
+local netEncode    = nil
+local weaponUUID   = nil  -- bắt từ lần swing tay đầu tiên
+
+local enabled      = false
+local AuraRadius   = 20
+local AuraCooldown = 0.5
+local lastHit      = {}
+
+-- ============================================
+-- LẤY netEncode + hook bắt weaponUUID
+-- ============================================
+
+local function findNetEncode()
+    local ok, gc = pcall(function() return getgc(true) end)
+    if not ok then warn("[Aura] getgc failed"); return end
+
+    for _, v in pairs(gc) do
+        if type(v) ~= "function" then continue end
+        local ok1, _, v1 = pcall(debug.getupvalue, v, 1)
+        local ok2, _, v2 = pcall(debug.getupvalue, v, 2)
+        local ok3, _, v3 = pcall(debug.getupvalue, v, 3)
+        if ok1 and typeof(v1) == "Instance" and v1:IsA("RemoteEvent")
+        and ok2 and type(v2) == "function"
+        and ok3 and typeof(v3) == "Instance" and v3.ClassName == "HttpService" then
+            Remote    = v1
+            netEncode = v2
+            print("[Aura] netEncode found")
+            break
+        end
+    end
+
+    if not netEncode then warn("[Aura] netEncode not found"); return end
+
+    -- Hook Remote:FireServer để bắt weaponUUID từ swing tay
+    local oldNC
+    oldNC = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        if method == "FireServer" and self == Remote then
+            local args = {...}
+            -- args[1] là encrypted string — decode để lấy UUID
+            if type(args[1]) == "string" then
+                local ok2, decoded = pcall(function()
+                    return game:GetService("HttpService"):JSONDecode(args[1])
+                end)
+                if ok2 and type(decoded) == "table" then
+                    -- decoded[1] = weaponUUID, decoded[2] = "InventoryAction"
+                    if decoded[2] == "InventoryAction" and type(decoded[1]) == "string"
+                    and #decoded[1] == 36 and decoded[1]:find("%-") then
+                        if weaponUUID ~= decoded[1] then
+                            weaponUUID = decoded[1]
+                            print("[Aura] WeaponUUID captured: " .. weaponUUID)
+                        end
+                    end
+                end
+            end
+        end
+        return oldNC(self, ...)
+    end)
+    print("[Aura] Hook active — swing tay 1 lần để capture weaponUUID")
+end
+
+-- ============================================
+-- ACTOR UID
+-- ============================================
+
+local ReplicatorService = nil
+
+local function bulkScan()
+    local ok, gc = pcall(function() return filtergc("table") end)
+    if not ok then ok, gc = pcall(function() return getgc(true) end) end
+    if not ok then return end
+    local count = 0
+    for _, obj in pairs(gc) do
+        count = count + 1
+        if count % 8000 == 0 then task.wait() end
+        if type(obj) == "table"
+        and rawget(obj, "Actors")
+        and rawget(obj, "LocalActor") then
+            ReplicatorService = obj
+            print("[Aura] ReplicatorService found")
+            break
+        end
+    end
+end
+
+local function getActorUID(character)
+    if not ReplicatorService then return nil end
+    for _, actor in pairs(ReplicatorService.Actors or {}) do
+        if type(actor) ~= "table" then continue end
+        if actor.Character == character or actor.Model == character then
+            for k, v in pairs(actor) do
+                if type(v) == "string" and #v == 36 and v:find("%-") then
+                    return v
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- ============================================
+-- FIRE SEQUENCE
+-- ============================================
+
+local function fireEncoded(data)
+    if not netEncode then return end
+    local payload = netEncode(data)
+    if not payload then return end
+    pcall(function() Remote:FireServer(payload) end)
+end
+
+local function doAuraHit(targetChar)
+    if not weaponUUID then
+        warn("[Aura] Chưa có weaponUUID — swing tay 1 lần trước")
+        return
+    end
+
+    local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return end
+
+    local uid = getActorUID(targetChar)
+    if not uid then return end
+
+    local pos = targetRoot.Position
+
+    fireEncoded({ weaponUUID, "InventoryAction", "Slash", 1 })
+    task.wait(0.05)
+    fireEncoded({ weaponUUID, "InventoryAction", "Slash", 2 })
+    task.wait(0.05)
+    fireEncoded({ weaponUUID, "InventoryAction", "Slash", 3 })
+    task.wait(0.05)
+    fireEncoded({
+        weaponUUID,
+        "InventoryAction",
+        "Impact",
+        { pos.X, pos.Y, pos.Z },
+        uid,
+        "Head"
+    })
+end
+
+-- ============================================
+-- AURA LOOP
+-- ============================================
+
+RunService.Heartbeat:Connect(function()
+    if not enabled then return end
+    if not netEncode or not weaponUUID then return end
+
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+
+    local now = tick()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local eChar = player.Character
+        if not eChar then continue end
+        local eRoot = eChar:FindFirstChild("HumanoidRootPart")
+        local hum   = eChar:FindFirstChildOfClass("Humanoid")
+        if not eRoot or not hum or hum.Health <= 0 then continue end
+        if (myRoot.Position - eRoot.Position).Magnitude > AuraRadius then continue end
+        if lastHit[player] and (now - lastHit[player]) < AuraCooldown then continue end
+        lastHit[player] = now
+        task.spawn(doAuraHit, eChar)
+    end
+end)
+
+-- ============================================
+-- TOGGLE + INIT
+-- ============================================
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.E then
+        if not weaponUUID then
+            warn("[Aura] Swing tay 1 lần trước để capture weaponUUID")
+            return
+        end
+        enabled = not enabled
+        print("[Aura] " .. (enabled and "ON" or "OFF"))
+    end
+end)
+
+task.spawn(function()
+    task.wait(1.5)
+    bulkScan()
+    findNetEncode()
+    print("[Aura] Bước 1: Swing tay 1 lần → UUID captured")
+    print("[Aura] Bước 2: E = bật/tắt")
+end)
