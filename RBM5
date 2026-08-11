@@ -2938,6 +2938,7 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
+pcall(function()
 -- Gun Cosmetics
 local _BODY = {Head=true,UpperTorso=true,LowerTorso=true,HumanoidRootPart=true,LeftUpperArm=true,LeftLowerArm=true,LeftHand=true,RightUpperArm=true,RightLowerArm=true,RightHand=true,LeftUpperLeg=true,LeftLowerLeg=true,LeftFoot=true,RightUpperLeg=true,RightLowerLeg=true,RightFoot=true,Torso=true,RootPart=true,["Left Arm"]=true,["Right Arm"]=true,["Left Leg"]=true,["Right Leg"]=true}
 local GunCosmetics = {Enabled=false,Rainbow=false,RainbowSpeed=1,Color=Color3.fromRGB(255,255,255),Transparency=0,_orig={}}
@@ -3002,3 +3003,4 @@ S_GC:AddColorPicker({Name="Gun Color",Flag="GC_Color",Default=GunCosmetics.Color
 S_GC:AddSlider({Name="Transparency",Flag="GC_Trans",Min=0,Max=100,Default=0,Rounding=0,Callback=function(v) GunCosmetics.Transparency=v/100 end})
 S_GC:AddButton({Name="Restore Original",Callback=function() GC_Restore() end})
 print("[GunCosmetics] OK")
+end)
