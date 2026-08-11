@@ -1525,6 +1525,10 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	local drawings=espData.Drawing
 	local worldPos = actor.Position
+	if not worldPos and actor.Character then
+		local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
+		if pp then worldPos = pp.Position end
+	end
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -2938,8 +2942,7 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
--- Gun Cosmetics — đúng theo ViewmodelClass source
--- Path: actor.ViewModel.CurrentModel (gun Model Instance) hoặc ViewModel._container
+-- Gun Cosmetics v2 — exclude scope/reticle, chỉ gun body
 pcall(function()
 local _BODY = {Head=true,UpperTorso=true,LowerTorso=true,HumanoidRootPart=true,
 	LeftUpperArm=true,LeftLowerArm=true,LeftHand=true,RightUpperArm=true,
@@ -2947,60 +2950,66 @@ local _BODY = {Head=true,UpperTorso=true,LowerTorso=true,HumanoidRootPart=true,
 	LeftFoot=true,RightUpperLeg=true,RightLowerLeg=true,RightFoot=true,
 	Torso=true,RootPart=true}
 
+-- Exclude scope/optic parts theo tên
+local function isScope(name)
+	local low = name:lower()
+	return low:find("scope") or low:find("optic") or low:find("reticle")
+		or low:find("sight") or low:find("lens") or low:find("glass")
+		or low:find("aim")
+end
+
 local GunCosmetics = {
 	Enabled=false, Rainbow=false, RainbowSpeed=1,
 	Color=Color3.fromRGB(255,255,255), Transparency=0, _orig={}
 }
-
-local function GC_ScanModel(model, parts)
-	if not model or typeof(model) ~= "Instance" then return end
-	for _, v in ipairs(model:GetDescendants()) do
-		if (v:IsA("BasePart") or v:IsA("MeshPart")) and not _BODY[v.Name] then
-			table.insert(parts, v)
-		end
-	end
-end
 
 local function GC_GetParts()
 	local parts = {}
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return parts end
 
-	-- Priority 1: actor.ViewModel.CurrentModel — gun 3D model thật (ViewmodelClass source)
+	-- CurrentModel từ actor.ViewModel (ViewmodelClass.SetModel → CurrentModel = gun clone)
 	local vm = myActor.ViewModel
 	if vm and type(vm) == "table" then
-		local currentModel = rawget(vm, "CurrentModel")
-		if currentModel and typeof(currentModel) == "Instance" then
-			GC_ScanModel(currentModel, parts)
-		end
-		-- Fallback: scan _container (WorldModel chứa gun parts)
-		if #parts == 0 then
-			local container = rawget(vm, "_container")
-			if container and typeof(container) == "Instance" then
-				GC_ScanModel(container, parts)
-			end
-		end
-	end
-
-	-- Priority 2: Character children (Tool/Model từ third person)
-	if #parts == 0 then
-		local char = myActor.Character or LocalPlayer.Character
-		if char then
-			for _, child in ipairs(char:GetChildren()) do
-				if child:IsA("Tool") or (child:IsA("Model") and not _BODY[child.Name]) then
-					GC_ScanModel(child, parts)
+		local cm = rawget(vm, "CurrentModel")
+		if cm and typeof(cm) == "Instance" then
+			for _, v in ipairs(cm:GetDescendants()) do
+				if (v:IsA("BasePart") or v:IsA("MeshPart"))
+					and not _BODY[v.Name]
+					and not isScope(v.Name)
+					and not isScope(v.Parent and v.Parent.Name or "")
+				then
+					table.insert(parts, v)
 				end
 			end
 		end
 	end
 
+	-- Fallback: Tool trong Character
+	if #parts == 0 then
+		local char = myActor.Character or LocalPlayer.Character
+		if char then
+			for _, child in ipairs(char:GetChildren()) do
+				if child:IsA("Tool") then
+					for _, v in ipairs(child:GetDescendants()) do
+						if (v:IsA("BasePart") or v:IsA("MeshPart"))
+							and not _BODY[v.Name]
+							and not isScope(v.Name)
+						then
+							table.insert(parts, v)
+						end
+					end
+				end
+			end
+		end
+	end
 	return parts
 end
 
 local function GC_Apply()
 	local color = GunCosmetics.Color
 	if GunCosmetics.Rainbow then
-		color = Color3.fromHSV((tick() * GunCosmetics.RainbowSpeed / 10) % 1, 1, 1)
+		color = Color3.fromHSV((tick()*GunCosmetics.RainbowSpeed/10)%1, 1, 1)
 	end
 	for _, part in ipairs(GC_GetParts()) do
 		if not GunCosmetics._orig[part] then
@@ -3043,5 +3052,5 @@ S_GC:AddColorPicker({Name="Gun Color", Flag="GC_Color", Default=GunCosmetics.Col
 S_GC:AddSlider({Name="Transparency", Flag="GC_Trans", Min=0, Max=100, Default=0, Rounding=0,
 	Callback=function(v) GunCosmetics.Transparency=v/100 end})
 S_GC:AddButton({Name="Restore Original", Callback=function() GC_Restore() end})
-print("[GunCosmetics] OK")
+print("[GunCosmetics v2] OK")
 end)
