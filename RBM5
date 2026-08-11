@@ -2937,3 +2937,67 @@ S_AK:AddButton({Name="Rescan Network",
 	end})
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
+
+-- ==========================================
+-- NOCLIP
+-- Set CanCollide=false trên các part (không phải HumanoidRootPart)
+-- Update _lastSafePosition mỗi frame để bypass server rollback
+-- ==========================================
+local Noclip = { Enabled=false, _connection=nil }
+
+local function NC_Start()
+	if Noclip._connection then return end
+	Noclip._connection = RunService.Heartbeat:Connect(function()
+		if not Noclip.Enabled then return end
+
+		-- Update _lastSafePosition = vị trí hiện tại → server không rollback
+		if ControllerService and ControllerService.Controller then
+			local ctrl = ControllerService.Controller
+			pcall(function()
+				if ctrl._position then
+					ctrl._lastSafePosition = ctrl._position
+				end
+			end)
+		end
+
+		-- Tắt CanCollide — giữ HumanoidRootPart để movement không bị ảnh hưởng
+		local myActor = ReplicatorService and ReplicatorService.LocalActor
+		local char = (myActor and myActor.Character) or LocalPlayer.Character
+		if char then
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+					pcall(function() part.CanCollide = false end)
+				end
+			end
+		end
+	end)
+	table.insert(getgenv().Moon_Connections, Noclip._connection)
+end
+
+local function NC_Stop()
+	if Noclip._connection then
+		pcall(function() Noclip._connection:Disconnect() end)
+		Noclip._connection = nil
+	end
+	-- Restore CanCollide
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	local char = (myActor and myActor.Character) or LocalPlayer.Character
+	if char then
+		for _, part in ipairs(char:GetDescendants()) do
+			if part:IsA("BasePart") then
+				pcall(function() part.CanCollide = true end)
+			end
+		end
+	end
+end
+
+getgenv().Noclip = Noclip
+
+local S_NC = CharacterTab:DrawSection({Name="Noclip", Position="right"})
+S_NC:AddToggle({Name="Enable Noclip", Flag="NC_Enabled", Default=false,
+	Callback=function(v)
+		Noclip.Enabled = v
+		if v then NC_Start() else NC_Stop() end
+	end})
+
+print("[Noclip] Loaded")
