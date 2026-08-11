@@ -2937,3 +2937,68 @@ S_AK:AddButton({Name="Rescan Network",
 	end})
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
+
+-- Gun Cosmetics
+local _BODY = {Head=true,UpperTorso=true,LowerTorso=true,HumanoidRootPart=true,LeftUpperArm=true,LeftLowerArm=true,LeftHand=true,RightUpperArm=true,RightLowerArm=true,RightHand=true,LeftUpperLeg=true,LeftLowerLeg=true,LeftFoot=true,RightUpperLeg=true,RightLowerLeg=true,RightFoot=true,Torso=true,RootPart=true,["Left Arm"]=true,["Right Arm"]=true,["Left Leg"]=true,["Right Leg"]=true}
+local GunCosmetics = {Enabled=false,Rainbow=false,RainbowSpeed=1,Color=Color3.fromRGB(255,255,255),Transparency=0,_orig={}}
+
+local function GC_Scan(model,parts)
+	if not model then return end
+	for _,v in ipairs(model:GetDescendants()) do
+		if (v:IsA("BasePart") or v:IsA("MeshPart")) and not _BODY[v.Name] then
+			table.insert(parts,v)
+		end
+	end
+end
+
+local function GC_GetParts()
+	local parts={}
+	local fw=getgenv().CurrentFirearm or WeaponManager.Equipped
+		or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+	if fw then
+		if fw._firearm and fw._firearm.Model then GC_Scan(fw._firearm.Model,parts) end
+		if #parts==0 and fw.ViewModel then GC_Scan(fw.ViewModel,parts) end
+		if #parts==0 and fw._viewmodel then GC_Scan(fw._viewmodel,parts) end
+	end
+	if #parts==0 then
+		local myActor=ReplicatorService and ReplicatorService.LocalActor
+		local char=myActor and myActor.Character or LocalPlayer.Character
+		if char then
+			for _,child in ipairs(char:GetChildren()) do
+				if child:IsA("Tool") then GC_Scan(child,parts) end
+			end
+		end
+	end
+	return parts
+end
+
+local function GC_Apply()
+	local color=GunCosmetics.Color
+	if GunCosmetics.Rainbow then color=Color3.fromHSV((tick()*GunCosmetics.RainbowSpeed/10)%1,1,1) end
+	for _,part in ipairs(GC_GetParts()) do
+		if not GunCosmetics._orig[part] then
+			GunCosmetics._orig[part]={c=part.Color,t=part.Transparency}
+		end
+		pcall(function() part.Color=color; part.Transparency=GunCosmetics.Transparency end)
+	end
+end
+
+local function GC_Restore()
+	for part,orig in pairs(GunCosmetics._orig) do
+		pcall(function() if part and part.Parent then part.Color=orig.c; part.Transparency=orig.t end end)
+	end
+	GunCosmetics._orig={}
+end
+
+local _gcRs=RunService.RenderStepped:Connect(function() if GunCosmetics.Enabled then GC_Apply() end end)
+table.insert(getgenv().Moon_Connections,_gcRs)
+getgenv().GunCosmetics=GunCosmetics
+
+local S_GC=CombatTab:DrawSection({Name="Gun Cosmetics",Position="left"})
+S_GC:AddToggle({Name="Enable",Flag="GC_Enabled",Default=false,Callback=function(v) GunCosmetics.Enabled=v; if not v then GC_Restore() end end})
+S_GC:AddToggle({Name="Rainbow",Flag="GC_Rainbow",Default=false,Callback=function(v) GunCosmetics.Rainbow=v end})
+S_GC:AddSlider({Name="Rainbow Speed",Flag="GC_Speed",Min=1,Max=20,Default=1,Rounding=0,Callback=function(v) GunCosmetics.RainbowSpeed=v end})
+S_GC:AddColorPicker({Name="Gun Color",Flag="GC_Color",Default=GunCosmetics.Color,Callback=function(v) GunCosmetics.Color=v end})
+S_GC:AddSlider({Name="Transparency",Flag="GC_Trans",Min=0,Max=100,Default=0,Rounding=0,Callback=function(v) GunCosmetics.Transparency=v/100 end})
+S_GC:AddButton({Name="Restore Original",Callback=function() GC_Restore() end})
+print("[GunCosmetics] OK")
