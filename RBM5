@@ -2730,7 +2730,7 @@ print("[AntiFall] Loaded")
 local AuraKill = {
 	Enabled = false,
 	Range = 20,
-	Interval = 0.5,
+	Interval = 0.2,
 	TargetPart = "Head",
 	_net = nil,
 	_remote = nil,
@@ -2744,11 +2744,13 @@ local function AK_FindNet()
 	if AuraKill._net then return AuraKill._net end
 
 	-- Method 1: shared.import("network") — đúng theo source
-	local ok, net = pcall(function() return shared.import("network") end)
-	if ok and net and rawget(net, "_key") and rawget(net, "_code") then
-		AuraKill._net = net
-		print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
-		return net
+	if shared and type(shared.import) == "function" then
+		local ok, net = pcall(function() return shared.import("network") end)
+		if ok and net and rawget(net, "_key") and rawget(net, "_code") then
+			AuraKill._net = net
+			print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
+			return net
+		end
 	end
 
 	-- Method 2: GC scan
@@ -2855,7 +2857,7 @@ local function AK_Fire(actor)
 	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
 
 	-- Impact sau delay
-	task.delay(0.15, function()
+	task.delay(0.05, function()
 		-- {_code, "InventoryAction", "Impact", {x,y,z}, uid, partName}
 		local encImpact = AK_Encrypt(
 			{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
@@ -2916,7 +2918,7 @@ S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
 	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
 S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
 	Callback=function(v) AuraKill.Range=v end})
-S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=100, Max=2000, Default=500, Rounding=0,
+S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=50, Max=2000, Default=200, Rounding=0,
 	Callback=function(v) AuraKill.Interval=v/1000 end})
 S_AK:AddDropdown({Name="Target Part", Flag="AK_TargetPart", Default="Head",
 	Values={"Head","UpperTorso","LowerTorso"},
