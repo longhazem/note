@@ -243,7 +243,7 @@ local Config = {
 	NoRecoil = false, NoSpread = false, UnlockFiremodes = false, CustomRPM = false, RPMValue = 800,
 	SilentAim = false, SilentAimFOV = 100, SilentAimHitChance = 100, SilentAimTargetPart = "Head",
 	RageMode = false, Rage_LookAt = false, Rage_FOV = 360, Rage_Range = 500, Rage_TargetPart = "Head",
-	ShowFOV = false, Prediction = false, BulletDrop = false, ShowPrediction = false,
+	ShowFOV = true, Prediction = false, BulletDrop = false, ShowPrediction = false,
 	PredictionColor = Color3.fromRGB(255,0,0), SmartTargetSwitch = false,
 	InfStamina = false,
 	AutoReload = false,
@@ -1345,8 +1345,14 @@ local function UpdateCombat(frameId)
 	if FOVCircle then
 		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
 		local fovShow=Config.SilentAim and Config.ShowFOV
-		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
+		pcall(function()
+			FOVCircle.Visible=fovShow
+			if fovShow then
+				FOVCircle.Radius=Config.SilentAimFOV
+				local sc=Camera.ViewportSize/2
+				FOVCircle.Position=Vector2.new(sc.X,sc.Y)
+			end
+		end)
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1537,8 +1543,8 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	-- Chỉ dùng onScreen — reliable trên PC
-	if not onScreen then SetAllVisible(drawings,espData,false); return end
+	-- Show ESP dù onScreen hay không nếu distance đủ gần
+	if not onScreen and distance > 100 then SetAllVisible(drawings,espData,false); return end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
