@@ -243,7 +243,7 @@ local Config = {
 	NoRecoil = false, NoSpread = false, UnlockFiremodes = false, CustomRPM = false, RPMValue = 800,
 	SilentAim = false, SilentAimFOV = 100, SilentAimHitChance = 100, SilentAimTargetPart = "Head",
 	RageMode = false, Rage_LookAt = false, Rage_FOV = 360, Rage_Range = 500, Rage_TargetPart = "Head",
-	ShowFOV = true, Prediction = false, BulletDrop = false, ShowPrediction = false,
+	ShowFOV = false, Prediction = false, BulletDrop = false, ShowPrediction = false,
 	PredictionColor = Color3.fromRGB(255,0,0), SmartTargetSwitch = false,
 	InfStamina = false,
 	AutoReload = false,
@@ -1345,14 +1345,17 @@ local function UpdateCombat(frameId)
 	if FOVCircle then
 		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
 		local fovShow=Config.SilentAim and Config.ShowFOV
-		pcall(function()
-			FOVCircle.Visible=fovShow
-			if fovShow then
-				FOVCircle.Radius=Config.SilentAimFOV
-				local sc=Camera.ViewportSize/2
-				FOVCircle.Position=Vector2.new(sc.X,sc.Y)
+		pcall(function() FOVCircle.Visible=fovShow end)
+		if fovShow then
+			-- FIX: Camera.ViewportSize/2 trả về Vector2 không phải số
+			-- chia đúng cách, bọc pcall tránh executor quirk
+			local ok, vp = pcall(function() return Camera.ViewportSize end)
+			if ok and vp then
+				pcall(function()
+					FOVCircle.Position = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+				end)
 			end
-		end)
+		end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1531,10 +1534,6 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	local drawings=espData.Drawing
 	local worldPos = actor.Position
-	if not worldPos and actor.Character then
-		local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
-		if pp then worldPos = pp.Position end
-	end
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -1543,8 +1542,8 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	-- Show ESP dù onScreen hay không nếu distance đủ gần
-	if not onScreen and distance > 100 then SetAllVisible(drawings,espData,false); return end
+	-- Chỉ dùng onScreen — reliable trên PC
+	if not onScreen then SetAllVisible(drawings,espData,false); return end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -2947,116 +2946,3 @@ S_AK:AddButton({Name="Rescan Network",
 	end})
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
-
--- Gun Cosmetics v2 — exclude scope/reticle, chỉ gun body
-pcall(function()
-local _BODY = {Head=true,UpperTorso=true,LowerTorso=true,HumanoidRootPart=true,
-	LeftUpperArm=true,LeftLowerArm=true,LeftHand=true,RightUpperArm=true,
-	RightLowerArm=true,RightHand=true,LeftUpperLeg=true,LeftLowerLeg=true,
-	LeftFoot=true,RightUpperLeg=true,RightLowerLeg=true,RightFoot=true,
-	Torso=true,RootPart=true}
-
--- Exclude scope/optic parts theo tên
-local function isScope(name)
-	local low = name:lower()
-	return low:find("scope") or low:find("optic") or low:find("reticle")
-		or low:find("sight") or low:find("lens") or low:find("glass")
-		or low:find("aim")
-end
-
-local GunCosmetics = {
-	Enabled=false, Rainbow=false, RainbowSpeed=1,
-	Color=Color3.fromRGB(255,255,255), Transparency=0, _orig={}
-}
-
-local function GC_GetParts()
-	local parts = {}
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return parts end
-
-	-- CurrentModel từ actor.ViewModel (ViewmodelClass.SetModel → CurrentModel = gun clone)
-	local vm = myActor.ViewModel
-	if vm and type(vm) == "table" then
-		local cm = rawget(vm, "CurrentModel")
-		if cm and typeof(cm) == "Instance" then
-			for _, v in ipairs(cm:GetDescendants()) do
-				if (v:IsA("BasePart") or v:IsA("MeshPart"))
-					and not _BODY[v.Name]
-					and not isScope(v.Name)
-					and not isScope(v.Parent and v.Parent.Name or "")
-				then
-					table.insert(parts, v)
-				end
-			end
-		end
-	end
-
-	-- Fallback: Tool trong Character
-	if #parts == 0 then
-		local char = myActor.Character or LocalPlayer.Character
-		if char then
-			for _, child in ipairs(char:GetChildren()) do
-				if child:IsA("Tool") then
-					for _, v in ipairs(child:GetDescendants()) do
-						if (v:IsA("BasePart") or v:IsA("MeshPart"))
-							and not _BODY[v.Name]
-							and not isScope(v.Name)
-						then
-							table.insert(parts, v)
-						end
-					end
-				end
-			end
-		end
-	end
-	return parts
-end
-
-local function GC_Apply()
-	local color = GunCosmetics.Color
-	if GunCosmetics.Rainbow then
-		color = Color3.fromHSV((tick()*GunCosmetics.RainbowSpeed/10)%1, 1, 1)
-	end
-	for _, part in ipairs(GC_GetParts()) do
-		if not GunCosmetics._orig[part] then
-			GunCosmetics._orig[part] = {c=part.Color, t=part.Transparency}
-		end
-		pcall(function()
-			part.Color = color
-			part.Transparency = GunCosmetics.Transparency
-		end)
-	end
-end
-
-local function GC_Restore()
-	for part, orig in pairs(GunCosmetics._orig) do
-		pcall(function()
-			if part and part.Parent then
-				part.Color = orig.c
-				part.Transparency = orig.t
-			end
-		end)
-	end
-	GunCosmetics._orig = {}
-end
-
-local _gcRs = RunService.RenderStepped:Connect(function()
-	if GunCosmetics.Enabled then GC_Apply() end
-end)
-table.insert(getgenv().Moon_Connections, _gcRs)
-getgenv().GunCosmetics = GunCosmetics
-
-local S_GC = CombatTab:DrawSection({Name="Gun Cosmetics", Position="left"})
-S_GC:AddToggle({Name="Enable", Flag="GC_Enabled", Default=false,
-	Callback=function(v) GunCosmetics.Enabled=v; if not v then GC_Restore() end end})
-S_GC:AddToggle({Name="Rainbow", Flag="GC_Rainbow", Default=false,
-	Callback=function(v) GunCosmetics.Rainbow=v end})
-S_GC:AddSlider({Name="Rainbow Speed", Flag="GC_Speed", Min=1, Max=20, Default=1, Rounding=0,
-	Callback=function(v) GunCosmetics.RainbowSpeed=v end})
-S_GC:AddColorPicker({Name="Gun Color", Flag="GC_Color", Default=GunCosmetics.Color,
-	Callback=function(v) GunCosmetics.Color=v end})
-S_GC:AddSlider({Name="Transparency", Flag="GC_Trans", Min=0, Max=100, Default=0, Rounding=0,
-	Callback=function(v) GunCosmetics.Transparency=v/100 end})
-S_GC:AddButton({Name="Restore Original", Callback=function() GC_Restore() end})
-print("[GunCosmetics v2] OK")
-end)
