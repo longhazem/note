@@ -3023,17 +3023,19 @@ S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, 
 print("[AutoFarm] Loaded")
 end)
 
--- AURA KILL v2 — Spam Impact đến tất cả enemies, không cần Slash, không cần teleport
--- Dùng cùng cipher + network object như AuraKill v1
--- Gửi Impact packet đến mọi enemy trong range mỗi frame
+-- AURA KILL v2 — Slash + Impact đến TẤT CẢ enemies trong range cùng lúc
+-- Không cần teleport, không lock movement
+-- Mỗi 0.3s: fire Slash rồi Impact cho mọi enemy trong range
 pcall(function()
 
 local AuraKillV2 = {
 	Enabled = false,
 	Range = 10,
+	TargetPart = "Head",
+	_lastFire = 0,
+	Interval = 0.3,
 	_connection = nil,
 	_running = false,
-	TargetPart = "Head",
 }
 
 local function AKV2_GetUID(actor)
@@ -3064,8 +3066,38 @@ local function AKV2_Encrypt(data, net)
 	return result
 end
 
+local function AKV2_FireActor(actor, net, remote)
+	if not actor or not actor.Alive or not actor.Character then return end
+	local char = actor.Character
+	local part = char:FindFirstChild(AuraKillV2.TargetPart)
+		or char:FindFirstChild("Head")
+		or char:FindFirstChild("UpperTorso")
+		or char.PrimaryPart
+	if not part then return end
+
+	local uid = AKV2_GetUID(actor)
+	if not uid then return end
+
+	local pos = part.Position
+	local n = math.random(1,3)
+
+	-- Slash trước
+	local encSlash = AKV2_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
+	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
+
+	-- Impact ngay sau
+	local encImpact = AKV2_Encrypt(
+		{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
+		net
+	)
+	if encImpact then pcall(function() remote:FireServer(encImpact) end) end
+end
+
 local function AKV2_Tick()
 	if not AuraKillV2.Enabled then return end
+	local now = tick()
+	if now - AuraKillV2._lastFire < AuraKillV2.Interval then return end
+	AuraKillV2._lastFire = now
 
 	local net = AK_FindNet and AK_FindNet()
 	if not net then return end
@@ -3078,33 +3110,17 @@ local function AKV2_Tick()
 
 	if not ActorManager.Initialized then return end
 
+	-- Fire đến tất cả enemies trong range
 	for _, actor in ipairs(ActorManager.Enemies) do
-		if not actor or not actor.Alive or not actor.Character then continue end
-
-		local aPos = actor.Position
-		if not aPos and actor.Character.PrimaryPart then
-			aPos = actor.Character.PrimaryPart.Position
+		if actor and actor.Alive and actor.Character then
+			local aPos = actor.Position
+			if not aPos and actor.Character.PrimaryPart then
+				aPos = actor.Character.PrimaryPart.Position
+			end
+			if aPos and (aPos - myPos).Magnitude <= AuraKillV2.Range then
+				task.spawn(AKV2_FireActor, actor, net, remote)
+			end
 		end
-		if not aPos then continue end
-		if (aPos - myPos).Magnitude > AuraKillV2.Range then continue end
-
-		local part = actor.Character:FindFirstChild(AuraKillV2.TargetPart)
-			or actor.Character:FindFirstChild("Head")
-			or actor.Character:FindFirstChild("UpperTorso")
-			or actor.Character.PrimaryPart
-		if not part then continue end
-
-		local uid = AKV2_GetUID(actor)
-		if not uid then continue end
-
-		local pos = part.Position
-
-		-- Chỉ fire Impact — không cần Slash trước
-		local enc = AKV2_Encrypt(
-			{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
-			net
-		)
-		if enc then pcall(function() remote:FireServer(enc) end) end
 	end
 end
 
@@ -3135,6 +3151,9 @@ S_AKV2:AddToggle({Name="Enable AK v2", Flag="AKV2_Enabled", Default=false,
 S_AKV2:AddSlider({Name="Range (studs)", Flag="AKV2_Range",
 	Min=1, Max=50, Default=10, Rounding=0,
 	Callback=function(v) AuraKillV2.Range=v end})
+S_AKV2:AddSlider({Name="Fire Rate (ms)", Flag="AKV2_Interval",
+	Min=100, Max=2000, Default=300, Rounding=0,
+	Callback=function(v) AuraKillV2.Interval=v/1000 end})
 S_AKV2:AddDropdown({Name="Target Part", Flag="AKV2_Part",
 	Default="Head", Values={"Head","UpperTorso","LowerTorso"},
 	Callback=function(v) AuraKillV2.TargetPart=v end})
