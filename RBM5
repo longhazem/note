@@ -2938,32 +2938,25 @@ print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
 -- ==========================================
 -- AUTO FARM
--- Yêu cầu: AuraKill phải bật
--- Teleport xuống dưới chân enemy (-2Y), liên tục follow
--- ==========================================
-local AutoFarm = {
-	Enabled = false,
-	OffsetY = -2,      -- xuống dưới chân enemy
-	_connection = nil,
-	_running = false,
-}
+local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
 
 local function AF_GetTarget()
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return nil end
 	local myPos = myActor.Position or Camera.CFrame.Position
-
 	local best, bestDist = nil, math.huge
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
-			if not actor or not actor.Alive or not actor.Character then continue end
-			local pos = actor.Position
-			if not pos and actor.Character.PrimaryPart then
-				pos = actor.Character.PrimaryPart.Position
+			if actor and actor.Alive and actor.Character then
+				local pos = actor.Position
+				if not pos and actor.Character.PrimaryPart then
+					pos = actor.Character.PrimaryPart.Position
+				end
+				if pos then
+					local d = (pos - myPos).Magnitude
+					if d < bestDist then bestDist = d; best = actor end
+				end
 			end
-			if not pos then continue end
-			local d = (pos - myPos).Magnitude
-			if d < bestDist then bestDist = d; best = actor end
 		end
 	end
 	return best
@@ -2972,17 +2965,12 @@ end
 local function AF_TeleportTo(actor)
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return end
-
 	local pos = actor.Position
 	if not pos and actor.Character and actor.Character.PrimaryPart then
 		pos = actor.Character.PrimaryPart.Position
 	end
 	if not pos then return end
-
-	-- Teleport xuống dưới chân enemy
 	local targetPos = Vector3.new(pos.X, pos.Y + AutoFarm.OffsetY, pos.Z)
-	local newCF = CFrame.new(targetPos)
-
 	pcall(function()
 		if ControllerService and ControllerService.Controller then
 			local ctrl = ControllerService.Controller
@@ -2990,29 +2978,23 @@ local function AF_TeleportTo(actor)
 			ctrl._lastSafePosition = targetPos
 		end
 		myActor.SimulatedPosition = targetPos
-		myActor.CFrame = newCF
+		myActor.CFrame = CFrame.new(targetPos)
 	end)
 end
 
 local function AF_Tick()
 	if not AutoFarm.Enabled then return end
-
-	-- Bắt buộc phải bật AuraKill
 	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
 		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=2})
 		AutoFarm.Enabled = false
 		return
 	end
-
 	local target = AF_GetTarget()
-	if target then
-		AF_TeleportTo(target)
-	end
+	if target then AF_TeleportTo(target) end
 end
 
 function AutoFarm.Start()
 	if AutoFarm._running then return end
-	-- Check AuraKill
 	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
 		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=3})
 		return
@@ -3020,7 +3002,6 @@ function AutoFarm.Start()
 	AutoFarm._running = true
 	AutoFarm._connection = RunService.Heartbeat:Connect(AF_Tick)
 	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
-	print("[AutoFarm] Started")
 end
 
 function AutoFarm.Stop()
@@ -3029,22 +3010,13 @@ function AutoFarm.Stop()
 		pcall(function() AutoFarm._connection:Disconnect() end)
 		AutoFarm._connection = nil
 	end
-	print("[AutoFarm] Stopped")
 end
 
 getgenv().AutoFarm = AutoFarm
 
--- UI — Misc tab
 local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
-
 S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
-	Callback=function(v)
-		AutoFarm.Enabled = v
-		if v then AutoFarm.Start() else AutoFarm.Stop() end
-	end})
-
-S_AF:AddSlider({Name="Y Offset (dưới chân)", Flag="AF_OffsetY",
-	Min=-10, Max=0, Default=-2, Rounding=0,
-	Callback=function(v) AutoFarm.OffsetY = v end})
-
+	Callback=function(v) AutoFarm.Enabled=v; if v then AutoFarm.Start() else AutoFarm.Stop() end end})
+S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
+	Callback=function(v) AutoFarm.OffsetY=v end})
 print("[AutoFarm] Loaded")
