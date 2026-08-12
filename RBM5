@@ -2937,6 +2937,7 @@ S_AK:AddButton({Name="Rescan Network",
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
 -- ==========================================
+pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
 
@@ -3020,3 +3021,4 @@ S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
 S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
 	Callback=function(v) AutoFarm.OffsetY=v end})
 print("[AutoFarm] Loaded")
+end)
