@@ -3024,59 +3024,99 @@ print("[AutoFarm] Loaded")
 end)
 
 -- AUTO LOCKPICK
--- Source: LockPickController._picks == 6 → FireServer("ActivateInteract","Picked")
--- Auto: tìm instance → set _picks=6 → fire trực tiếp
+-- Source: LockPickController — network:FireServer("ActivateInteract","Picked")
+-- Tìm instance qua GC → set _picks=6 → tìm PickLock callback → gọi
+-- Hoặc: tìm network obj → fire trực tiếp
 pcall(function()
 
 local AutoLockpick = {Enabled=false, _connection=nil}
 
-local function ALP_FindController()
-	-- Tìm LockPickController instance đang active (có _picks, _cancelled, _localActor)
+local function ALP_TryPick()
+	-- Method 1: Tìm LockPickController instance, gọi PickLock input
 	local ok, gc = pcall(function() return filtergc("table") end)
 	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if not ok or not gc then return nil end
+	if not ok or not gc then return end
+
 	for _, v in pairs(gc) do
-		if type(v) == "table"
-			and rawget(v, "_picks") ~= nil
-			and rawget(v, "_cancelled") ~= nil
-			and rawget(v, "_localActor") ~= nil
-			and rawget(v, "_at") ~= nil
-		then
-			return v
+		if type(v) ~= "table" then continue end
+		if rawget(v, "_picks") == nil then continue end
+		if rawget(v, "_cancelled") then continue end
+		if rawget(v, "_at") == nil then continue end
+		if rawget(v, "_localActor") == nil then continue end
+
+		-- Instance hợp lệ — LockPickController đang active
+		local ctrl = v
+
+		-- Set cursor vào sweet spot (giữa: sin(at)/2+0.5 = 0.5 khi sin=0)
+		-- p_u_15 là difficulty scale, thường 0.1-0.3
+		-- Check: 0.45 - p/2 <= 0.5 <= p/2 + 0.55 → luôn đúng khi sin(at)=0
+		ctrl._at = 0  -- sin(0) = 0 → cursor = 0.5 (giữa)
+		ctrl._lastTick = 0  -- reset cooldown
+
+		-- Set _picks = 5 rồi trigger pick (để game tự tăng lên 6 và fire server)
+		ctrl._picks = 5
+
+		-- Tìm _controls table của ctrl để gọi PickLock
+		local controls = rawget(ctrl, "_controls")
+		if controls and type(controls) == "table" then
+			local pickFn = rawget(controls, "PickLock") or rawget(controls, "Pick")
+			if pickFn and type(pickFn) == "function" then
+				pcall(pickFn, true)
+				return
+			end
 		end
-	end
-	return nil
-end
 
-local function ALP_Tick()
-	if not AutoLockpick.Enabled then return end
-	local ctrl = ALP_FindController()
-	if not ctrl then return end
-	if ctrl._cancelled then return end
-
-	-- Set _picks = 6 → trigger unlock
-	ctrl._picks = 6
-	ctrl._cancelled = true
-
-	-- Fire server đúng theo source: network:FireServer("ActivateInteract", "Picked")
-	-- Dùng network object để fire
-	local net = AK_FindNet and AK_FindNet()
-	if net then
-		local remote = AK_GetRemote and AK_GetRemote()
-		if remote then
-			local enc = AK_Encrypt and AK_Encrypt(
-				{net._code, "ActivateInteract", "Picked"}, net)
-			if enc then pcall(function() remote:FireServer(enc) end) end
+		-- Method 2: Tìm network obj và fire trực tiếp
+		local net = nil
+		local gok2, gc2 = pcall(function() return filtergc("table") end)
+		if not gok2 then gok2, gc2 = pcall(function() return getgc(true) end) end
+		if gok2 and gc2 then
+			for _, obj in pairs(gc2) do
+				if type(obj) == "table"
+					and rawget(obj, "_key") and rawget(obj, "_code") and rawget(obj, "_events")
+					and type(rawget(obj, "_key")) == "table"
+				then
+					net = obj; break
+				end
+			end
 		end
+
+		if net then
+			local remote = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+			remote = remote and remote:FindFirstChild("RemoteEvent")
+			if remote then
+				-- Encrypt và fire "ActivateInteract", "Picked"
+				local hs = game:GetService("HttpService")
+				local key = net._key
+				local raw = hs:JSONEncode({net._code, "ActivateInteract", "Picked"})
+				local result = ""
+				for i = 1, #raw do
+					local ki = ((i-1) % 4) + 1
+					local nb = (string.byte(raw, i) - 32 + key[ki]) % 95 + 32
+					result = result .. string.char(nb)
+				end
+				local firstByte = string.byte(raw, 1)
+				for v24 = 1, key[5] do
+					local v26 = tostring(v24)
+					result = result .. string.char(firstByte - string.byte(v26, 1))
+				end
+				ctrl._cancelled = true
+				ctrl._picks = 6
+				pcall(function() remote:FireServer(result) end)
+				print("[AutoLockpick] Fired!")
+			end
+		end
+
+		break  -- Chỉ xử lý 1 ctrl
 	end
-	print("[AutoLockpick] Picked!")
 end
 
 function AutoLockpick.Start()
 	if AutoLockpick._connection then return end
-	AutoLockpick._connection = RunService.Heartbeat:Connect(ALP_Tick)
+	AutoLockpick._connection = RunService.Heartbeat:Connect(function()
+		if AutoLockpick.Enabled then ALP_TryPick() end
+	end)
 	table.insert(getgenv().Moon_Connections, AutoLockpick._connection)
-	print("[AutoLockpick] Started")
 end
 
 function AutoLockpick.Stop()
