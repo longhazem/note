@@ -1346,16 +1346,7 @@ local function UpdateCombat(frameId)
 		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
 		local fovShow=Config.SilentAim and Config.ShowFOV
 		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then
-			-- FIX: Camera.ViewportSize/2 trả về Vector2 không phải số
-			-- chia đúng cách, bọc pcall tránh executor quirk
-			local ok, vp = pcall(function() return Camera.ViewportSize end)
-			if ok and vp then
-				pcall(function()
-					FOVCircle.Position = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
-				end)
-			end
-		end
+		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -2739,7 +2730,7 @@ print("[AntiFall] Loaded")
 local AuraKill = {
 	Enabled = false,
 	Range = 20,
-	Interval = 0.2,
+	Interval = 0,
 	TargetPart = "Head",
 	_net = nil,
 	_remote = nil,
@@ -2866,14 +2857,12 @@ local function AK_Fire(actor)
 	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
 
 	-- Impact sau delay
-	task.delay(0.05, function()
-		-- {_code, "InventoryAction", "Impact", {x,y,z}, uid, partName}
-		local encImpact = AK_Encrypt(
-			{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
-			net
-		)
-		if encImpact then pcall(function() remote:FireServer(encImpact) end) end
-	end)
+	-- Impact ngay lập tức — không delay
+	local encImpact = AK_Encrypt(
+		{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
+		net
+	)
+	if encImpact then pcall(function() remote:FireServer(encImpact) end) end
 
 	return true
 end
@@ -2927,7 +2916,7 @@ S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
 	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
 S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
 	Callback=function(v) AuraKill.Range=v end})
-S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=50, Max=2000, Default=200, Rounding=0,
+S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=0, Max=2000, Default=0, Rounding=0,
 	Callback=function(v) AuraKill.Interval=v/1000 end})
 S_AK:AddDropdown({Name="Target Part", Flag="AK_TargetPart", Default="Head",
 	Values={"Head","UpperTorso","LowerTorso"},
@@ -2946,3 +2935,116 @@ S_AK:AddButton({Name="Rescan Network",
 	end})
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
+
+-- ==========================================
+-- AUTO FARM
+-- Yêu cầu: AuraKill phải bật
+-- Teleport xuống dưới chân enemy (-2Y), liên tục follow
+-- ==========================================
+local AutoFarm = {
+	Enabled = false,
+	OffsetY = -2,      -- xuống dưới chân enemy
+	_connection = nil,
+	_running = false,
+}
+
+local function AF_GetTarget()
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return nil end
+	local myPos = myActor.Position or Camera.CFrame.Position
+
+	local best, bestDist = nil, math.huge
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if not actor or not actor.Alive or not actor.Character then continue end
+			local pos = actor.Position
+			if not pos and actor.Character.PrimaryPart then
+				pos = actor.Character.PrimaryPart.Position
+			end
+			if not pos then continue end
+			local d = (pos - myPos).Magnitude
+			if d < bestDist then bestDist = d; best = actor end
+		end
+	end
+	return best
+end
+
+local function AF_TeleportTo(actor)
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+
+	local pos = actor.Position
+	if not pos and actor.Character and actor.Character.PrimaryPart then
+		pos = actor.Character.PrimaryPart.Position
+	end
+	if not pos then return end
+
+	-- Teleport xuống dưới chân enemy
+	local targetPos = Vector3.new(pos.X, pos.Y + AutoFarm.OffsetY, pos.Z)
+	local newCF = CFrame.new(targetPos)
+
+	pcall(function()
+		if ControllerService and ControllerService.Controller then
+			local ctrl = ControllerService.Controller
+			ctrl._position = targetPos
+			ctrl._lastSafePosition = targetPos
+		end
+		myActor.SimulatedPosition = targetPos
+		myActor.CFrame = newCF
+	end)
+end
+
+local function AF_Tick()
+	if not AutoFarm.Enabled then return end
+
+	-- Bắt buộc phải bật AuraKill
+	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
+		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=2})
+		AutoFarm.Enabled = false
+		return
+	end
+
+	local target = AF_GetTarget()
+	if target then
+		AF_TeleportTo(target)
+	end
+end
+
+function AutoFarm.Start()
+	if AutoFarm._running then return end
+	-- Check AuraKill
+	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
+		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=3})
+		return
+	end
+	AutoFarm._running = true
+	AutoFarm._connection = RunService.Heartbeat:Connect(AF_Tick)
+	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
+	print("[AutoFarm] Started")
+end
+
+function AutoFarm.Stop()
+	AutoFarm._running = false
+	if AutoFarm._connection then
+		pcall(function() AutoFarm._connection:Disconnect() end)
+		AutoFarm._connection = nil
+	end
+	print("[AutoFarm] Stopped")
+end
+
+getgenv().AutoFarm = AutoFarm
+
+-- UI — Misc tab
+local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
+
+S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
+	Callback=function(v)
+		AutoFarm.Enabled = v
+		if v then AutoFarm.Start() else AutoFarm.Stop() end
+	end})
+
+S_AF:AddSlider({Name="Y Offset (dưới chân)", Flag="AF_OffsetY",
+	Min=-10, Max=0, Default=-2, Rounding=0,
+	Callback=function(v) AutoFarm.OffsetY = v end})
+
+print("[AutoFarm] Loaded")
