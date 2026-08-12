@@ -3023,130 +3023,120 @@ S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, 
 print("[AutoFarm] Loaded")
 end)
 
--- AUTO LOCKPICK v3
--- Hook LockPickController.new để capture instance khi mini-game bắt đầu
--- Sau đó spam PickLock input cho đến khi _picks == 6
+-- AURA KILL v2 — Spam Impact đến tất cả enemies, không cần Slash, không cần teleport
+-- Dùng cùng cipher + network object như AuraKill v1
+-- Gửi Impact packet đến mọi enemy trong range mỗi frame
 pcall(function()
 
-local AutoLockpick = {Enabled=false, _connection=nil, _ctrl=nil}
+local AuraKillV2 = {
+	Enabled = false,
+	Range = 10,
+	_connection = nil,
+	_running = false,
+	TargetPart = "Head",
+}
 
--- Hook LockPickController.new qua getgc
-local function ALP_HookController()
-    local ok, gc = pcall(function() return getgc(false) end)
-    if not ok or not gc then return end
-
-    for _, fn in pairs(gc) do
-        if type(fn) ~= "function" then continue end
-        -- Tìm function "new" của LockPickController
-        -- Có upvalue "_picks", "_cancelled", "_at", "_localActor"
-        local i = 1
-        local isLockPick = false
-        while true do
-            local ok2, name, val = pcall(debug.getupvalue, fn, i)
-            if not ok2 or not name then break end
-            if name == "_picks" or name == "_cancelled" or name == "_at" then
-                isLockPick = true; break
-            end
-            i = i + 1
-            if i > 20 then break end
-        end
-        if isLockPick then
-            -- Hook function này
-            hookfunction(fn, function(...)
-                local inst = fn(...)
-                AutoLockpick._ctrl = inst
-                print("[AutoLockpick] Controller captured!")
-                return inst
-            end)
-            print("[AutoLockpick] Hooked LockPickController.new")
-            break
-        end
-    end
+local function AKV2_GetUID(actor)
+	for _, field in ipairs({"UID","_id","Id","UUID"}) do
+		local v = rawget(actor, field)
+		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
+	end
+	for k, v in pairs(actor) do
+		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
+	end
+	return nil
 end
 
-local function ALP_Tick()
-    if not AutoLockpick.Enabled then return end
-    local ctrl = AutoLockpick._ctrl
-    if not ctrl then return end
-    if ctrl._cancelled then
-        AutoLockpick._ctrl = nil
-        return
-    end
-
-    -- Set cursor vào giữa (sin(at)=0 → cursor=0.5 → always in sweet spot)
-    ctrl._at = 0
-    ctrl._lastTick = 0  -- reset cooldown
-
-    -- Gọi PickLock input trực tiếp qua _controls
-    local controls = rawget(ctrl, "_controls")
-    if controls then
-        local pickFn = rawget(controls, "PickLock")
-        if pickFn and type(pickFn) == "function" then
-            pcall(pickFn, true)
-        end
-    end
+local function AKV2_Encrypt(data, net)
+	local hs = game:GetService("HttpService")
+	local ok, raw = pcall(function() return hs:JSONEncode(data) end)
+	if not ok or not raw then return nil end
+	local result = ""
+	for i = 1, #raw do
+		local ki = ((i-1) % 4) + 1
+		local nb = (string.byte(raw, i) - 32 + net._key[ki]) % 95 + 32
+		result = result .. string.char(nb)
+	end
+	local firstByte = string.byte(raw, 1)
+	for v24 = 1, net._key[5] do
+		result = result .. string.char(firstByte - string.byte(tostring(v24), 1))
+	end
+	return result
 end
 
--- Fallback: scan GC mỗi 1s để tìm active controller
-local _lastScan = 0
-local function ALP_ScanFallback()
-    if not AutoLockpick.Enabled then return end
-    local now = tick()
-    if now - _lastScan < 0.5 then return end
-    _lastScan = now
+local function AKV2_Tick()
+	if not AuraKillV2.Enabled then return end
 
-    if AutoLockpick._ctrl and not AutoLockpick._ctrl._cancelled then return end
+	local net = AK_FindNet and AK_FindNet()
+	if not net then return end
+	local remote = AK_GetRemote and AK_GetRemote()
+	if not remote then return end
 
-    local ok, gc = pcall(function() return filtergc("table") end)
-    if not ok then ok, gc = pcall(function() return getgc(true) end) end
-    if not ok or not gc then return end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local myPos = myActor.Position or Camera.CFrame.Position
 
-    for _, v in pairs(gc) do
-        if type(v) == "table"
-            and rawget(v, "_picks") ~= nil
-            and rawget(v, "_cancelled") == false
-            and rawget(v, "_at") ~= nil
-            and rawget(v, "_localActor") ~= nil
-            and rawget(v, "_lastTick") ~= nil
-        then
-            AutoLockpick._ctrl = v
-            print("[AutoLockpick] Found controller via scan")
-            break
-        end
-    end
+	if not ActorManager.Initialized then return end
+
+	for _, actor in ipairs(ActorManager.Enemies) do
+		if not actor or not actor.Alive or not actor.Character then continue end
+
+		local aPos = actor.Position
+		if not aPos and actor.Character.PrimaryPart then
+			aPos = actor.Character.PrimaryPart.Position
+		end
+		if not aPos then continue end
+		if (aPos - myPos).Magnitude > AuraKillV2.Range then continue end
+
+		local part = actor.Character:FindFirstChild(AuraKillV2.TargetPart)
+			or actor.Character:FindFirstChild("Head")
+			or actor.Character:FindFirstChild("UpperTorso")
+			or actor.Character.PrimaryPart
+		if not part then continue end
+
+		local uid = AKV2_GetUID(actor)
+		if not uid then continue end
+
+		local pos = part.Position
+
+		-- Chỉ fire Impact — không cần Slash trước
+		local enc = AKV2_Encrypt(
+			{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
+			net
+		)
+		if enc then pcall(function() remote:FireServer(enc) end) end
+	end
 end
 
-function AutoLockpick.Start()
-    if AutoLockpick._connection then return end
-    -- Try hook first
-    if hookfunction then
-        pcall(ALP_HookController)
-    end
-    AutoLockpick._connection = RunService.Heartbeat:Connect(function()
-        if AutoLockpick.Enabled then
-            ALP_ScanFallback()
-            ALP_Tick()
-        end
-    end)
-    table.insert(getgenv().Moon_Connections, AutoLockpick._connection)
-    print("[AutoLockpick] Started")
+function AuraKillV2.Start()
+	if AuraKillV2._running then return end
+	AuraKillV2._running = true
+	AuraKillV2._connection = RunService.Heartbeat:Connect(AKV2_Tick)
+	table.insert(getgenv().Moon_Connections, AuraKillV2._connection)
+	print("[AuraKillV2] Started")
 end
 
-function AutoLockpick.Stop()
-    if AutoLockpick._connection then
-        pcall(function() AutoLockpick._connection:Disconnect() end)
-        AutoLockpick._connection = nil
-    end
-    AutoLockpick._ctrl = nil
+function AuraKillV2.Stop()
+	AuraKillV2._running = false
+	if AuraKillV2._connection then
+		pcall(function() AuraKillV2._connection:Disconnect() end)
+		AuraKillV2._connection = nil
+	end
 end
 
-getgenv().AutoLockpick = AutoLockpick
+getgenv().AuraKillV2 = AuraKillV2
 
-local S_ALP = MiscTab:DrawSection({Name="Auto Lockpick", Position="right"})
-S_ALP:AddToggle({Name="Enable Auto Lockpick", Flag="ALP_Enabled", Default=false,
-    Callback=function(v)
-        AutoLockpick.Enabled = v
-        if v then AutoLockpick.Start() else AutoLockpick.Stop() end
-    end})
-print("[AutoLockpick] Loaded")
+local S_AKV2 = CombatTab:DrawSection({Name="Aura Kill v2", Position="left"})
+S_AKV2:AddToggle({Name="Enable AK v2", Flag="AKV2_Enabled", Default=false,
+	Callback=function(v)
+		AuraKillV2.Enabled=v
+		if v then AuraKillV2.Start() else AuraKillV2.Stop() end
+	end})
+S_AKV2:AddSlider({Name="Range (studs)", Flag="AKV2_Range",
+	Min=1, Max=50, Default=10, Rounding=0,
+	Callback=function(v) AuraKillV2.Range=v end})
+S_AKV2:AddDropdown({Name="Target Part", Flag="AKV2_Part",
+	Default="Head", Values={"Head","UpperTorso","LowerTorso"},
+	Callback=function(v) AuraKillV2.TargetPart=v end})
+print("[AuraKillV2] Loaded")
 end)
