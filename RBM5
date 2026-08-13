@@ -677,8 +677,8 @@ GetCombatTarget = function(mode)
 	local candidates=getgenv()._targetCandidates or table.create(64)
 	table.clear(candidates); getgenv()._targetCandidates=candidates
 	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouse,mouseX,mouseY
-	if useFOV then mouse=UserInputService:GetMouseLocation(); mouseX,mouseY=mouse.X,mouse.Y end
+	local mouseX,mouseY
+	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
 	local enemyList
 	if mode=="Rage" and ActorManager._sectors and ActorManager._playerSector then
 		enemyList={}
@@ -811,13 +811,11 @@ local function HookController(controller)
 	end
 end
 
-local FOVCircle = Drawing.new("Circle")
-FOVCircle.Thickness = 1
-FOVCircle.NumSides = 60
-FOVCircle.Radius = Config.SilentAimFOV
-FOVCircle.Filled = false
-FOVCircle.Visible = false
-FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+local FOVCircle=Drawing.new("Circle")
+FOVCircle.Thickness=1
+pcall(function() FOVCircle.NumSides=60 end)
+FOVCircle.Radius=Config.SilentAimFOV
+FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
 
 getgenv().VelocityCache={}
 getgenv().PredictionDot=Drawing.new("Circle")
@@ -1344,13 +1342,11 @@ local function UpdateCombat(frameId)
 			end
 		end
 	end
-	local mouse = UserInputService:GetMouseLocation()
 	if FOVCircle then
-		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
-		if FOVCircle.Visible then
-			FOVCircle.Position = mouse
-			FOVCircle.Radius = Config.SilentAimFOV
-		end
+		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
+		local fovShow=Config.SilentAim and Config.ShowFOV
+		pcall(function() FOVCircle.Visible=fovShow end)
+		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1497,14 +1493,24 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
 	-- Tính distance thực nếu LOD_Distance không có
-	local distance = actor.LOD_Distance or 9999
+	local distance = actor.LOD_Distance
+	if not distance or distance <= 0 then
+		local pos = actor.Position
+		if not pos and actor.Character and actor.Character.PrimaryPart then
+			pos = actor.Character.PrimaryPart.Position
+		end
+		if pos then
+			distance = (Camera.CFrame.Position - pos).Magnitude
+		else
+			distance = 0
+		end
+	end
 	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance > 1500 and (frameId % 4) ~= 0 then return end
-	if distance > 500 and (frameId % 2) ~= 0 then return end
+	if distance > 1500 and (frameId%2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1518,7 +1524,7 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
+	local worldPos = actor.Position
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -1527,15 +1533,8 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
-	if not engineVisible then
-		SetAllVisible(drawings, espData, false)
-		return
-	end
-	if not onScreen then
-		SetAllVisible(drawings, espData, false)
-		return
-	end
+	-- Chỉ dùng onScreen — reliable trên PC
+	if not onScreen then SetAllVisible(drawings,espData,false); return end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -2723,6 +2722,7 @@ print("[AntiFall] Loaded")
 
 
 
+-- ==========================================
 -- AURA KILL — Verified từ Flux_client.lua source
 -- Cipher đúng 100%: netEncode verified = RSpy dump match
 -- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
@@ -2874,22 +2874,26 @@ local function AK_Tick()
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return end
 	local myPos = myActor.Position or Camera.CFrame.Position
-	local best, bestDist = nil, AuraKill.Range
+
+	-- Fire ALL enemies trong range đồng thời, không chỉ 1 thằng gần nhất
+	local fired = false
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
 			if not actor or not actor.Alive or not actor.Character then continue end
 			local aPos = actor.Position
-			if not aPos and actor.Character.PrimaryPart then aPos=actor.Character.PrimaryPart.Position end
+			if not aPos and actor.Character.PrimaryPart then aPos = actor.Character.PrimaryPart.Position end
 			if not aPos then continue end
-			local d = (aPos-myPos).Magnitude
-			if d < bestDist then bestDist=d; best=actor end
+			local d = (aPos - myPos).Magnitude
+			if d <= AuraKill.Range then
+				fired = true
+				local a = actor
+				task.spawn(function()
+					if not AK_Fire(a) then AuraKill._net = nil end
+				end)
+			end
 		end
 	end
-	if not best then return end
-	AuraKill._lastFire = now
-	task.spawn(function()
-		if not AK_Fire(best) then AuraKill._net=nil end
-	end)
+	if fired then AuraKill._lastFire = now end
 end
 
 function AuraKill.Start()
@@ -2936,8 +2940,7 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
-
-
+-- ==========================================
 pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
@@ -3024,264 +3027,77 @@ S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, 
 print("[AutoFarm] Loaded")
 end)
 
-
-
-
-
-
-
-
--- AUTO LOCKPICK — đúng theo source
--- _at=0 → sin(0)/2+0.5=0.5 → luôn trong sweet spot
--- Reset _lastTick → bypass 0.5s cooldown
--- Gọi PickLock 6 lần → _picks=6 → FireServer("ActivateInteract","Picked")
+-- AUTO LOCKPICK v4
+-- InputService._mounts["PickLock"] là callback thật
+-- Tìm InputService instance → gọi _mounts["PickLock"](true) mỗi frame
 pcall(function()
 
-local AutoLockpick = {Enabled=false, _connection=nil, _ctrl=nil}
+local AutoLockpick = {Enabled=false, _connection=nil}
 
-local function ALP_FindCtrl()
-	if AutoLockpick._ctrl and not AutoLockpick._ctrl._cancelled then
-		return AutoLockpick._ctrl
-	end
-	local ok, gc = pcall(function() return filtergc("table") end)
-	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if not ok or not gc then return nil end
-	for _, v in pairs(gc) do
-		if type(v) == "table"
-			and rawget(v, "_picks") ~= nil
-			and rawget(v, "_cancelled") == false
-			and rawget(v, "_at") ~= nil
-			and rawget(v, "_lastTick") ~= nil
-			and rawget(v, "_speed") ~= nil
-		then
-			AutoLockpick._ctrl = v
-			return v
-		end
-	end
-	return nil
+local function ALP_FindInputService()
+    -- InputService: table có _mounts, Binds, Connected, Overrides
+    local ok, gc = pcall(function() return filtergc("table") end)
+    if not ok then ok, gc = pcall(function() return getgc(true) end) end
+    if not ok or not gc then return nil end
+    for _, v in pairs(gc) do
+        if type(v) == "table"
+            and rawget(v, "_mounts") ~= nil
+            and rawget(v, "Binds") ~= nil
+            and rawget(v, "Connected") ~= nil
+            and rawget(v, "Overrides") ~= nil
+        then
+            return v
+        end
+    end
+    return nil
 end
 
-local function ALP_DoPick(ctrl)
-	if not ctrl or ctrl._cancelled then return end
-	-- Set cursor vào giữa (sin(0)/2+0.5 = 0.5, luôn trong sweet spot)
-	ctrl._at = 0
-	-- Bypass cooldown
-	ctrl._lastTick = tick() - 1
-	-- Tìm PickLock function trong _controls
-	local controls = rawget(ctrl, "_controls")
-	if controls then
-		-- _controls là object trả về từ InputService:Connect
-		-- Tìm PickLock callback bên trong
-		local pickFn = rawget(controls, "PickLock")
-		if not pickFn then
-			-- Scan fields
-			for k, v in pairs(controls) do
-				if (k == "PickLock" or tostring(k):find("Pick")) and type(v) == "function" then
-					pickFn = v; break
-				end
-			end
-		end
-		if pickFn and type(pickFn) == "function" then
-			pcall(pickFn, true)
-			return true
-		end
-	end
-	-- Fallback: tăng _picks trực tiếp
-	ctrl._picks = math.min((ctrl._picks or 0) + 1, 6)
-	if ctrl._picks >= 6 then
-		ctrl._cancelled = true
-		-- Fire server qua network
-		local net = AK_FindNet and AK_FindNet()
-		local remote = AK_GetRemote and AK_GetRemote()
-		if net and remote then
-			local hs = game:GetService("HttpService")
-			local raw = hs:JSONEncode({net._code, "ActivateInteract", "Picked"})
-			local result = ""
-			for i = 1, #raw do
-				local ki = ((i-1)%4)+1
-				result = result .. string.char((string.byte(raw,i)-32+net._key[ki])%95+32)
-			end
-			local fb = string.byte(raw,1)
-			for v24 = 1, net._key[5] do
-				result = result .. string.char(fb - string.byte(tostring(v24),1))
-			end
-			pcall(function() remote:FireServer(result) end)
-		end
-	end
-	return true
-end
+local _inputSvc = nil
+local _lastScan = 0
 
-local _lastPick = 0
 local function ALP_Tick()
-	if not AutoLockpick.Enabled then return end
-	local now = tick()
-	-- Scan mỗi 0.1s
-	if now - _lastPick < 0.1 then return end
-	_lastPick = now
-	local ctrl = ALP_FindCtrl()
-	if ctrl then ALP_DoPick(ctrl) end
+    if not AutoLockpick.Enabled then return end
+
+    -- Rescan InputService mỗi 1s
+    local now = tick()
+    if not _inputSvc or (now - _lastScan > 1) then
+        _lastScan = now
+        _inputSvc = ALP_FindInputService()
+    end
+    if not _inputSvc then return end
+
+    local mounts = rawget(_inputSvc, "_mounts")
+    if not mounts then return end
+
+    -- Gọi PickLock callback nếu đang active
+    local pickFn = rawget(mounts, "PickLock")
+    if pickFn and type(pickFn) == "function" then
+        pcall(pickFn, true)
+    end
 end
 
 function AutoLockpick.Start()
-	if AutoLockpick._connection then return end
-	AutoLockpick._connection = RunService.Heartbeat:Connect(ALP_Tick)
-	table.insert(getgenv().Moon_Connections, AutoLockpick._connection)
+    if AutoLockpick._connection then return end
+    AutoLockpick._connection = RunService.Heartbeat:Connect(ALP_Tick)
+    table.insert(getgenv().Moon_Connections, AutoLockpick._connection)
+    print("[AutoLockpick] Started")
 end
 
 function AutoLockpick.Stop()
-	if AutoLockpick._connection then
-		pcall(function() AutoLockpick._connection:Disconnect() end)
-		AutoLockpick._connection = nil
-	end
-	AutoLockpick._ctrl = nil
+    if AutoLockpick._connection then
+        pcall(function() AutoLockpick._connection:Disconnect() end)
+        AutoLockpick._connection = nil
+    end
+    _inputSvc = nil
 end
 
 getgenv().AutoLockpick = AutoLockpick
 
 local S_ALP = MiscTab:DrawSection({Name="Auto Lockpick", Position="right"})
 S_ALP:AddToggle({Name="Enable Auto Lockpick", Flag="ALP_Enabled", Default=false,
-	Callback=function(v)
-		AutoLockpick.Enabled=v
-		if v then AutoLockpick.Start() else AutoLockpick.Stop() end
-	end})
+    Callback=function(v)
+        AutoLockpick.Enabled = v
+        if v then AutoLockpick.Start() else AutoLockpick.Stop() end
+    end})
 print("[AutoLockpick] Loaded")
-end)
-
--- AURA KILL RakNet v2 — PC only
--- Dùng RakNet để send packet trực tiếp, bypass game encryption
--- Slash + Impact liên tục vào tất cả enemy trong range
-pcall(function()
-
-local AuraKillRN = {
-	Enabled = false,
-	Range = 10,
-	_connection = nil,
-	_running = false,
-}
-
-local function AKRN_GetUID(actor)
-	for _, field in ipairs({"UID","_id","Id","UUID"}) do
-		local v = rawget(actor, field)
-		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
-	end
-	for k, v in pairs(actor) do
-		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
-	end
-	return nil
-end
-
-local function AKRN_GetNet()
-	local ok, gc = pcall(function() return filtergc("table") end)
-	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if not ok or not gc then return nil end
-	for _, v in pairs(gc) do
-		if type(v)=="table"
-			and rawget(v,"_key") and rawget(v,"_code") and rawget(v,"_events")
-			and type(rawget(v,"_key"))=="table" and #v._key>=5
-		then return v end
-	end
-	return nil
-end
-
-local function AKRN_Encrypt(data, net)
-	local hs = game:GetService("HttpService")
-	local ok, raw = pcall(function() return hs:JSONEncode(data) end)
-	if not ok or not raw then return nil end
-	local result = ""
-	for i = 1, #raw do
-		local ki = ((i-1)%4)+1
-		local nb = (string.byte(raw,i)-32+net._key[ki])%95+32
-		result = result..string.char(nb)
-	end
-	local firstByte = string.byte(raw,1)
-	for v24 = 1, net._key[5] do
-		result = result..string.char(firstByte - string.byte(tostring(v24),1))
-	end
-	return result
-end
-
-local _net = nil
-local _remote = nil
-
-local function AKRN_Tick()
-	if not AuraKillRN.Enabled then return end
-
-	-- Cache net + remote
-	if not _net then _net = AKRN_GetNet() end
-	if not _net then return end
-	if not _remote or not _remote.Parent then
-		local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
-		_remote = ev and ev:FindFirstChild("RemoteEvent")
-	end
-	if not _remote then return end
-
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	local myPos = myActor.Position or Camera.CFrame.Position
-
-	if not ActorManager.Initialized then return end
-
-	for _, actor in ipairs(ActorManager.Enemies) do
-		if not actor or not actor.Alive or not actor.Character then continue end
-		local pos = actor.Position
-		if not pos and actor.Character.PrimaryPart then
-			pos = actor.Character.PrimaryPart.Position
-		end
-		if not pos then continue end
-		if (pos - myPos).Magnitude > AuraKillRN.Range then continue end
-
-		local uid = AKRN_GetUID(actor)
-		if not uid then continue end
-
-		local part = actor.Character:FindFirstChild("Head") or actor.Character.PrimaryPart
-		if not part then continue end
-
-		local ppos = part.Position
-
-		-- Slash
-		local encS = AKRN_Encrypt({_net._code,"InventoryAction","Slash",math.random(1,3)}, _net)
-		if encS then pcall(function() _remote:FireServer(encS) end) end
-
-		-- Impact ngay lập tức
-		local encI = AKRN_Encrypt({_net._code,"InventoryAction","Impact",{ppos.X,ppos.Y,ppos.Z},uid,part.Name}, _net)
-		if encI then pcall(function() _remote:FireServer(encI) end) end
-	end
-end
-
-function AuraKillRN.Start()
-	if AuraKillRN._running then return end
-	AuraKillRN._running = true
-	AuraKillRN._connection = RunService.Heartbeat:Connect(AKRN_Tick)
-	table.insert(getgenv().Moon_Connections, AuraKillRN._connection)
-	print("[AuraKillRN] Started")
-end
-
-function AuraKillRN.Stop()
-	AuraKillRN._running = false
-	_net = nil
-	if AuraKillRN._connection then
-		pcall(function() AuraKillRN._connection:Disconnect() end)
-		AuraKillRN._connection = nil
-	end
-end
-
-getgenv().AuraKillRN = AuraKillRN
-
--- UI — Combat tab, đặt dưới AuraKill cũ
-local S_AKRN = CombatTab:DrawSection({Name="Aura Kill v2 (All)", Position="right"})
-S_AKRN:AddToggle({Name="Enable AK v2", Flag="AKRN_Enabled", Default=false,
-	Callback=function(v)
-		AuraKillRN.Enabled=v
-		if v then AuraKillRN.Start() else AuraKillRN.Stop() end
-	end})
-S_AKRN:AddSlider({Name="Range (studs)", Flag="AKRN_Range", Min=1, Max=10, Default=5, Rounding=0,
-	Callback=function(v) AuraKillRN.Range=v end})
-S_AKRN:AddButton({Name="Rescan Network", Callback=function()
-	_net=nil
-	task.spawn(function()
-		_net=AKRN_GetNet()
-		Notifier.new({Title="AK v2", Content=_net and "Net OK: ".._net._code:sub(1,8) or "Not found", Duration=4})
-	end)
-end})
-print("[AuraKillRN] Loaded")
 end)
