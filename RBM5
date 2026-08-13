@@ -3051,8 +3051,14 @@ local function AK_Tick()
 	-- Teleport đến vị trí enemy (looks like đang đứng ở đó)
 	AK_TeleportTo(pos)
 
-	-- Spam Impact packets — không cần Slash
+	-- Slash trước (bắt buộc), spam nhiều lần
 	for i = 1, 3 do
+		local encS = AK_Encrypt({net._code,"InventoryAction","Slash",i}, net)
+		if encS then pcall(function() remote:FireServer(encS) end) end
+	end
+
+	-- Spam Impact nhiều lần — "send more packets to server"
+	for i = 1, 5 do
 		local enc = AK_Encrypt(
 			{net._code,"InventoryAction","Impact",{pos.X,pos.Y,pos.Z},uid,part.Name},
 			net
@@ -3082,7 +3088,7 @@ end
 
 getgenv().AuraKill = AuraKill
 
-local S_AK = CombatTab:DrawSection({Name="Aura Kill", Position="right"})
+local S_AK = CombatTab:DrawSection({Name="Aura Kill", Position="left"})
 S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
 	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
 S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
