@@ -2743,40 +2743,69 @@ local AuraKill = {
 local function AK_FindNet()
 	if AuraKill._net then return AuraKill._net end
 
-	-- Method 1: shared.import("network") — đúng theo source
-	if shared and type(shared.import) == "function" then
-		local ok, net = pcall(function() return shared.import("network") end)
-		if ok and net and rawget(net, "_key") and rawget(net, "_code") then
-			AuraKill._net = net
-			print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
-			return net
-		end
+	-- shared.import bị block — GC scan trực tiếp
+	local gc
+	local ok1, r1 = pcall(function() return filtergc("table") end)
+	if ok1 and type(r1)=="table" then gc=r1 end
+	if not gc then
+		local ok2, r2 = pcall(function() return getgc(true) end)
+		if ok2 and type(r2)=="table" then gc=r2 end
+	end
+	if not gc then
+		local ok3, r3 = pcall(function() return getgc() end)
+		if ok3 and type(r3)=="table" then gc=r3 end
 	end
 
-	-- Method 2: GC scan
-	local gok, gc = pcall(function() return filtergc("table") end)
-	if not gok then gok, gc = pcall(function() return getgc(true) end) end
-	if gok and gc then
+	if gc then
 		for _, v in pairs(gc) do
 			if type(v) ~= "table" then continue end
 			local k  = rawget(v, "_key")
 			local co = rawget(v, "_code")
-			local ev = rawget(v, "_events")
-			if type(k)=="table" and #k>=5
-				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
-				and type(ev)=="table"
+			if type(k)=="table" and type(co)=="string"
+				and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and #k>=5
 			then
-				local allNums = true
-				for _, n in ipairs(k) do if type(n)~="number" then allNums=false; break end end
+				local allNums=true
+				for _,n in ipairs(k) do if type(n)~="number" then allNums=false;break end end
 				if allNums then
-					AuraKill._net = v
-					print("[AuraKill] Net via GC, code:", co:sub(1,8), "key[1]:", k[1])
+					AuraKill._net=v
+					print("[AuraKill] Net via GC (_key/_code), code:",co:sub(1,8),"key[1]:",k[1])
 					return v
 				end
 			end
+			local k2  = rawget(v, "key")
+			local co2 = rawget(v, "code")
+			if type(k2)=="table" and type(co2)=="string"
+				and co2:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and #k2>=5
+			then
+				local allNums=true
+				for _,n in ipairs(k2) do if type(n)~="number" then allNums=false;break end end
+				if allNums then
+					local wrapped={_key=k2,_code=co2}
+					AuraKill._net=wrapped
+					print("[AuraKill] Net via GC (key/code), code:",co2:sub(1,8))
+					return wrapped
+				end
+			end
 		end
+		print("[AuraKill] GC scan done — net not found. size:", #gc)
+	else
+		print("[AuraKill] GC inaccessible on this executor")
 	end
-	return nil
+
+	pcall(function()
+		for _,v in pairs(debug.getregistry()) do
+			if type(v)~="table" then continue end
+			local k=rawget(v,"_key"); local co=rawget(v,"_code")
+			if type(k)=="table" and type(co)=="string"
+				and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and #k>=5
+			then
+				AuraKill._net=v
+				print("[AuraKill] Net via debug.getregistry, code:",co:sub(1,8))
+			end
+		end
+	end)
+
+	return AuraKill._net or nil
 end
 
 local function AK_GetRemote()
