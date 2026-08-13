@@ -2843,7 +2843,7 @@ local function AK_GetPeer()
 		for _, v in pairs(gc) do
 			if type(v)=="userdata" then
 				local mt=getmetatable(v)
-				if mt and (rawget(mt,"WriteByte") or rawget(mt,"WriteFloat") or rawget(mt,"SendPacket")) then
+				if type(mt)=="table" and (rawget(mt,"WriteByte") or rawget(mt,"WriteFloat") or rawget(mt,"SendPacket")) then
 					AuraKill._peer=v; return v
 				end
 			end
