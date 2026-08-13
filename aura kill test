@@ -10,7 +10,7 @@
 -- ============================================
 
 local AuraKillRakNet = {
-    Enabled = false,
+    Enabled = true,
     Range = 500,
     Interval = 0.1,
     netCode = nil,
