@@ -2806,14 +2806,17 @@ local function AK_Fire(actor)
 	local uid = AK_GetUID(actor)
 	if not uid then return false end
 	local n = math.random(1, 3)
+
+	-- Pre-encode cả 2 trước, fire liền tay không gap
 	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
-	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
-	-- 5x Impact — send more packets to server
+	local p = part.Position
+	local encImpact = AK_Encrypt(
+		{net._code, "InventoryAction", "Impact", {p.X, p.Y, p.Z}, uid, part.Name}, net)
+	if not encSlash or not encImpact then return false end
+	-- Slash → Impact ngay lập tức, lặp lại 50 lần
 	for _ = 1, 50 do
-		local p = part.Position
-		local enc = AK_Encrypt(
-			{net._code, "InventoryAction", "Impact", {p.X, p.Y, p.Z}, uid, part.Name}, net)
-		if enc then pcall(function() remote:FireServer(enc) end) end
+		remote:FireServer(encSlash)
+		remote:FireServer(encImpact)
 	end
 	return true
 end
