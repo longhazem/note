@@ -224,7 +224,12 @@ end
 
 local WeaponManager = { Equipped = nil, Logic = {}, Visuals = {}, LastScan = 0, ScanCooldown = 1.0, Connection = nil }
 local ESPElements = {}; local CurrentFrameId = 0; local ESPEnabled = false
-local ActorManager = { Enemies = {}, Teammates = {}, Vehicles = {}, _lastMapUpdate = 0, _lastListUpdate = 0, _lastTargetUpdate = 0, Initialized = false, SelectedTarget = nil, SelectedActor = nil }
+local ActorManager = {
+	Hostiles = {}, Friendlies = {}, Neutrals = {}, Unknown = {},
+	Enemies = {}, Teammates = {}, Vehicles = {},
+	_lastMapUpdate = 0, _lastListUpdate = 0, _lastTargetUpdate = 0,
+	Initialized = false, SelectedTarget = nil, SelectedActor = nil,
+}
 
 local SetupHooks, EnableSpeedController, GetSecureContainer, DetectMapType
 local SecureESPContainer = nil; local RefreshFirearmControllers
@@ -232,6 +237,27 @@ local SecureESPContainer = nil; local RefreshFirearmControllers
 local InventoryService, ReplicatorService, ClientService, WorldService, BulletService
 local CharacterController, ControllerService, FirearmInventoryClass, ActorClass, Recoiler, EffectsService
 local CalibersTable, VehicleService, FirearmInventory, EnvironmentService, CharacterCamera, TurretController
+
+local function GetLocalActor()
+	return ReplicatorService and ReplicatorService.LocalActor or nil
+end
+
+local function GetActiveController()
+	return ControllerService and ControllerService.Controller or nil
+end
+
+local function GetEquippedHandler()
+	local equipped = InventoryService and InventoryService.Equipped
+	return (equipped and equipped.Handler) or WeaponManager.Equipped
+end
+
+local function GetActorPosition(actor)
+	if not actor then return nil end
+	if actor.Position then return actor.Position end
+	local character = actor.Character
+	local primaryPart = character and character.PrimaryPart
+	return primaryPart and primaryPart.Position or nil
+end
 
 local Config = {
 	ShowPlayers = true, ShowZombies = true, ShowNPCs = true, ShowSquadMembers = false,
@@ -465,8 +491,10 @@ end
 
 local function GetEntityType(actor)
 	if actor.Zombie==true then return "Zombie" end
-	if actor.Owner and Players:GetPlayerByUserId(actor.Owner.UserId) then return "Player" end
-	if actor.Owner or actor.OwnerName then return "NPC" end
+	local owner = actor.Owner
+	if typeof(owner)=="Instance" and owner:IsA("Player") then return "Player" end
+	if owner and ClientService and ClientService.Clients and ClientService.Clients[owner] then return "Player" end
+	if owner==nil and actor.IsA and actor:IsA("Actor") then return "NPC" end
 	return "Unknown"
 end
 
@@ -485,18 +513,36 @@ local function GetBulletDamage(caliber, distance, part)
 	end
 	return dmgTable[index] or 0
 end
-local function IsTeammate(actor,cachedLocalSquad)
-	if actor.Zombie==true then return false end
-	local ownerPlayer = actor.Owner and Players:GetPlayerByUserId(actor.Owner.UserId)
-	local isRealPlayer = ownerPlayer~=nil
-	if isRealPlayer and (Config.CurrentMapName=="OW_Ronograd" or Config.CurrentMapName=="ZME_NYC") then return true end
-	if isRealPlayer and ownerPlayer.Team and LocalPlayer.Team and ownerPlayer.Team==LocalPlayer.Team then return true end
-	if isRealPlayer and cachedLocalSquad and cachedLocalSquad~="" then
-		if ClientService and ClientService.Clients and ClientService.Clients[ownerPlayer] then
-			return ClientService.Clients[ownerPlayer].Squad==cachedLocalSquad
+local function GetDisposition(actor,cachedLocalSquad)
+	local entityType = actor._entityType or GetEntityType(actor)
+	if entityType=="Zombie" then return "Hostile","zombie_class" end
+	if entityType=="NPC" then
+		local state = actor.CurrentState
+		local isFriendly = state and state.IsFriendly
+		if type(isFriendly)=="boolean" then
+			return isFriendly and "Friendly" or "Hostile","actor_state.IsFriendly"
 		end
+		return "Unknown","no_replicated_disposition"
 	end
-	return false
+	if entityType~="Player" then return "Unknown","unknown_actor_type" end
+	local owner = actor.Owner
+	if Config.CurrentMapName=="OW_Ronograd" or Config.CurrentMapName=="ZME_NYC" then
+		return "Friendly","non_pvp_world"
+	end
+	if owner and owner.Team and LocalPlayer.Team then
+		return owner.Team==LocalPlayer.Team and "Friendly" or "Hostile","roblox_team"
+	end
+	local client = owner and ClientService and ClientService.Clients and ClientService.Clients[owner]
+	if client and cachedLocalSquad and cachedLocalSquad~="" and client.Squad~=nil then
+		return client.Squad==cachedLocalSquad and "Friendly" or "Hostile","client_squad"
+	end
+	return "Unknown","no_team_or_squad"
+end
+
+local function IsTeammate(actor,cachedLocalSquad)
+	local disposition=actor._disposition
+	if not disposition then disposition=GetDisposition(actor,cachedLocalSquad) end
+	return disposition=="Friendly"
 end
 
 local function GetSectorKey(position,sectorSize)
@@ -522,17 +568,21 @@ function ActorManager:Update(dt)
 		Config.CurrentMapType=DetectMapType(); self._lastMapUpdate=now
 	end
 	if not self._lastListUpdate or (now-self._lastListUpdate>0.5) then
-		table.clear(self.Enemies); table.clear(self.Teammates); table.clear(self.Vehicles); table.clear(self._sectors)
+		table.clear(self.Hostiles); table.clear(self.Friendlies); table.clear(self.Neutrals); table.clear(self.Unknown)
+		table.clear(self.Vehicles); table.clear(self._sectors)
 		local localSquad=nil
 		if ClientService and ClientService.LocalClient then localSquad=ClientService.LocalClient.Squad end
 		for _,actor in pairs(ReplicatorService.Actors) do
 			if not actor or not actor.Alive or not actor.Character then continue end
 			if actor.Owner==LocalPlayer then continue end
-			actor._entityType=GetEntityType(actor); actor._isTeammate=IsTeammate(actor,localSquad)
-			if actor._isTeammate then
-				table.insert(self.Teammates,actor)
-			else
-				table.insert(self.Enemies,actor)
+			actor._entityType=GetEntityType(actor)
+			actor._disposition,actor._dispositionReason=GetDisposition(actor,localSquad)
+			actor._isTeammate=actor._disposition=="Friendly"
+			local bucket = actor._disposition=="Hostile" and self.Hostiles
+				or actor._disposition=="Friendly" and self.Friendlies
+				or actor._disposition=="Neutral" and self.Neutrals or self.Unknown
+			table.insert(bucket,actor)
+			if actor._disposition=="Hostile" then
 				local actorPos=actor.Position or (actor.Character and actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
 				if actorPos then
 					local sk=GetSectorKey(actorPos,self._sectorSize)
@@ -541,6 +591,8 @@ function ActorManager:Update(dt)
 				end
 			end
 		end
+		self.Enemies=self.Hostiles
+		self.Teammates=self.Friendlies
 		if VehicleService and VehicleService.Vehicles then
 			for _,veh in pairs(VehicleService.Vehicles) do table.insert(self.Vehicles,veh) end
 		end
@@ -677,8 +729,8 @@ GetCombatTarget = function(mode)
 	local candidates=getgenv()._targetCandidates or table.create(64)
 	table.clear(candidates); getgenv()._targetCandidates=candidates
 	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouseX,mouseY
-	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
+	local mouse,mouseX,mouseY
+	if useFOV then mouse=UserInputService:GetMouseLocation(); mouseX,mouseY=mouse.X,mouse.Y end
 	local enemyList
 	if mode=="Rage" and ActorManager._sectors and ActorManager._playerSector then
 		enemyList={}
@@ -811,11 +863,13 @@ local function HookController(controller)
 	end
 end
 
-local FOVCircle=Drawing.new("Circle")
-FOVCircle.Thickness=1
-pcall(function() FOVCircle.NumSides=60 end)
-FOVCircle.Radius=Config.SilentAimFOV
-FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.NumSides = 60
+FOVCircle.Radius = Config.SilentAimFOV
+FOVCircle.Filled = false
+FOVCircle.Visible = false
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 
 getgenv().VelocityCache={}
 getgenv().PredictionDot=Drawing.new("Circle")
@@ -1179,9 +1233,9 @@ local function UpdateCombat(frameId)
 			end)
 			table.insert(getgenv().Moon_Connections,WeaponManager.Connection)
 		end
-		WeaponManager.Equipped=InventoryService.Equipped and InventoryService.Equipped.Handler
+		WeaponManager.Equipped=GetEquippedHandler()
 	end
-	equippedController=WeaponManager.Equipped or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+	equippedController=GetEquippedHandler()
 	local targetPart_RB=ActorManager.SelectedTarget_RB; local targetPart_SA=ActorManager.SelectedTarget_SA
 	if equippedController then
 		ApplyGunMods(equippedController,false)
@@ -1342,11 +1396,13 @@ local function UpdateCombat(frameId)
 			end
 		end
 	end
+	local mouse = UserInputService:GetMouseLocation()
 	if FOVCircle then
-		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
-		local fovShow=Config.SilentAim and Config.ShowFOV
-		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
+		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
+		if FOVCircle.Visible then
+			FOVCircle.Position = mouse
+			FOVCircle.Radius = Config.SilentAimFOV
+		end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1493,24 +1549,14 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
 	-- Tính distance thực nếu LOD_Distance không có
-	local distance = actor.LOD_Distance
-	if not distance or distance <= 0 then
-		local pos = actor.Position
-		if not pos and actor.Character and actor.Character.PrimaryPart then
-			pos = actor.Character.PrimaryPart.Position
-		end
-		if pos then
-			distance = (Camera.CFrame.Position - pos).Magnitude
-		else
-			distance = 0
-		end
-	end
+	local distance = actor.LOD_Distance or 9999
 	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance > 1500 and (frameId%2) ~= 0 then return end
+	if distance > 1500 and (frameId % 4) ~= 0 then return end
+	if distance > 500 and (frameId % 2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1524,7 +1570,7 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos = actor.Position
+	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -1533,8 +1579,15 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	-- Chỉ dùng onScreen — reliable trên PC
-	if not onScreen then SetAllVisible(drawings,espData,false); return end
+	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
+	if not engineVisible then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
+	if not onScreen then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -2037,191 +2090,6 @@ end)
 table.insert(getgenv().Moon_Connections,flyKeybind)
 
 -- ==========================================
--- AUTO FARM SYSTEM
--- Teleport to enemy → shoot N shots → next enemy
--- ==========================================
-
-local AutoFarm = {
-	Enabled = false,
-	ShotsPerTarget = 2,       -- viên bắn mỗi mục tiêu
-	TeleportOffset = Vector3.new(0, 0, 3), -- offset phía sau target
-	ShootDelay = 0.12,        -- delay giữa các viên (giây)
-	SwitchDelay = 0.3,        -- delay trước khi switch target
-	_running = false,
-	_connection = nil,
-	_currentTarget = nil,
-	_shotsFired = 0,
-	_lastShot = 0,
-	_phase = "seek",          -- seek | shoot | switch
-	_enemyIndex = 1,
-}
-
--- Teleport LocalActor đến vị trí gần target
-local function AutoFarm_Teleport(targetActor)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return false end
-
-	local targetPos = targetActor.Position
-	if not targetPos then
-		local char = targetActor.Character
-		if char and char.PrimaryPart then
-			targetPos = char.PrimaryPart.Position
-		end
-	end
-	if not targetPos then return false end
-
-	-- offset ra phía sau target dựa theo camera
-	local camDir = Camera.CFrame.LookVector
-	local offset = Vector3.new(
-		AutoFarm.TeleportOffset.X,
-		AutoFarm.TeleportOffset.Y,
-		AutoFarm.TeleportOffset.Z
-	)
-	local newPos = targetPos + Vector3.new(0, 2, 0) + (camDir * -offset.Z)
-
-	-- Set position via CharacterController
-	pcall(function()
-		myActor.SimulatedPosition = newPos
-		myActor.CFrame = CFrame.new(newPos, targetPos)
-		if ControllerService and ControllerService.Controller then
-			ControllerService.Controller._position = newPos
-			ControllerService.Controller._lastSafePosition = newPos
-		end
-	end)
-
-	return true
-end
-
--- Pick next valid enemy
-local function AutoFarm_NextTarget()
-	local enemies = ActorManager.Enemies
-	if not enemies or #enemies == 0 then return nil end
-
-	-- cycle qua list
-	local startIdx = AutoFarm._enemyIndex
-	local count = #enemies
-
-	for i = 1, count do
-		local idx = ((startIdx - 1 + i - 1) % count) + 1
-		local actor = enemies[idx]
-		if actor and actor.Alive and actor.Character then
-			AutoFarm._enemyIndex = (idx % count) + 1
-			return actor
-		end
-	end
-	return nil
-end
-
--- Main farm tick — chạy trên Heartbeat
-local function AutoFarm_Tick()
-	if not AutoFarm.Enabled then return end
-	if not ActorManager.Initialized then return end
-
-	local now = tick()
-	local equippedController = WeaponManager.Equipped or
-		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
-
-	-- PHASE: SEEK — tìm và teleport đến target mới
-	if AutoFarm._phase == "seek" then
-		local target = AutoFarm_NextTarget()
-		if not target then return end
-
-		AutoFarm._currentTarget = target
-		AutoFarm._shotsFired = 0
-
-		-- Set ragebot target
-		ActorManager.SelectedTarget_RB = target.Character and target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
-		ActorManager.SelectedActor_RB = target
-
-		-- Teleport
-		AutoFarm_Teleport(target)
-
-		AutoFarm._phase = "shoot"
-		AutoFarm._lastShot = now
-		return
-	end
-
-	-- PHASE: SHOOT — bắn N viên
-	if AutoFarm._phase == "shoot" then
-		local target = AutoFarm._currentTarget
-
-		-- Validate target còn sống
-		if not target or not target.Alive then
-			AutoFarm._phase = "seek"
-			return
-		end
-
-		-- Check delay giữa viên
-		if (now - AutoFarm._lastShot) < AutoFarm.ShootDelay then return end
-
-		-- Bắn
-		if equippedController then
-			-- Update target part mỗi viên (vì target có thể di chuyển)
-			local char = target.Character
-			if char then
-				local part = char:FindFirstChild(Config.Rage_TargetPart or "Head")
-					or char:FindFirstChild("UpperTorso")
-				if part then
-					ActorManager.SelectedTarget_RB = part
-					ActorManager.SelectedActor_RB = target
-				end
-			end
-
-			pcall(function() equippedController:Discharge() end)
-			AutoFarm._shotsFired = AutoFarm._shotsFired + 1
-			AutoFarm._lastShot = now
-		end
-
-		-- Đủ viên → chuyển phase
-		if AutoFarm._shotsFired >= AutoFarm.ShotsPerTarget then
-			AutoFarm._phase = "switch"
-			AutoFarm._lastShot = now
-		end
-		return
-	end
-
-	-- PHASE: SWITCH — chờ rồi tìm target kế
-	if AutoFarm._phase == "switch" then
-		if (now - AutoFarm._lastShot) >= AutoFarm.SwitchDelay then
-			AutoFarm._currentTarget = nil
-			ActorManager.SelectedTarget_RB = nil
-			ActorManager.SelectedActor_RB = nil
-			AutoFarm._phase = "seek"
-		end
-		return
-	end
-end
-
--- Start / Stop
-function AutoFarm.Start()
-	if AutoFarm._running then return end
-	AutoFarm._running = true
-	AutoFarm._phase = "seek"
-	AutoFarm._enemyIndex = 1
-
-	AutoFarm._connection = RunService.Heartbeat:Connect(AutoFarm_Tick)
-	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
-	print("[AutoFarm] Started")
-end
-
-function AutoFarm.Stop()
-	AutoFarm._running = false
-	AutoFarm._currentTarget = nil
-	ActorManager.SelectedTarget_RB = nil
-	ActorManager.SelectedActor_RB = nil
-	AutoFarm._phase = "seek"
-
-	if AutoFarm._connection then
-		pcall(function() AutoFarm._connection:Disconnect() end)
-		AutoFarm._connection = nil
-	end
-	print("[AutoFarm] Stopped")
-end
-
-
-
-
--- ==========================================
 -- VEHICLE MODS — Turret RPM + Auto Reload
 -- ==========================================
 local _TurretConfigModule = nil
@@ -2283,8 +2151,7 @@ local function DoAutoReload_Veh()
 	local now = tick()
 	if now - _autoReloadTick2 < 0.2 then return end
 	_autoReloadTick2 = now
-	local weapon = WeaponManager.Equipped
-		or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+	local weapon = GetEquippedHandler()
 	if not weapon then return end
 	local magEmpty = (weapon._mag and (weapon._mag.Capacity or 0) == 0) or not weapon._mag
 	if magEmpty and not weapon._reloading then
@@ -2311,14 +2178,14 @@ S_VehTurret:AddToggle({ Name="Auto Reload", Flag="Veh_AutoReload", Default=false
 S_VehTurret:AddToggle({ Name="Turret Custom RPM", Flag="Veh_TurretCustomRPM", Default=false,
 	Callback=function(v)
 		VehicleMods.TurretCustomRPM=v; _TurretMods.CustomRPM=v
-		if not v then _TurretOriginals={}; ApplyTurretRPM() end
+		ApplyTurretRPM()
 	end })
 S_VehTurret:AddSlider({ Name="Turret RPM", Flag="Veh_TurretRPMValue",
 	Min=100, Max=10000, Default=1000, Rounding=0,
 	Callback=function(v) VehicleMods.TurretRPMValue=v; _TurretMods.RPMValue=v end })
 S_VehTurret:AddButton({ Name="Force Apply RPM",
 	Callback=function()
-		_TurretOriginals={}; _TurretConfigModule=nil; ApplyTurretRPM()
+		_TurretConfigModule=nil; ApplyTurretRPM()
 		Notifier.new({ Title="Turret RPM", Content="Applied ".._TurretMods.RPMValue.." RPM", Duration=3 })
 	end })
 
@@ -2722,7 +2589,6 @@ print("[AntiFall] Loaded")
 
 
 
--- ==========================================
 -- AURA KILL — Verified từ Flux_client.lua source
 -- Cipher đúng 100%: netEncode verified = RSpy dump match
 -- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
@@ -2737,75 +2603,48 @@ local AuraKill = {
 	_lastFire = 0,
 	_connection = nil,
 	_running = false,
+	_attackBusy = false,
+	MinInterval = 0.05,
 }
 
 -- Tìm network object: table có _code (UUID) + _key (array 5 nums) + _events
 local function AK_FindNet()
 	if AuraKill._net then return AuraKill._net end
 
-	-- shared.import bị block — GC scan trực tiếp
-	local gc
-	local ok1, r1 = pcall(function() return filtergc("table") end)
-	if ok1 and type(r1)=="table" then gc=r1 end
-	if not gc then
-		local ok2, r2 = pcall(function() return getgc(true) end)
-		if ok2 and type(r2)=="table" then gc=r2 end
-	end
-	if not gc then
-		local ok3, r3 = pcall(function() return getgc() end)
-		if ok3 and type(r3)=="table" then gc=r3 end
+	-- Method 1: shared.import("network") — đúng theo source
+	if shared and type(shared.import) == "function" then
+		local ok, net = pcall(function() return shared.import("network") end)
+		if ok and net and rawget(net, "_key") and rawget(net, "_code") then
+			AuraKill._net = net
+			print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
+			return net
+		end
 	end
 
-	if gc then
+	-- Method 2: GC scan
+	local gok, gc = pcall(function() return filtergc("table") end)
+	if not gok then gok, gc = pcall(function() return getgc(true) end) end
+	if gok and gc then
 		for _, v in pairs(gc) do
 			if type(v) ~= "table" then continue end
 			local k  = rawget(v, "_key")
 			local co = rawget(v, "_code")
-			if type(k)=="table" and type(co)=="string"
-				and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and #k>=5
+			local ev = rawget(v, "_events")
+			if type(k)=="table" and #k>=5
+				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
+				and type(ev)=="table"
 			then
-				local allNums=true
-				for _,n in ipairs(k) do if type(n)~="number" then allNums=false;break end end
+				local allNums = true
+				for _, n in ipairs(k) do if type(n)~="number" then allNums=false; break end end
 				if allNums then
-					AuraKill._net=v
-					print("[AuraKill] Net via GC (_key/_code), code:",co:sub(1,8),"key[1]:",k[1])
+					AuraKill._net = v
+					print("[AuraKill] Net via GC, code:", co:sub(1,8), "key[1]:", k[1])
 					return v
 				end
 			end
-			local k2  = rawget(v, "key")
-			local co2 = rawget(v, "code")
-			if type(k2)=="table" and type(co2)=="string"
-				and co2:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and #k2>=5
-			then
-				local allNums=true
-				for _,n in ipairs(k2) do if type(n)~="number" then allNums=false;break end end
-				if allNums then
-					local wrapped={_key=k2,_code=co2}
-					AuraKill._net=wrapped
-					print("[AuraKill] Net via GC (key/code), code:",co2:sub(1,8))
-					return wrapped
-				end
-			end
 		end
-		print("[AuraKill] GC scan done — net not found. size:", #gc)
-	else
-		print("[AuraKill] GC inaccessible on this executor")
 	end
-
-	pcall(function()
-		for _,v in pairs(debug.getregistry()) do
-			if type(v)~="table" then continue end
-			local k=rawget(v,"_key"); local co=rawget(v,"_code")
-			if type(k)=="table" and type(co)=="string"
-				and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and #k>=5
-			then
-				AuraKill._net=v
-				print("[AuraKill] Net via debug.getregistry, code:",co:sub(1,8))
-			end
-		end
-	end)
-
-	return AuraKill._net or nil
+	return nil
 end
 
 local function AK_GetRemote()
@@ -2855,82 +2694,81 @@ end
 
 -- Actor UID: UUID string
 local function AK_GetUID(actor)
-	for _, field in ipairs({"UID","_id","Id","UUID"}) do
-		local v = rawget(actor, field)
-		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
-	end
-	for k, v in pairs(actor) do
-		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
-	end
-	return nil
+	local uid = type(actor)=="table" and rawget(actor,"UID")
+	return type(uid)=="string" and uid or nil
 end
 
-local function AK_Fire(actor)
-	local net = AK_FindNet()
-	if not net then return false end
-	local remote = AK_GetRemote()
-	if not remote then return false end
-	local char = actor.Character
-	if not char then return false end
-	local part = char:FindFirstChild(AuraKill.TargetPart)
-		or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
-	if not part then return false end
-	local uid = AK_GetUID(actor)
-	if not uid then return false end
-
-	local n = math.random(1, 3)
-
-	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
-	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
-
-	-- Direction vector: server raycast từ actor origin theo vector này
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	local origin
-	if myActor and myActor.Character and myActor.Character.PrimaryPart then
-		origin = myActor.Character.PrimaryPart.Position + Vector3.new(0, 2.5, 0)
-	else
-		origin = Camera.CFrame.Position
+function AuraKill.CanAttackActor(actor)
+	if type(actor)~="table" then return false,"invalid_actor" end
+	if not actor.Alive then return false,"dead_actor" end
+	local uid=AK_GetUID(actor)
+	if not uid then return false,"missing_uid" end
+	if not ReplicatorService or not ReplicatorService.Actors or ReplicatorService.Actors[uid]~=actor then
+		return false,"unregistered_actor"
 	end
-	local targetPos = part.Position
-	local direction = (targetPos - origin)
-	local encImpact = AK_Encrypt(
-		{net._code, "InventoryAction", "Impact",
-			{direction.X, direction.Y, direction.Z},
-			uid, part.Name},
-		net
-	)
-	if encImpact then pcall(function() remote:FireServer(encImpact) end) end
+	if actor._disposition~="Hostile" then return false,"not_hostile" end
+	local myActor=GetLocalActor()
+	if not myActor or not myActor.Alive then return false,"missing_local_actor" end
+	local myPos=GetActorPosition(myActor); local actorPos=GetActorPosition(actor)
+	if not myPos or not actorPos then return false,"missing_position" end
+	if (actorPos-myPos).Magnitude>AuraKill.Range then return false,"out_of_range" end
+	local char=actor.Character
+	if not char then return false,"missing_character" end
+	local part=char:FindFirstChild(AuraKill.TargetPart)
+		or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
+	if not part then return false,"missing_target_part" end
+	return true,"ready",part,uid
+end
 
-	return true
+function AuraKill.AttackActor(actor)
+	if AuraKill._attackBusy then return false,"busy" end
+	local canAttack,reason,part,uid=AuraKill.CanAttackActor(actor)
+	if not canAttack then return false,reason end
+	local net = AK_FindNet()
+	if not net then return false,"no_network" end
+	local remote = AK_GetRemote()
+	if not remote then return false,"no_remote" end
+	local pos = part.Position
+	local n = math.random(1, 3)
+	local encSlash=AK_Encrypt({net._code,"InventoryAction","Slash",n},net)
+	local encImpact=AK_Encrypt({net._code,"InventoryAction","Impact",{pos.X,pos.Y,pos.Z},uid,part.Name},net)
+	if not encSlash or not encImpact then return false,"encryption_failed" end
+	AuraKill._attackBusy=true
+	local ok=pcall(function()
+		remote:FireServer(encSlash)
+		remote:FireServer(encImpact)
+	end)
+	AuraKill._attackBusy=false
+	if not ok then
+		AuraKill._remote=nil
+		return false,"remote_failed"
+	end
+	AuraKill._lastFire=tick()
+	return true,"sent"
 end
 
 local function AK_Tick()
 	if not AuraKill.Enabled then return end
+	local autoFarm=getgenv().AutoFarm
+	if autoFarm and autoFarm._running then return end
 	local now = tick()
-	if now - AuraKill._lastFire < AuraKill.Interval then return end
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	local effectiveInterval=math.max(AuraKill.Interval,AuraKill.MinInterval)
+	if AuraKill._attackBusy or now-AuraKill._lastFire<effectiveInterval then return end
+	local myActor = GetLocalActor()
 	if not myActor then return end
-	local myPos = myActor.Position or Camera.CFrame.Position
-
-	-- Fire ALL enemies trong range đồng thời, không chỉ 1 thằng gần nhất
-	local fired = false
+	local myPos = GetActorPosition(myActor) or Camera.CFrame.Position
+	local best, bestDist = nil, AuraKill.Range
 	if ActorManager.Initialized then
-		for _, actor in ipairs(ActorManager.Enemies) do
+		for _, actor in ipairs(ActorManager.Hostiles) do
 			if not actor or not actor.Alive or not actor.Character then continue end
-			local aPos = actor.Position
-			if not aPos and actor.Character.PrimaryPart then aPos = actor.Character.PrimaryPart.Position end
+			local aPos = GetActorPosition(actor)
 			if not aPos then continue end
-			local d = (aPos - myPos).Magnitude
-			if d <= AuraKill.Range then
-				fired = true
-				local a = actor
-				task.spawn(function()
-					if not AK_Fire(a) then AuraKill._net = nil end
-				end)
-			end
+			local d = (aPos-myPos).Magnitude
+			if d < bestDist then bestDist=d; best=actor end
 		end
 	end
-	if fired then AuraKill._lastFire = now end
+	if not best then return end
+	AuraKill.AttackActor(best)
 end
 
 function AuraKill.Start()
@@ -2944,9 +2782,15 @@ end
 
 function AuraKill.Stop()
 	AuraKill._running = false
+	AuraKill._attackBusy = false
 	if AuraKill._connection then
 		pcall(function() AuraKill._connection:Disconnect() end)
 		AuraKill._connection = nil
+	end
+	local autoFarm=getgenv().AutoFarm
+	if autoFarm and autoFarm._running then
+		autoFarm.Enabled=false
+		autoFarm.Stop("aura_kill_disabled")
 	end
 end
 
@@ -2977,23 +2821,48 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
--- ==========================================
+
+
 pcall(function()
 -- AUTO FARM
-local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
+local AutoFarm = {
+	Enabled=false,
+	OffsetY=-2,
+	Debug=false,
+	TargetTypes={NPC=true,Zombie=true,Player=false},
+	AcquireInterval=0.15,
+	TeleportRetryDelay=0.35,
+	MaxTeleportFailures=3,
+	BlacklistDuration=5,
+	TargetTimeout=8,
+	State="Acquire",
+	_connection=nil,
+	_running=false,
+	_currentTarget=nil,
+	_targetUID=nil,
+	_targetCharacter=nil,
+	_localActor=nil,
+	_lastAcquire=0,
+	_lastPositionAttempt=0,
+	_lastProgress=0,
+	_targetSince=0,
+	_teleportFailures=0,
+	_blacklist={},
+	_lastAttackResult="idle",
+	_lastTeleportResult="idle",
+	_lastClearReason="startup",
+	_lastDebug=0,
+}
 
 local function AF_GetTarget()
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	local myActor = GetLocalActor()
 	if not myActor then return nil end
 	local myPos = myActor.Position or Camera.CFrame.Position
 	local best, bestDist = nil, math.huge
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
 			if actor and actor.Alive and actor.Character then
-				local pos = actor.Position
-				if not pos and actor.Character.PrimaryPart then
-					pos = actor.Character.PrimaryPart.Position
-				end
+				local pos = GetActorPosition(actor)
 				if pos then
 					local d = (pos - myPos).Magnitude
 					if d < bestDist then bestDist = d; best = actor end
@@ -3005,64 +2874,157 @@ local function AF_GetTarget()
 end
 
 local function AF_TeleportTo(actor)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	local pos = actor.Position
-	if not pos and actor.Character and actor.Character.PrimaryPart then
-		pos = actor.Character.PrimaryPart.Position
-	end
-	if not pos then return end
+	local myActor = GetLocalActor()
+	if not myActor then return false end
+	local pos = GetActorPosition(actor)
+	if not pos then return false end
 	local targetPos = Vector3.new(pos.X, pos.Y + AutoFarm.OffsetY, pos.Z)
-	pcall(function()
-		if ControllerService and ControllerService.Controller then
-			local ctrl = ControllerService.Controller
+	local success = pcall(function()
+		local ctrl = GetActiveController()
+		if ctrl then
 			ctrl._position = targetPos
 			ctrl._lastSafePosition = targetPos
 		end
 		myActor.SimulatedPosition = targetPos
 		myActor.CFrame = CFrame.new(targetPos)
 	end)
+	return success
+end
+
+local function AF_ClearTarget()
+	AutoFarm._currentTarget = nil
+	AutoFarm._targetCharacter = nil
+end
+
+local function AF_CurrentTargetIsValid()
+	local target = AutoFarm._currentTarget
+	return target ~= nil
+		and target.Alive
+		and target.Character ~= nil
+		and target.Character == AutoFarm._targetCharacter
 end
 
 local function AF_Tick()
 	if not AutoFarm.Enabled then return end
-	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
-		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=2})
-		AutoFarm.Enabled = false
+	if not AuraKill.Enabled then
+		AutoFarm.Enabled=false
+		AutoFarm.Stop("aura_kill_disabled")
 		return
 	end
-	local target = AF_GetTarget()
-	if target then AF_TeleportTo(target) end
+	local now=tick()
+	local localActor=GetLocalActor()
+	if not localActor or not localActor.Alive then
+		if AutoFarm._localActor~=localActor then AF_ClearTarget("local_actor_changed") end
+		AutoFarm._localActor=localActor
+		return
+	end
+	if AutoFarm._localActor~=localActor then
+		AutoFarm._localActor=localActor
+		AF_ClearTarget("local_actor_changed")
+	end
+	local myPos=GetActorPosition(localActor)
+	if not myPos then return end
+
+	if AutoFarm.State=="Acquire" then
+		if now-AutoFarm._lastAcquire<AutoFarm.AcquireInterval then return end
+		AutoFarm._lastAcquire=now
+		local target=AF_GetTarget(now,myPos)
+		if not target then AF_Debug(now); return end
+		AutoFarm._currentTarget=target
+		AutoFarm._targetUID=AK_GetUID(target)
+		AutoFarm._targetCharacter=target.Character
+		AutoFarm._targetSince=now
+		AutoFarm._lastProgress=now
+		AutoFarm.State="Position"
+	end
+
+	local valid,reason=AF_ValidateTarget()
+	if not valid then AF_ClearTarget(reason); return end
+	local targetPos=GetActorPosition(AutoFarm._currentTarget)
+	local distance=targetPos and (targetPos-myPos).Magnitude or math.huge
+	AF_Debug(now,distance)
+	if now-AutoFarm._lastProgress>AutoFarm.TargetTimeout then
+		AF_BlacklistCurrent(now,"target_timeout")
+		return
+	end
+
+	if AutoFarm.State=="Position" then
+		local positioned,positionReason=AF_PositionTarget(now)
+		AutoFarm._lastTeleportResult=positionReason
+		if positioned then AutoFarm.State="Attack"; return end
+		if positionReason~="retry_wait" then AutoFarm._teleportFailures+=1 end
+		if AutoFarm._teleportFailures>=AutoFarm.MaxTeleportFailures then
+			AF_BlacklistCurrent(now,"teleport_failed:"..positionReason)
+		end
+		return
+	end
+
+	local followDistance=math.max(0.5,AuraKill.Range*0.8)
+	if distance>followDistance then AutoFarm.State="Position"; return end
+	local effectiveInterval=math.max(AuraKill.Interval,AuraKill.MinInterval)
+	if now-AuraKill._lastFire<effectiveInterval then return end
+	local attacked,attackReason=AuraKill.AttackActor(AutoFarm._currentTarget)
+	AutoFarm._lastAttackResult=attackReason
+	if attacked then
+		AutoFarm._lastProgress=now
+	elseif attackReason=="out_of_range" then
+		AutoFarm.State="Position"
+	elseif attackReason~="busy" then
+		if now-AutoFarm._lastProgress>AutoFarm.TargetTimeout then
+			AF_BlacklistCurrent(now,"attack_failed:"..attackReason)
+		end
+	end
 end
 
 function AutoFarm.Start()
 	if AutoFarm._running then return end
 	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
+		AutoFarm.Enabled = false
 		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=3})
 		return
 	end
-	AutoFarm._running = true
-	AutoFarm._connection = RunService.Heartbeat:Connect(AF_Tick)
-	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
+	AutoFarm._running=true
+	AutoFarm._localActor=GetLocalActor()
+	AutoFarm._blacklist={}
+	AF_ClearTarget("started")
+	AutoFarm._connection=RunService.Heartbeat:Connect(AF_Tick)
+	table.insert(getgenv().Moon_Connections,AutoFarm._connection)
 end
 
-function AutoFarm.Stop()
-	AutoFarm._running = false
+function AutoFarm.Stop(reason)
+	AutoFarm._running=false
+	AutoFarm.Enabled=false
+	AF_ClearTarget(reason or "stopped")
+	AutoFarm._localActor=nil
+	AutoFarm._blacklist={}
+	AutoFarm._lastPositionAttempt=0
+	AutoFarm._lastAcquire=0
 	if AutoFarm._connection then
 		pcall(function() AutoFarm._connection:Disconnect() end)
-		AutoFarm._connection = nil
+		AutoFarm._connection=nil
 	end
 end
 
-getgenv().AutoFarm = AutoFarm
+getgenv().AutoFarm=AutoFarm
 
-local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
-S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
+local S_AF=MiscTab:DrawSection({Name="Auto Farm",Position="left"})
+S_AF:AddToggle({Name="Enable Auto Farm",Flag="AF_Enabled",Default=false,
 	Callback=function(v) AutoFarm.Enabled=v; if v then AutoFarm.Start() else AutoFarm.Stop() end end})
-S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
+S_AF:AddSlider({Name="Y Offset",Flag="AF_OffsetY",Min=-10,Max=0,Default=-2,Rounding=0,
 	Callback=function(v) AutoFarm.OffsetY=v end})
+S_AF:AddToggle({Name="Target NPCs",Flag="AF_TargetNPC",Default=true,
+	Callback=function(v) AutoFarm.TargetTypes.NPC=v end})
+S_AF:AddToggle({Name="Target Zombies",Flag="AF_TargetZombie",Default=true,
+	Callback=function(v) AutoFarm.TargetTypes.Zombie=v end})
+S_AF:AddToggle({Name="Target Players",Flag="AF_TargetPlayer",Default=false,
+	Callback=function(v) AutoFarm.TargetTypes.Player=v end})
+S_AF:AddToggle({Name="Debug Diagnostics",Flag="AF_Debug",Default=false,
+	Callback=function(v) AutoFarm.Debug=v end})
 print("[AutoFarm] Loaded")
 end)
+
+
+
 
 -- AUTO LOCKPICK v4
 -- InputService._mounts["PickLock"] là callback thật
