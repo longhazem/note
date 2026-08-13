@@ -1,196 +1,290 @@
--- --- AuraKill.lua ---
--- p179 = weapon item UID (bắt từ hookmetamethod khi swing tay 1 lần)
--- Sau đó replay Slash + Impact liên tục
-
-local Players          = game:GetService("Players")
-local RunService       = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-
-local LocalPlayer = Players.LocalPlayer
-local enabled     = false
-local AuraRadius  = 15
-local AuraCooldown = 0.6
-local lastHit     = {}
-
-local Network       = nil
-local weaponUID     = nil  -- UUID của melee weapon đang cầm
-local ReplicatorSvc = nil
-
 -- ============================================
--- BULK SCAN
+-- AURA KILL VIA RAKNET BITSTREAM (Standalone)
+-- ============================================
+-- Hướng dẫn: 
+--   Copy toàn bộ vào executor và chạy.
+--   Mặc định TẮT. Bật bằng: AuraKillRakNet:Start()
+--   Tắt bằng: AuraKillRakNet:Stop()
+--   Điều chỉnh Range (studs): AuraKillRakNet.Range = 15
+--   Điều chỉnh Interval (giây): AuraKillRakNet.Interval = 0.05
 -- ============================================
 
-local function BulkScan()
-    local ok, gc = pcall(function() return filtergc("table") end)
-    if not ok then ok, gc = pcall(function() return getgc(true) end) end
-    if not ok then return end
-    local count = 0
-    for _, obj in pairs(gc) do
-        count = count + 1
-        if count % 8000 == 0 then task.wait() end
-        if type(obj) ~= "table" then continue end
-        if not Network and rawget(obj, "FireServer") and rawget(obj, "_events") then
-            Network = obj
-            print("[Aura] Network found")
-        end
-        if not ReplicatorSvc and rawget(obj, "Actors") and rawget(obj, "LocalActor") then
-            ReplicatorSvc = obj
-            print("[Aura] ReplicatorService found")
-        end
-        if Network and ReplicatorSvc then break end
+local AuraKillRakNet = {
+    Enabled = false,
+    Range = 500,
+    Interval = 0.1,
+    netCode = nil,
+    RakNet = nil,
+    BitStream = nil,
+    lastFire = 0,
+    _connection = nil,
+    _debug = true,
+}
+
+-- Hàm tìm RakNet và BitStream
+local function FindRakNet()
+    if AuraKillRakNet.RakNet then return true end
+
+    -- Thử shared
+    if shared and shared.RakNet then
+        AuraKillRakNet.RakNet = shared.RakNet
+        if AuraKillRakNet._debug then print("[AuraKill] RakNet found via shared") end
+        return true
     end
-end
 
--- ============================================
--- HOOK — bắt weaponUID từ swing tay đầu tiên
--- ============================================
-
-local function setupHook()
-    if not Network then return end
-    local origFireServer = Network.FireServer
-    Network.FireServer = function(self, action, subAction, ...)
-        -- Bắt: Network:FireServer("InventoryAction", "Slash", slashNum)
-        -- arg1 = "InventoryAction", arg2 = "Slash"
-        -- NHƯNG theo InventoryService: FireServer(uid, "InventoryAction", action, ...)
-        -- Thực ra format: Network:FireServer(uid, action, ...)
-        -- uid là arg đầu tiên
-        if not weaponUID and action and type(action) == "string"
-        and #action == 36 and action:find("%-")
-        and subAction == "InventoryAction" then
-            weaponUID = action
-            print("[Aura] WeaponUID: " .. weaponUID)
-        end
-        return origFireServer(self, action, subAction, ...)
-    end
-    print("[Aura] Hook active — swing melee 1 lần để capture weaponUID")
-end
-
--- ============================================
--- vector3toTable
--- ============================================
-
-local function v3t(v) return {v.X, v.Y, v.Z} end
-
--- ============================================
--- ACTOR UID
--- ============================================
-
-local function getActorUID(character)
-    if not ReplicatorSvc then return nil end
-    for _, actor in pairs(ReplicatorSvc.Actors or {}) do
-        if type(actor) ~= "table" then continue end
-        if actor.Character == character or actor.Model == character then
-            for _, v in pairs(actor) do
-                if type(v) == "string" and #v == 36 and v:find("%-") then
-                    return v
+    -- Thử GC scan
+    local success, gc = pcall(function() return getgc(true) end)
+    if not success then success, gc = pcall(function() return filtergc("table") end) end
+    if success and gc then
+        for _, v in pairs(gc) do
+            if type(v) == "table" then
+                local hasSend = rawget(v, "Send") ~= nil
+                local hasCreate = rawget(v, "CreateBitStream") ~= nil
+                if hasSend and hasCreate then
+                    AuraKillRakNet.RakNet = v
+                    if AuraKillRakNet._debug then print("[AuraKill] RakNet found via GC") end
+                    return true
                 end
             end
         end
     end
-    return nil
+
+    -- Thử ReplicatedStorage
+    local rs = game:GetService("ReplicatedStorage")
+    for _, child in pairs(rs:GetDescendants()) do
+        if child.Name:lower():find("raknet") and typeof(child) == "Instance" then
+            local ok, obj = pcall(function() return require(child) end)
+            if ok and obj and type(obj) == "table" and rawget(obj, "Send") then
+                AuraKillRakNet.RakNet = obj
+                if AuraKillRakNet._debug then print("[AuraKill] RakNet found via ModuleScript") end
+                return true
+            end
+        end
+    end
+
+    return false
 end
 
--- ============================================
--- HIT SEQUENCE
--- ============================================
+-- Hàm tìm netCode (UUID của network session)
+local function FindNetCode()
+    if AuraKillRakNet.netCode then return true end
 
-local function doAuraHit(eRoot, eChar)
-    if not Network or not weaponUID then return end
+    -- Thử từ script cũ
+    if getgenv().AuraKill and getgenv().AuraKill._net and getgenv().AuraKill._net._code then
+        AuraKillRakNet.netCode = getgenv().AuraKill._net._code
+        if AuraKillRakNet._debug then print("[AuraKill] netCode from old AuraKill") end
+        return true
+    end
 
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return end
+    -- Thử GC scan tìm table có _code UUID và _key
+    local success, gc = pcall(function() return getgc(true) end)
+    if not success then success, gc = pcall(function() return filtergc("table") end) end
+    if success and gc then
+        for _, v in pairs(gc) do
+            if type(v) == "table" then
+                local code = rawget(v, "_code")
+                local key = rawget(v, "_key")
+                if type(code) == "string" and code:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and type(key) == "table" then
+                    AuraKillRakNet.netCode = code
+                    if AuraKillRakNet._debug then print("[AuraKill] netCode found via GC: " .. code:sub(1,8)) end
+                    return true
+                end
+            end
+        end
+    end
 
-    local actorUID = getActorUID(eChar)
-    if not actorUID then return end
+    return false
+end
 
-    local slashNum = math.random(1, 3)
+-- Lấy ReplicatorService và LocalActor
+local function GetServices()
+    local ReplicatorService = nil
+    local LocalPlayer = game:GetService("Players").LocalPlayer
 
-    -- Slash
+    -- Thử từ shared
+    if shared and shared.Engine and shared.Engine.ReplicatorService then
+        ReplicatorService = shared.Engine.ReplicatorService
+    end
+
+    -- Thử GC scan
+    if not ReplicatorService then
+        local success, gc = pcall(function() return getgc(true) end)
+        if not success then success, gc = pcall(function() return filtergc("table") end) end
+        if success and gc then
+            for _, v in pairs(gc) do
+                if type(v) == "table" and rawget(v, "Actors") and rawget(v, "LocalActor") then
+                    ReplicatorService = v
+                    break
+                end
+            end
+        end
+    end
+
+    if not ReplicatorService then
+        if AuraKillRakNet._debug then print("[AuraKill] ReplicatorService not found") end
+        return nil, nil
+    end
+
+    local LocalActor = ReplicatorService.LocalActor
+    return ReplicatorService, LocalActor, LocalPlayer
+end
+
+-- Hàm gửi Slash + Impact
+local function FireAura(actor, partName)
+    local RakNet = AuraKillRakNet.RakNet
+    local netCode = AuraKillRakNet.netCode
+    if not RakNet or not netCode then return false end
+
+    local char = actor.Character
+    if not char then return false end
+    local part = char:FindFirstChild(partName or "Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
+    if not part then return false end
+    local pos = part.Position
+    local uid = actor.UID or actor._id
+    if not uid then return false end
+
+    local n = math.random(1, 3)
+
+    -- Gửi Slash
+    local bs1 = RakNet:CreateBitStream()
+    if not bs1 then return false end
     pcall(function()
-        Network:FireServer(weaponUID, "InventoryAction", "Slash", slashNum)
+        bs1:WriteString(netCode)
+        bs1:WriteString("InventoryAction")
+        bs1:WriteString("Slash")
+        bs1:WriteInt(n)
+        RakNet:Send(bs1, 0, 1, 0)
     end)
 
-    -- Impact sau delay
-    task.delay(0.1, function()
-        if not eRoot.Parent then return end
-        local hitPos = eRoot.Position + Vector3.new(0, 1, 0)
-
-        -- Raycast từ mình đến target
-        local origin = myRoot.Position + Vector3.new(0, 1.5, 0)
-        local dir = (hitPos - origin)
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = { myChar }
-        local result = workspace:Raycast(origin, dir, params)
-
-        local finalPos = result and result.Position or hitPos
-        local finalPart = result and result.Instance and result.Instance.Name or "Head"
-
-        pcall(function()
-            Network:FireServer(weaponUID, "InventoryAction", "Impact",
-                v3t(finalPos),
-                actorUID,
-                finalPart
-            )
-        end)
+    -- Gửi Impact
+    local bs2 = RakNet:CreateBitStream()
+    if not bs2 then return false end
+    pcall(function()
+        bs2:WriteString(netCode)
+        bs2:WriteString("InventoryAction")
+        bs2:WriteString("Impact")
+        bs2:WriteFloat(pos.X)
+        bs2:WriteFloat(pos.Y)
+        bs2:WriteFloat(pos.Z)
+        bs2:WriteString(uid)
+        bs2:WriteString(part.Name or "Head")
+        RakNet:Send(bs2, 0, 1, 0)
     end)
+
+    if AuraKillRakNet._debug then
+        print("[AuraKill] Fired at " .. (actor.OwnerName or "NPC") .. " | Range: " .. pos.Magnitude)
+    end
+    return true
 end
 
--- ============================================
--- AURA LOOP
--- ============================================
+-- Vòng lặp chính
+local function AuraLoop()
+    if not AuraKillRakNet.Enabled then return end
 
-RunService.Heartbeat:Connect(function()
-    if not enabled then return end
-    if not Network then return end
-    if not weaponUID then
-        warn("[Aura] Swing melee 1 lần trước")
+    local now = tick()
+    if now - AuraKillRakNet.lastFire < AuraKillRakNet.Interval then return end
+
+    local ReplicatorService, LocalActor, LocalPlayer = GetServices()
+    if not ReplicatorService or not LocalActor then
+        if AuraKillRakNet._debug then print("[AuraKill] Waiting for services...") end
         return
     end
 
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return end
-
-    local now = tick()
-    local myPos = myRoot.Position
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-        local eChar = player.Character
-        if not eChar then continue end
-        local eRoot = eChar:FindFirstChild("HumanoidRootPart")
-        local hum   = eChar:FindFirstChildOfClass("Humanoid")
-        if not eRoot or not hum or hum.Health <= 0 then continue end
-        if (myPos - eRoot.Position).Magnitude > AuraRadius then continue end
-        if lastHit[player] and (now - lastHit[player]) < AuraCooldown then continue end
-        lastHit[player] = now
-        task.spawn(doAuraHit, eRoot, eChar)
+    local myPos = LocalActor.Position
+    if not myPos and LocalPlayer.Character and LocalPlayer.Character.PrimaryPart then
+        myPos = LocalPlayer.Character.PrimaryPart.Position
     end
-end)
+    if not myPos then return end
 
--- ============================================
--- TOGGLE + INIT
--- ============================================
+    local bestActor = nil
+    local bestDist = AuraKillRakNet.Range
 
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.E then
-        if not weaponUID then
-            warn("[Aura] Swing melee 1 lần trước để capture weaponUID")
+    for _, actor in pairs(ReplicatorService.Actors or {}) do
+        if actor and actor.Alive and actor.Character and actor.Owner ~= LocalPlayer then
+            local actorPos = actor.Position
+            if not actorPos and actor.Character.PrimaryPart then
+                actorPos = actor.Character.PrimaryPart.Position
+            end
+            if actorPos then
+                local dist = (actorPos - myPos).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    bestActor = actor
+                end
+            end
+        end
+    end
+
+    if bestActor then
+        AuraKillRakNet.lastFire = now
+        task.spawn(function()
+            FireAura(bestActor, "Head")
+        end)
+    end
+end
+
+-- Khởi tạo và kiểm tra
+local function Initialize()
+    if not FindRakNet() then
+        print("[AuraKill] RakNet not found. Retrying in 3s...")
+        task.wait(3)
+        return Initialize()
+    end
+
+    if not FindNetCode() then
+        print("[AuraKill] netCode not found. Retrying in 3s...")
+        task.wait(3)
+        return Initialize()
+    end
+
+    print("[AuraKill] Initialized successfully!")
+    print("[AuraKill] Use AuraKillRakNet:Start() to enable, :Stop() to disable.")
+    print("[AuraKill] Current Range = " .. AuraKillRakNet.Range .. ", Interval = " .. AuraKillRakNet.Interval)
+    return true
+end
+
+-- Public methods
+function AuraKillRakNet:Start()
+    if self._connection then
+        print("[AuraKill] Already running")
+        return
+    end
+
+    -- Đảm bảo đã init
+    if not self.RakNet or not self.netCode then
+        print("[AuraKill] Initializing...")
+        if not Initialize() then
+            print("[AuraKill] Init failed. Cannot start.")
             return
         end
-        enabled = not enabled
-        print("[Aura] " .. (enabled and "ON" or "OFF"))
     end
+
+    self.Enabled = true
+    self._connection = game:GetService("RunService").Heartbeat:Connect(AuraLoop)
+    print("[AuraKill] Started")
+end
+
+function AuraKillRakNet:Stop()
+    self.Enabled = false
+    if self._connection then
+        self._connection:Disconnect()
+        self._connection = nil
+    end
+    print("[AuraKill] Stopped")
+end
+
+-- Tự động init lần đầu
+task.spawn(function()
+    task.wait(1)
+    Initialize()
 end)
 
-task.spawn(function()
-    task.wait(1.5)
-    BulkScan()
-    task.wait(0.3)
-    setupHook()
-    print("[Aura] Bước 1: Equip melee → swing 1 lần → weaponUID captured")
-    print("[Aura] Bước 2: E = bật/tắt | Radius: " .. AuraRadius)
-end)
+-- Export to global
+getgenv().AuraKillRakNet = AuraKillRakNet
+
+print("==========================================")
+print("  AURA KILL RAKNET STANDALONE LOADED")
+print("  Bật: AuraKillRakNet:Start()")
+print("  Tắt: AuraKillRakNet:Stop()")
+print("  Điều chỉnh: AuraKillRakNet.Range = X")
+print("==========================================")
