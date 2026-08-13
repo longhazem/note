@@ -2112,66 +2112,41 @@ local function AutoFarm_Tick()
 	local equippedController = WeaponManager.Equipped or
 		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
 
-	if AutoFarm._phase == "seek" then
-		local target = AutoFarm_NextTarget()
-		if not target then return end
+	-- Lưu vị trí gốc 1 lần duy nhất khi bắt đầu
+	local root = AutoFarm_GetRoot()
+	if root and not AutoFarm._savedCF then
+		AutoFarm._savedCF = root.CFrame
+	end
 
-		-- Lưu vị trí hiện tại trước khi teleport
-		local root = AutoFarm_GetRoot()
-		if root and not AutoFarm._savedCF then
-			AutoFarm._savedCF = root.CFrame
+	-- Loop qua tất cả enemies, mỗi enemy: teleport → fire → về home, trong 1 tick
+	if not ActorManager.Enemies then return end
+	for _, target in ipairs(ActorManager.Enemies) do
+		if not target or not target.Alive or not target.Character then continue end
+
+		-- Set ragebot target
+		local char = target.Character
+		local part = char:FindFirstChild(Config.Rage_TargetPart or "Head") or char:FindFirstChild("UpperTorso")
+		if part then
+			ActorManager.SelectedTarget_RB = part
+			ActorManager.SelectedActor_RB = target
 		end
 
-		AutoFarm._currentTarget = target
-		AutoFarm._shotsFired = 0
-		ActorManager.SelectedTarget_RB = target.Character and target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
-		ActorManager.SelectedActor_RB = target
+		-- Teleport đến NPC
 		AutoFarm_Teleport(target)
-		AutoFarm._phase = "shoot"
-		AutoFarm._lastShot = now
-		return
-	end
 
-	if AutoFarm._phase == "shoot" then
-		local target = AutoFarm._currentTarget
-		if not target or not target.Alive then
-			-- Target chết → snap về home, tìm target mới ngay
-			AutoFarm_ReturnHome()
-			AutoFarm._phase = "seek"
-			return
-		end
-		if (now - AutoFarm._lastShot) < AutoFarm.ShootDelay then return end
+		-- Fire ngay lập tức
 		if equippedController then
-			local char = target.Character
-			if char then
-				local part = char:FindFirstChild(Config.Rage_TargetPart or "Head") or char:FindFirstChild("UpperTorso")
-				if part then
-					ActorManager.SelectedTarget_RB = part
-					ActorManager.SelectedActor_RB = target
-				end
+			for _ = 1, AutoFarm.ShotsPerTarget do
+				pcall(function() equippedController:Discharge() end)
 			end
-			pcall(function() equippedController:Discharge() end)
-			AutoFarm._shotsFired = AutoFarm._shotsFired + 1
-			AutoFarm._lastShot = now
 		end
-		if AutoFarm._shotsFired >= AutoFarm.ShotsPerTarget then
-			AutoFarm._phase = "switch"
-			AutoFarm._lastShot = now
-		end
-		return
+
+		-- Snap về home ngay — cùng 1 tick
+		AutoFarm_ReturnHome()
 	end
 
-	if AutoFarm._phase == "switch" then
-		if (now - AutoFarm._lastShot) >= AutoFarm.SwitchDelay then
-			-- Snap về home ngay sau khi kill xong
-			AutoFarm_ReturnHome()
-			AutoFarm._currentTarget = nil
-			ActorManager.SelectedTarget_RB = nil
-			ActorManager.SelectedActor_RB = nil
-			AutoFarm._phase = "seek"
-		end
-		return
-	end
+	ActorManager.SelectedTarget_RB = nil
+	ActorManager.SelectedActor_RB = nil
 end
 
 -- Start / Stop
@@ -2834,7 +2809,7 @@ local function AK_Fire(actor)
 	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
 	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
 	-- 5x Impact — send more packets to server
-	for _ = 1, 20 do
+	for _ = 1, 50 do
 		local p = part.Position
 		local enc = AK_Encrypt(
 			{net._code, "InventoryAction", "Impact", {p.X, p.Y, p.Z}, uid, part.Name}, net)
