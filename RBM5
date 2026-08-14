@@ -2136,30 +2136,34 @@ local function AutoFarm_Tick()
 	if not ActorManager.Initialized then return end
 	local equippedController = WeaponManager.Equipped or
 		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+	if not ActorManager.Enemies then return end
 
-	local target = AutoFarm_NextTarget()
-	if not target then return end
+	-- Loop tất cả enemies trong 1 tick
+	-- Teleport đến từng thằng → fire → thằng tiếp theo
+	for _, target in ipairs(ActorManager.Enemies) do
+		if not target or not target.Alive or not target.Character then continue end
 
-	-- Teleport đến NPC
-	AutoFarm_Teleport(target)
+		-- Teleport đến NPC này
+		AutoFarm_Teleport(target)
 
-	-- Set ragebot target
-	local char = target.Character
-	if char then
+		-- Set ragebot target
+		local char = target.Character
 		local part = char:FindFirstChild(Config.Rage_TargetPart or "Head") or char:FindFirstChild("UpperTorso")
 		if part then
 			ActorManager.SelectedTarget_RB = part
 			ActorManager.SelectedActor_RB = target
 		end
-	end
 
-	-- Fire ngay
-	if equippedController then
-		for _ = 1, AutoFarm.ShotsPerTarget do
-			pcall(function() equippedController:Discharge() end)
+		-- Fire
+		if equippedController then
+			for _ = 1, AutoFarm.ShotsPerTarget do
+				pcall(function() equippedController:Discharge() end)
+			end
 		end
 	end
-	-- Tick tiếp theo sẽ tự NextTarget sang NPC kế
+
+	ActorManager.SelectedTarget_RB = nil
+	ActorManager.SelectedActor_RB = nil
 end
 
 -- Start / Stop
