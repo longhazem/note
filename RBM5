@@ -2723,6 +2723,214 @@ print("[AntiFall] Loaded")
 
 
 -- ==========================================
+-- AURA KILL — Verified từ Flux_client.lua source
+-- Cipher đúng 100%: netEncode verified = RSpy dump match
+-- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
+-- ==========================================
+local AuraKill = {
+	Enabled = false,
+	Range = 20,
+	Interval = 0,
+	TargetPart = "Head",
+	_net = nil,
+	_remote = nil,
+	_lastFire = 0,
+	_connection = nil,
+	_running = false,
+}
+
+-- Tìm network object: table có _code (UUID) + _key (array 5 nums) + _events
+local function AK_FindNet()
+	if AuraKill._net then return AuraKill._net end
+
+	-- Method 1: shared.import("network") — đúng theo source
+	if shared and type(shared.import) == "function" then
+		local ok, net = pcall(function() return shared.import("network") end)
+		if ok and net and rawget(net, "_key") and rawget(net, "_code") then
+			AuraKill._net = net
+			print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
+			return net
+		end
+	end
+
+	-- Method 2: GC scan
+	local gok, gc = pcall(function() return filtergc("table") end)
+	if not gok then gok, gc = pcall(function() return getgc(true) end) end
+	if gok and gc then
+		for _, v in pairs(gc) do
+			if type(v) ~= "table" then continue end
+			local k  = rawget(v, "_key")
+			local co = rawget(v, "_code")
+			local ev = rawget(v, "_events")
+			if type(k)=="table" and #k>=5
+				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
+				and type(ev)=="table"
+			then
+				local allNums = true
+				for _, n in ipairs(k) do if type(n)~="number" then allNums=false; break end end
+				if allNums then
+					AuraKill._net = v
+					print("[AuraKill] Net via GC, code:", co:sub(1,8), "key[1]:", k[1])
+					return v
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function AK_GetRemote()
+	if AuraKill._remote and AuraKill._remote.Parent then return AuraKill._remote end
+	-- Source: v_u_11 = RemoteEvent (reliable channel)
+	-- Path: ReplicatedStorage.Events.RemoteEvent
+	local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+	if ev then
+		local re = ev:FindFirstChild("RemoteEvent")
+		if re then AuraKill._remote=re; return re end
+	end
+	for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+		if v:IsA("RemoteEvent") then AuraKill._remote=v; return v end
+	end
+	return nil
+end
+
+-- netEncode đúng theo Flux_client.lua line 31-50
+local function AK_NetEncode(jsonStr, key)
+	local result = ""
+	for i = 1, #jsonStr do
+		local ki = i % 4  -- 0,1,2,3,0,1,2,3...
+		local kval = key[ki + 1]  -- Lua 1-indexed: key[1..4]
+		local nb = (string.byte(jsonStr, i) - 32 + kval) % 95 + 32
+		result = result .. string.char(nb)
+	end
+	-- Padding: đúng theo source lines 43-50
+	-- v25 = string.byte(p16) = first byte of jsonStr
+	-- v27 = v25 - string.byte(tostring(v24))
+	local firstByte = string.byte(jsonStr, 1)
+	for v24 = 1, key[5] do
+		local v26 = tostring(v24)
+		local v27 = firstByte - string.byte(v26, 1)
+		result = result .. string.char(v27)
+	end
+	return result
+end
+
+local function AK_Encrypt(data, net)
+	local hs = game:GetService("HttpService")
+	local ok, raw = pcall(function()
+		return hs:JSONEncode(data)
+	end)
+	if not ok or not raw then return nil end
+	return AK_NetEncode(raw, net._key)
+end
+
+-- Actor UID: UUID string
+local function AK_GetUID(actor)
+	for _, field in ipairs({"UID","_id","Id","UUID"}) do
+		local v = rawget(actor, field)
+		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
+	end
+	for k, v in pairs(actor) do
+		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
+	end
+	return nil
+end
+
+local function AK_Fire(actor)
+	local net = AK_FindNet()
+	if not net then return false end
+	local remote = AK_GetRemote()
+	if not remote then return false end
+	local char = actor.Character
+	if not char then return false end
+	local part = char:FindFirstChild(AuraKill.TargetPart)
+		or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
+	if not part then return false end
+	local uid = AK_GetUID(actor)
+	if not uid then return false end
+	local n = math.random(1, 3)
+
+	-- Pre-encode 1 lần, fire 50 lần — không pcall overhead, không encode lại
+	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
+	local p = part.Position
+	local encImpact = AK_Encrypt(
+		{net._code, "InventoryAction", "Impact", {p.X, p.Y, p.Z}, uid, part.Name}, net)
+	if not encSlash or not encImpact then return false end
+	for _ = 1, 50 do
+		remote:FireServer(encSlash)
+		remote:FireServer(encImpact)
+	end
+	return true
+end
+
+local function AK_Tick()
+	if not AuraKill.Enabled then return end
+	local now = tick()
+	if now - AuraKill._lastFire < AuraKill.Interval then return end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local myPos = myActor.Position or Camera.CFrame.Position
+	local fired = false
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if not actor or not actor.Alive or not actor.Character then continue end
+			local aPos = actor.Position
+			if not aPos and actor.Character.PrimaryPart then aPos=actor.Character.PrimaryPart.Position end
+			if not aPos then continue end
+			if (aPos-myPos).Magnitude <= AuraKill.Range then
+				fired = true
+				if not AK_Fire(actor) then AuraKill._net=nil end
+			end
+		end
+	end
+	if fired then AuraKill._lastFire = now end
+end
+
+function AuraKill.Start()
+	if AuraKill._running then return end
+	AuraKill._running = true
+	task.spawn(AK_FindNet); task.spawn(AK_GetRemote)
+	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
+	table.insert(getgenv().Moon_Connections, AuraKill._connection)
+	print("[AuraKill] Started")
+end
+
+function AuraKill.Stop()
+	AuraKill._running = false
+	if AuraKill._connection then
+		pcall(function() AuraKill._connection:Disconnect() end)
+		AuraKill._connection = nil
+	end
+end
+
+getgenv().AuraKill = AuraKill
+
+local S_AK = CombatTab:DrawSection({Name="Aura Kill", Position="left"})
+S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
+	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
+S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
+	Callback=function(v) AuraKill.Range=v end})
+S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=0, Max=2000, Default=0, Rounding=0,
+	Callback=function(v) AuraKill.Interval=v/1000 end})
+S_AK:AddDropdown({Name="Target Part", Flag="AK_TargetPart", Default="Head",
+	Values={"Head","UpperTorso","LowerTorso"},
+	Callback=function(v) AuraKill.TargetPart=v end})
+S_AK:AddButton({Name="Rescan Network",
+	Callback=function()
+		AuraKill._net=nil; AuraKill._remote=nil
+		task.spawn(function()
+			local net=AK_FindNet(); local re=AK_GetRemote()
+			Notifier.new({Title="AuraKill",
+				Content=net and re
+					and "OK! code:"..net._code:sub(1,8).." key["..tostring(net._key[1]).."]"
+					or "Fail",
+				Duration=5})
+		end)
+	end})
+
+print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
+
+-- ==========================================
 pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
@@ -2809,302 +3017,77 @@ S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, 
 print("[AutoFarm] Loaded")
 end)
 
--- AUTO LOCKPICK — đúng theo source
--- _at=0 → sin(0)/2+0.5=0.5 → luôn trong sweet spot
--- Reset _lastTick → bypass 0.5s cooldown
--- Gọi PickLock 6 lần → _picks=6 → FireServer("ActivateInteract","Picked")
+-- AUTO LOCKPICK v4
+-- InputService._mounts["PickLock"] là callback thật
+-- Tìm InputService instance → gọi _mounts["PickLock"](true) mỗi frame
 pcall(function()
 
-local AutoLockpick = {Enabled=false, _connection=nil, _ctrl=nil}
+local AutoLockpick = {Enabled=false, _connection=nil}
 
-local function ALP_FindCtrl()
-	if AutoLockpick._ctrl and not AutoLockpick._ctrl._cancelled then
-		return AutoLockpick._ctrl
-	end
-	local ok, gc = pcall(function() return filtergc("table") end)
-	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if not ok or not gc then return nil end
-	for _, v in pairs(gc) do
-		if type(v) == "table"
-			and rawget(v, "_picks") ~= nil
-			and rawget(v, "_cancelled") == false
-			and rawget(v, "_at") ~= nil
-			and rawget(v, "_lastTick") ~= nil
-			and rawget(v, "_speed") ~= nil
-		then
-			AutoLockpick._ctrl = v
-			return v
-		end
-	end
-	return nil
+local function ALP_FindInputService()
+    -- InputService: table có _mounts, Binds, Connected, Overrides
+    local ok, gc = pcall(function() return filtergc("table") end)
+    if not ok then ok, gc = pcall(function() return getgc(true) end) end
+    if not ok or not gc then return nil end
+    for _, v in pairs(gc) do
+        if type(v) == "table"
+            and rawget(v, "_mounts") ~= nil
+            and rawget(v, "Binds") ~= nil
+            and rawget(v, "Connected") ~= nil
+            and rawget(v, "Overrides") ~= nil
+        then
+            return v
+        end
+    end
+    return nil
 end
 
-local function ALP_DoPick(ctrl)
-	if not ctrl or ctrl._cancelled then return end
-	-- Set cursor vào giữa (sin(0)/2+0.5 = 0.5, luôn trong sweet spot)
-	ctrl._at = 0
-	-- Bypass cooldown
-	ctrl._lastTick = tick() - 1
-	-- Tìm PickLock function trong _controls
-	local controls = rawget(ctrl, "_controls")
-	if controls then
-		-- _controls là object trả về từ InputService:Connect
-		-- Tìm PickLock callback bên trong
-		local pickFn = rawget(controls, "PickLock")
-		if not pickFn then
-			-- Scan fields
-			for k, v in pairs(controls) do
-				if (k == "PickLock" or tostring(k):find("Pick")) and type(v) == "function" then
-					pickFn = v; break
-				end
-			end
-		end
-		if pickFn and type(pickFn) == "function" then
-			pcall(pickFn, true)
-			return true
-		end
-	end
-	-- Fallback: tăng _picks trực tiếp
-	ctrl._picks = math.min((ctrl._picks or 0) + 1, 6)
-	if ctrl._picks >= 6 then
-		ctrl._cancelled = true
-		-- Fire server qua network
-		local net = AK_FindNet and AK_FindNet()
-		local remote = AK_GetRemote and AK_GetRemote()
-		if net and remote then
-			local hs = game:GetService("HttpService")
-			local raw = hs:JSONEncode({net._code, "ActivateInteract", "Picked"})
-			local result = ""
-			for i = 1, #raw do
-				local ki = ((i-1)%4)+1
-				result = result .. string.char((string.byte(raw,i)-32+net._key[ki])%95+32)
-			end
-			local fb = string.byte(raw,1)
-			for v24 = 1, net._key[5] do
-				result = result .. string.char(fb - string.byte(tostring(v24),1))
-			end
-			pcall(function() remote:FireServer(result) end)
-		end
-	end
-	return true
-end
+local _inputSvc = nil
+local _lastScan = 0
 
-local _lastPick = 0
 local function ALP_Tick()
-	if not AutoLockpick.Enabled then return end
-	local now = tick()
-	-- Scan mỗi 0.1s
-	if now - _lastPick < 0.1 then return end
-	_lastPick = now
-	local ctrl = ALP_FindCtrl()
-	if ctrl then ALP_DoPick(ctrl) end
+    if not AutoLockpick.Enabled then return end
+
+    -- Rescan InputService mỗi 1s
+    local now = tick()
+    if not _inputSvc or (now - _lastScan > 1) then
+        _lastScan = now
+        _inputSvc = ALP_FindInputService()
+    end
+    if not _inputSvc then return end
+
+    local mounts = rawget(_inputSvc, "_mounts")
+    if not mounts then return end
+
+    -- Gọi PickLock callback nếu đang active
+    local pickFn = rawget(mounts, "PickLock")
+    if pickFn and type(pickFn) == "function" then
+        pcall(pickFn, true)
+    end
 end
 
 function AutoLockpick.Start()
-	if AutoLockpick._connection then return end
-	AutoLockpick._connection = RunService.Heartbeat:Connect(ALP_Tick)
-	table.insert(getgenv().Moon_Connections, AutoLockpick._connection)
+    if AutoLockpick._connection then return end
+    AutoLockpick._connection = RunService.Heartbeat:Connect(ALP_Tick)
+    table.insert(getgenv().Moon_Connections, AutoLockpick._connection)
+    print("[AutoLockpick] Started")
 end
 
 function AutoLockpick.Stop()
-	if AutoLockpick._connection then
-		pcall(function() AutoLockpick._connection:Disconnect() end)
-		AutoLockpick._connection = nil
-	end
-	AutoLockpick._ctrl = nil
+    if AutoLockpick._connection then
+        pcall(function() AutoLockpick._connection:Disconnect() end)
+        AutoLockpick._connection = nil
+    end
+    _inputSvc = nil
 end
 
 getgenv().AutoLockpick = AutoLockpick
 
 local S_ALP = MiscTab:DrawSection({Name="Auto Lockpick", Position="right"})
 S_ALP:AddToggle({Name="Enable Auto Lockpick", Flag="ALP_Enabled", Default=false,
-	Callback=function(v)
-		AutoLockpick.Enabled=v
-		if v then AutoLockpick.Start() else AutoLockpick.Stop() end
-	end})
+    Callback=function(v)
+        AutoLockpick.Enabled = v
+        if v then AutoLockpick.Start() else AutoLockpick.Stop() end
+    end})
 print("[AutoLockpick] Loaded")
-end)
-
--- AURA KILL — Teleport + Spam Impact
--- Cách đúng: teleport đến enemy → spam Impact packet
--- Server thấy mình đứng tại vị trí enemy → accept damage
-pcall(function()
-
-local AuraKill = {
-	Enabled = false,
-	Range = 10,
-	Interval = 0,
-	_net = nil,
-	_remote = nil,
-	_lastFire = 0,
-	_connection = nil,
-	_running = false,
-}
-
-local function AK_FindNet()
-	if AuraKill._net then return AuraKill._net end
-	if shared and type(shared.import) == "function" then
-		local ok, net = pcall(function() return shared.import("network") end)
-		if ok and net and rawget(net,"_key") and rawget(net,"_code") then
-			AuraKill._net = net; return net
-		end
-	end
-	local ok, gc = pcall(function() return filtergc("table") end)
-	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if not ok or not gc then return nil end
-	for _, v in pairs(gc) do
-		if type(v)=="table" and rawget(v,"_key") and rawget(v,"_code") and rawget(v,"_events")
-			and type(rawget(v,"_key"))=="table" and #v._key>=5
-		then AuraKill._net=v; return v end
-	end
-	return nil
-end
-
-local function AK_GetRemote()
-	if AuraKill._remote and AuraKill._remote.Parent then return AuraKill._remote end
-	local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
-	if ev then
-		local re = ev:FindFirstChild("RemoteEvent")
-		if re then AuraKill._remote=re; return re end
-	end
-	return nil
-end
-
-local function AK_Encrypt(data, net)
-	local hs = game:GetService("HttpService")
-	local ok, raw = pcall(function() return hs:JSONEncode(data) end)
-	if not ok or not raw then return nil end
-	local result = ""
-	for i = 1, #raw do
-		local ki = ((i-1)%4)+1
-		local nb = (string.byte(raw,i)-32+net._key[ki])%95+32
-		result = result..string.char(nb)
-	end
-	local firstByte = string.byte(raw,1)
-	for v24 = 1, net._key[5] do
-		result = result..string.char(firstByte - string.byte(tostring(v24),1))
-	end
-	return result
-end
-
-local function AK_GetUID(actor)
-	for _, f in ipairs({"UID","_id","Id","UUID"}) do
-		local v = rawget(actor, f)
-		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
-	end
-	for k, v in pairs(actor) do
-		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
-	end
-	return nil
-end
-
-local function AK_TeleportTo(pos)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	pcall(function()
-		if ControllerService and ControllerService.Controller then
-			local ctrl = ControllerService.Controller
-			ctrl._position = pos
-			ctrl._lastSafePosition = pos
-		end
-		myActor.SimulatedPosition = pos
-		myActor.CFrame = CFrame.new(pos)
-	end)
-end
-
-local function AK_Tick()
-	if not AuraKill.Enabled then return end
-	local now = tick()
-	if now - AuraKill._lastFire < AuraKill.Interval then return end
-
-	local net = AK_FindNet()
-	if not net then return end
-	local remote = AK_GetRemote()
-	if not remote then return end
-
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	local myPos = myActor.Position or Camera.CFrame.Position
-
-	if not ActorManager.Initialized then return end
-
-	local best, bestDist = nil, AuraKill.Range
-	for _, actor in ipairs(ActorManager.Enemies) do
-		if actor and actor.Alive and actor.Character then
-			local pos = actor.Position
-			if not pos and actor.Character.PrimaryPart then pos=actor.Character.PrimaryPart.Position end
-			if pos then
-				local d = (pos-myPos).Magnitude
-				if d < bestDist then bestDist=d; best=actor end
-			end
-		end
-	end
-
-	if not best then return end
-
-	local char = best.Character
-	local part = char:FindFirstChild("Head") or char.PrimaryPart
-	if not part then return end
-
-	local uid = AK_GetUID(best)
-	if not uid then return end
-
-	local pos = part.Position
-	-- Teleport đến vị trí enemy (looks like đang đứng ở đó)
-	AK_TeleportTo(pos)
-
-	-- Slash trước (bắt buộc), spam nhiều lần
-	for i = 1, 3 do
-		local encS = AK_Encrypt({net._code,"InventoryAction","Slash",i}, net)
-		if encS then pcall(function() remote:FireServer(encS) end) end
-	end
-
-	-- Spam Impact nhiều lần — "send more packets to server"
-	for i = 1, 5 do
-		local enc = AK_Encrypt(
-			{net._code,"InventoryAction","Impact",{pos.X,pos.Y,pos.Z},uid,part.Name},
-			net
-		)
-		if enc then pcall(function() remote:FireServer(enc) end) end
-	end
-
-	AuraKill._lastFire = now
-end
-
-function AuraKill.Start()
-	if AuraKill._running then return end
-	AuraKill._running = true
-	task.spawn(AK_FindNet); task.spawn(AK_GetRemote)
-	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
-	table.insert(getgenv().Moon_Connections, AuraKill._connection)
-	print("[AuraKill] Started")
-end
-
-function AuraKill.Stop()
-	AuraKill._running = false
-	if AuraKill._connection then
-		pcall(function() AuraKill._connection:Disconnect() end)
-		AuraKill._connection = nil
-	end
-end
-
-getgenv().AuraKill = AuraKill
-
-local S_AK = CombatTab:DrawSection({Name="Aura Kill", Position="left"})
-S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
-	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
-S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
-	Callback=function(v) AuraKill.Range=v end})
-S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=0, Max=1000, Default=0, Rounding=0,
-	Callback=function(v) AuraKill.Interval=v/1000 end})
-S_AK:AddButton({Name="Rescan Network", Callback=function()
-	AuraKill._net=nil; AuraKill._remote=nil
-	task.spawn(function()
-		local net=AK_FindNet(); local re=AK_GetRemote()
-		Notifier.new({Title="AuraKill",
-			Content=net and re and "OK: "..net._code:sub(1,8).."..." or "Fail",
-			Duration=4})
-	end)
-end})
-print("[AuraKill] Loaded — Teleport+Impact method")
 end)
