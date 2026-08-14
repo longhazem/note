@@ -2131,39 +2131,34 @@ local function AutoFarm_NextTarget()
 end
 
 -- Main farm tick — teleport → fire → next, không phase delay
-local function AutoFarm_Tick()
+local function Autofarm_Tick_Inner()
 	if not AutoFarm.Enabled then return end
 	if not ActorManager.Initialized then return end
+	if not ActorManager.Enemies then return end
 	local equippedController = WeaponManager.Equipped or
 		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
-	if not ActorManager.Enemies then return end
 
-	-- Loop tất cả enemies trong 1 tick
-	-- Teleport đến từng thằng → fire → thằng tiếp theo
 	for _, target in ipairs(ActorManager.Enemies) do
 		if not target or not target.Alive or not target.Character then continue end
-
-		-- Teleport đến NPC này
 		AutoFarm_Teleport(target)
-
-		-- Set ragebot target
 		local char = target.Character
 		local part = char:FindFirstChild(Config.Rage_TargetPart or "Head") or char:FindFirstChild("UpperTorso")
 		if part then
 			ActorManager.SelectedTarget_RB = part
 			ActorManager.SelectedActor_RB = target
 		end
-
-		-- Fire
 		if equippedController then
 			for _ = 1, AutoFarm.ShotsPerTarget do
 				pcall(function() equippedController:Discharge() end)
 			end
 		end
 	end
-
 	ActorManager.SelectedTarget_RB = nil
 	ActorManager.SelectedActor_RB = nil
+end
+
+local function AutoFarm_Tick()
+	Autofarm_Tick_Inner()
 end
 
 -- Start / Stop
@@ -2173,8 +2168,13 @@ function AutoFarm.Start()
 	AutoFarm._phase = "seek"
 	AutoFarm._enemyIndex = 1
 
-	AutoFarm._connection = RunService.Heartbeat:Connect(AutoFarm_Tick)
-	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
+	-- task.spawn loop thay Heartbeat — không delay, nhanh nhất có thể
+	task.spawn(function()
+		while AutoFarm._running do
+			Autofarm_Tick_Inner()
+			task.wait()  -- yield 1 frame để không freeze executor
+		end
+	end)
 	print("[AutoFarm] Started")
 end
 
