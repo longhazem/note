@@ -2060,45 +2060,32 @@ local AutoFarm = {
 local function AutoFarm_Teleport(targetActor)
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return false end
-	local char = myActor.Character
-	if not char then return false end
-	local root = char.PrimaryPart or char:FindFirstChild("HumanoidRootPart")
-	if not root then return false end
 
 	local targetPos = targetActor.Position
-	if not targetPos and targetActor.Character and targetActor.Character.PrimaryPart then
-		targetPos = targetActor.Character.PrimaryPart.Position
+	if not targetPos then
+		local char = targetActor.Character
+		if char and char.PrimaryPart then
+			targetPos = char.PrimaryPart.Position
+		end
 	end
 	if not targetPos then return false end
 
-	local newPos = targetPos + Vector3.new(0, 0, 2)
-	local newCF = CFrame.new(newPos, targetPos)
+	-- offset ra phía sau target dựa theo camera
+	local camDir = Camera.CFrame.LookVector
+	local offset = Vector3.new(
+		AutoFarm.TeleportOffset.X,
+		AutoFarm.TeleportOffset.Y,
+		AutoFarm.TeleportOffset.Z
+	)
+	local newPos = targetPos + Vector3.new(0, 2, 0) + (camDir * -offset.Z)
 
-	-- Đúng theo CharacterController.Teleport() trong MTC2 source line 973
-	-- Game set 5 field: _position, ForceNextPosition, SimulatedPosition, VelocityGravity=0, MoveSpeed=0
+	-- Set position via CharacterController
 	pcall(function()
-		root.CFrame = newCF
 		myActor.SimulatedPosition = newPos
-		myActor.ForceNextPosition = newPos  -- KEY: thiếu cái này là lý do bị snap về
-		myActor.VelocityGravity = 0
-		myActor.MoveSpeed = 0
-		-- CharacterController internal state
-		local cc = ControllerService and ControllerService.Controller
-		if not cc then
-			local gc
-			pcall(function() gc = filtergc("table") end)
-			if not gc then pcall(function() gc = getgc(true) end) end
-			if gc then
-				for _, v in pairs(gc) do
-					if type(v)=="table"
-						and rawget(v,"_position") and rawget(v,"_lastSafePosition")
-					then cc = v; break end
-				end
-			end
-		end
-		if cc then
-			cc._position = newPos
-			cc._lastSafePosition = newPos
+		myActor.CFrame = CFrame.new(newPos, targetPos)
+		if ControllerService and ControllerService.Controller then
+			ControllerService.Controller._position = newPos
+			ControllerService.Controller._lastSafePosition = newPos
 		end
 	end)
 
@@ -2125,35 +2112,84 @@ local function AutoFarm_NextTarget()
 	return nil
 end
 
--- Main farm tick — teleport → fire → next, không phase delay
-local function Autofarm_Tick_Inner()
+-- Main farm tick — chạy trên Heartbeat
+local function AutoFarm_Tick()
 	if not AutoFarm.Enabled then return end
 	if not ActorManager.Initialized then return end
-	if not ActorManager.Enemies then return end
+
+	local now = tick()
 	local equippedController = WeaponManager.Equipped or
 		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
 
-	for _, target in ipairs(ActorManager.Enemies) do
-		if not target or not target.Alive or not target.Character then continue end
-		AutoFarm_Teleport(target)
-		local char = target.Character
-		local part = char:FindFirstChild(Config.Rage_TargetPart or "Head") or char:FindFirstChild("UpperTorso")
-		if part then
-			ActorManager.SelectedTarget_RB = part
-			ActorManager.SelectedActor_RB = target
-		end
-		if equippedController then
-			for _ = 1, AutoFarm.ShotsPerTarget do
-				pcall(function() equippedController:Discharge() end)
-			end
-		end
-	end
-	ActorManager.SelectedTarget_RB = nil
-	ActorManager.SelectedActor_RB = nil
-end
+	-- PHASE: SEEK — tìm và teleport đến target mới
+	if AutoFarm._phase == "seek" then
+		local target = AutoFarm_NextTarget()
+		if not target then return end
 
-local function AutoFarm_Tick()
-	Autofarm_Tick_Inner()
+		AutoFarm._currentTarget = target
+		AutoFarm._shotsFired = 0
+
+		-- Set ragebot target
+		ActorManager.SelectedTarget_RB = target.Character and target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
+		ActorManager.SelectedActor_RB = target
+
+		-- Teleport
+		AutoFarm_Teleport(target)
+
+		AutoFarm._phase = "shoot"
+		AutoFarm._lastShot = now
+		return
+	end
+
+	-- PHASE: SHOOT — bắn N viên
+	if AutoFarm._phase == "shoot" then
+		local target = AutoFarm._currentTarget
+
+		-- Validate target còn sống
+		if not target or not target.Alive then
+			AutoFarm._phase = "seek"
+			return
+		end
+
+		-- Check delay giữa viên
+		if (now - AutoFarm._lastShot) < AutoFarm.ShootDelay then return end
+
+		-- Bắn
+		if equippedController then
+			-- Update target part mỗi viên (vì target có thể di chuyển)
+			local char = target.Character
+			if char then
+				local part = char:FindFirstChild(Config.Rage_TargetPart or "Head")
+					or char:FindFirstChild("UpperTorso")
+				if part then
+					ActorManager.SelectedTarget_RB = part
+					ActorManager.SelectedActor_RB = target
+				end
+			end
+
+			pcall(function() equippedController:Discharge() end)
+			AutoFarm._shotsFired = AutoFarm._shotsFired + 1
+			AutoFarm._lastShot = now
+		end
+
+		-- Đủ viên → chuyển phase
+		if AutoFarm._shotsFired >= AutoFarm.ShotsPerTarget then
+			AutoFarm._phase = "switch"
+			AutoFarm._lastShot = now
+		end
+		return
+	end
+
+	-- PHASE: SWITCH — chờ rồi tìm target kế
+	if AutoFarm._phase == "switch" then
+		if (now - AutoFarm._lastShot) >= AutoFarm.SwitchDelay then
+			AutoFarm._currentTarget = nil
+			ActorManager.SelectedTarget_RB = nil
+			ActorManager.SelectedActor_RB = nil
+			AutoFarm._phase = "seek"
+		end
+		return
+	end
 end
 
 -- Start / Stop
@@ -2163,13 +2199,8 @@ function AutoFarm.Start()
 	AutoFarm._phase = "seek"
 	AutoFarm._enemyIndex = 1
 
-	-- task.spawn loop thay Heartbeat — không delay, nhanh nhất có thể
-	task.spawn(function()
-		while AutoFarm._running do
-			Autofarm_Tick_Inner()
-			task.wait()  -- yield 1 frame để không freeze executor
-		end
-	end)
+	AutoFarm._connection = RunService.Heartbeat:Connect(AutoFarm_Tick)
+	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
 	print("[AutoFarm] Started")
 end
 
@@ -2697,46 +2728,52 @@ print("[AntiFall] Loaded")
 -- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
 -- ==========================================
 local AuraKill = {
-	Enabled    = false,
-	Range      = 9999,  -- không giới hạn range, dùng fly thay teleport
-	Interval   = 0,
+	Enabled = false,
+	Range = 20,
+	Interval = 0,
+	BatchSize = 2,
 	TargetPart = "Head",
-	_net       = nil,
-	_remote    = nil,
-	_lastFire  = 0,
-	_connection= nil,
-	_running   = false,
+	_net = nil,
+	_remote = nil,
+	_lastFire = 0,
+	_connection = nil,
+	_running = false,
 }
 
+-- Tìm network object: table có _code (UUID) + _key (array 5 nums) + _events
 local function AK_FindNet()
 	if AuraKill._net then return AuraKill._net end
-	if shared and type(shared.import)=="function" then
-		local ok,net=pcall(function() return shared.import("network") end)
-		if ok and net and rawget(net,"_key") and rawget(net,"_code") then
-			AuraKill._net=net; return net
+
+	-- Method 1: shared.import("network") — đúng theo source
+	if shared and type(shared.import) == "function" then
+		local ok, net = pcall(function() return shared.import("network") end)
+		if ok and net and rawget(net, "_key") and rawget(net, "_code") then
+			AuraKill._net = net
+			print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
+			return net
 		end
 	end
-	local gc
-	local ok1,r1=pcall(function() return filtergc("table") end)
-	if ok1 and type(r1)=="table" then gc=r1 end
-	if not gc then
-		local ok2,r2=pcall(function() return getgc(true) end)
-		if ok2 and type(r2)=="table" then gc=r2 end
-	end
-	if not gc then
-		local ok3,r3=pcall(function() return getgc() end)
-		if ok3 and type(r3)=="table" then gc=r3 end
-	end
-	if gc then
-		for _,v in pairs(gc) do
-			if type(v)~="table" then continue end
-			local k=rawget(v,"_key"); local co=rawget(v,"_code")
+
+	-- Method 2: GC scan
+	local gok, gc = pcall(function() return filtergc("table") end)
+	if not gok then gok, gc = pcall(function() return getgc(true) end) end
+	if gok and gc then
+		for _, v in pairs(gc) do
+			if type(v) ~= "table" then continue end
+			local k  = rawget(v, "_key")
+			local co = rawget(v, "_code")
+			local ev = rawget(v, "_events")
 			if type(k)=="table" and #k>=5
 				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
+				and type(ev)=="table"
 			then
-				local ok=true
-				for _,n in ipairs(k) do if type(n)~="number" then ok=false;break end end
-				if ok then AuraKill._net=v; return v end
+				local allNums = true
+				for _, n in ipairs(k) do if type(n)~="number" then allNums=false; break end end
+				if allNums then
+					AuraKill._net = v
+					print("[AuraKill] Net via GC, code:", co:sub(1,8), "key[1]:", k[1])
+					return v
+				end
 			end
 		end
 	end
@@ -2745,146 +2782,161 @@ end
 
 local function AK_GetRemote()
 	if AuraKill._remote and AuraKill._remote.Parent then return AuraKill._remote end
-	local ev=game:GetService("ReplicatedStorage"):FindFirstChild("Events")
-	if ev then local re=ev:FindFirstChild("RemoteEvent"); if re then AuraKill._remote=re; return re end end
-	for _,v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+	-- Source: v_u_11 = RemoteEvent (reliable channel)
+	-- Path: ReplicatedStorage.Events.RemoteEvent
+	local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+	if ev then
+		local re = ev:FindFirstChild("RemoteEvent")
+		if re then AuraKill._remote=re; return re end
+	end
+	for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
 		if v:IsA("RemoteEvent") then AuraKill._remote=v; return v end
 	end
 	return nil
 end
 
-local function AK_NetEncode(jsonStr,key)
-	local result=""
-	for i=1,#jsonStr do
-		local kval=key[(i%4)+1]
-		local nb=(string.byte(jsonStr,i)-32+kval)%95+32
-		result=result..string.char(nb)
+-- netEncode đúng theo Flux_client.lua line 31-50
+local function AK_NetEncode(jsonStr, key)
+	local result = ""
+	for i = 1, #jsonStr do
+		local ki = i % 4  -- 0,1,2,3,0,1,2,3...
+		local kval = key[ki + 1]  -- Lua 1-indexed: key[1..4]
+		local nb = (string.byte(jsonStr, i) - 32 + kval) % 95 + 32
+		result = result .. string.char(nb)
 	end
-	local firstByte=string.byte(jsonStr,1)
-	for v24=1,key[5] do result=result..string.char(firstByte-string.byte(tostring(v24),1)) end
+	-- Padding: đúng theo source lines 43-50
+	-- v25 = string.byte(p16) = first byte of jsonStr
+	-- v27 = v25 - string.byte(tostring(v24))
+	local firstByte = string.byte(jsonStr, 1)
+	for v24 = 1, key[5] do
+		local v26 = tostring(v24)
+		local v27 = firstByte - string.byte(v26, 1)
+		result = result .. string.char(v27)
+	end
 	return result
 end
 
-local function AK_Encrypt(data,net)
-	local ok,raw=pcall(function() return game:GetService("HttpService"):JSONEncode(data) end)
+local function AK_Encrypt(data, net)
+	local hs = game:GetService("HttpService")
+	local ok, raw = pcall(function()
+		return hs:JSONEncode(data)
+	end)
 	if not ok or not raw then return nil end
-	return AK_NetEncode(raw,net._key)
+	return AK_NetEncode(raw, net._key)
 end
 
+-- Actor UID: UUID string
 local function AK_GetUID(actor)
-	for _,field in ipairs({"UID","_id","Id","UUID"}) do
-		local v=rawget(actor,field)
+	for _, field in ipairs({"UID","_id","Id","UUID"}) do
+		local v = rawget(actor, field)
 		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
 	end
-	for _,v in pairs(actor) do
+	for k, v in pairs(actor) do
 		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
 	end
 	return nil
 end
 
--- FLY ENGINE: set SimulatedPosition liên tục đến target
--- Server nhận ReplicateMovement qua FireUnreliableServer mỗi 0.1s
--- Không bị distance check vì unreliable channel
-local function AK_FlyTo(myActor, targetPos)
-	if not myActor then return end
-	local char = myActor.Character
-	local root = char and (char.PrimaryPart or char:FindFirstChild("HumanoidRootPart"))
-	pcall(function()
-		-- Set position như game Teleport() function (MTC2 CharacterController line 973)
-		myActor.SimulatedPosition = targetPos
-		myActor.ForceNextPosition  = targetPos  -- override position check 1 lần
-		myActor.VelocityGravity   = 0           -- no gravity
-		myActor.MoveSpeed         = 0
-		if root then root.CFrame = CFrame.new(targetPos) end
-		-- CharacterController internal state
-		local cc = ControllerService and ControllerService.Controller
-		if cc then
-			cc._position         = targetPos
-			cc._lastSafePosition = targetPos
-		end
-	end)
-end
-
 local function AK_Fire(actor)
-	local net    = AK_FindNet();    if not net    then return false end
-	local remote = AK_GetRemote(); if not remote  then return false end
-	local char   = actor.Character; if not char   then return false end
-	local part   = char:FindFirstChild(AuraKill.TargetPart)
+	local net = AK_FindNet()
+	if not net then return false end
+	local remote = AK_GetRemote()
+	if not remote then return false end
+	local char = actor.Character
+	if not char then return false end
+	local part = char:FindFirstChild(AuraKill.TargetPart)
 		or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
 	if not part then return false end
-	local uid = AK_GetUID(actor); if not uid then return false end
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-
-	-- FLY đến vị trí cạnh target (2 studs) để server không reject hit
-	local targetPos = part.Position + Vector3.new(0, 0, 2)
-	AK_FlyTo(myActor, targetPos)
+	local pos = part.Position
+	local uid = AK_GetUID(actor)
+	if not uid then return false end
 
 	local n = math.random(1, 3)
-	-- Priority: target HP thấp nhất → kill nhanh nhất
-	-- Encode 1 lần, fire 2 lần theo đúng số cao nhân chỉ
+
+	-- Slash: {_code, "InventoryAction", "Slash", n} → encrypt → RemoteEvent:FireServer
 	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
-	if not encSlash then return false end
-	for _ = 1, 2 do
-		local p = part.Position
-		local encImpact = AK_Encrypt(
-			{net._code, "InventoryAction", "Impact", {p.X, p.Y, p.Z}, uid, part.Name}, net)
-		if encImpact then
-			remote:FireServer(encSlash)
-			remote:FireServer(encImpact)
-		end
-	end
+	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
+
+	-- Impact sau delay
+	-- Impact ngay lập tức — không delay
+	local encImpact = AK_Encrypt(
+		{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
+		net
+	)
+	if encImpact then pcall(function() remote:FireServer(encImpact) end) end
+
 	return true
 end
 
+-- Fire up to two nearest targets per heartbeat.
+-- Each target still receives exactly two packets: Slash + Impact.
 local function AK_Tick()
 	if not AuraKill.Enabled then return end
 	local now = tick()
 	if now - AuraKill._lastFire < AuraKill.Interval then return end
-	if not ActorManager.Initialized then return end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local myPos = myActor.Position or Camera.CFrame.Position
+	local first, second
+	local firstDist, secondDist = AuraKill.Range, AuraKill.Range
 
-	-- Priority targeting: sort theo HP thấp nhất, kill nhanh nhất
-	local targets = {}
-	for _, actor in ipairs(ActorManager.Enemies) do
-		if not actor or not actor.Alive or not actor.Character then continue end
-		local hp = type(actor.Health)=="number" and actor.Health or 100
-		table.insert(targets, {actor=actor, hp=hp})
-	end
-	-- Sort HP thấp nhất lên đầu
-	table.sort(targets, function(a,b) return a.hp < b.hp end)
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if not actor or not actor.Alive or not actor.Character then continue end
+			local aPos = actor.Position
+			if not aPos and actor.Character.PrimaryPart then
+				aPos = actor.Character.PrimaryPart.Position
+			end
+			if not aPos then continue end
 
-	local fired = false
-	for _, t in ipairs(targets) do
-		fired = true
-		if not AK_Fire(t.actor) then AuraKill._net=nil end
+			local d = (aPos - myPos).Magnitude
+			if d < firstDist then
+				second, secondDist = first, firstDist
+				first, firstDist = actor, d
+			elseif d < secondDist then
+				second, secondDist = actor, d
+			end
+		end
 	end
-	if fired then AuraKill._lastFire = now end
+
+	if not first then return end
+	AuraKill._lastFire = now
+
+	task.spawn(function()
+		if not AK_Fire(first) then AuraKill._net = nil end
+	end)
+
+	if AuraKill.BatchSize >= 2 and second then
+		task.spawn(function()
+			if not AK_Fire(second) then AuraKill._net = nil end
+		end)
+	end
 end
 
 function AuraKill.Start()
 	if AuraKill._running then return end
 	AuraKill._running = true
-	task.spawn(AK_FindNet)
-	task.spawn(AK_GetRemote)
-	-- task.spawn loop nhanh hơn Heartbeat
-	task.spawn(function()
-		while AuraKill._running do
-			AK_Tick()
-			task.wait()
-		end
-	end)
-	print("[AuraKill v2] Started — FLY mode + priority HP targeting")
+	task.spawn(AK_FindNet); task.spawn(AK_GetRemote)
+	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
+	table.insert(getgenv().Moon_Connections, AuraKill._connection)
+	print("[AuraKill] Started")
 end
 
 function AuraKill.Stop()
 	AuraKill._running = false
-	print("[AuraKill v2] Stopped")
+	if AuraKill._connection then
+		pcall(function() AuraKill._connection:Disconnect() end)
+		AuraKill._connection = nil
+	end
 end
 
 getgenv().AuraKill = AuraKill
 
-local S_AK = CombatTab:DrawSection({Name="Aura Kill v2", Position="left"})
+local S_AK = CombatTab:DrawSection({Name="Aura Kill", Position="left"})
 S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
 	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
+S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
+	Callback=function(v) AuraKill.Range=v end})
 S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=0, Max=2000, Default=0, Rounding=0,
 	Callback=function(v) AuraKill.Interval=v/1000 end})
 S_AK:AddDropdown({Name="Target Part", Flag="AK_TargetPart", Default="Head",
@@ -2895,11 +2947,14 @@ S_AK:AddButton({Name="Rescan Network",
 		AuraKill._net=nil; AuraKill._remote=nil
 		task.spawn(function()
 			local net=AK_FindNet(); local re=AK_GetRemote()
-			Notifier.new({Title="AuraKill v2",
-				Content=net and re and "OK! code:"..net._code:sub(1,8) or "Fail — check console",
+			Notifier.new({Title="AuraKill",
+				Content=net and re
+					and "OK! code:"..net._code:sub(1,8).." key["..tostring(net._key[1]).."]"
+					or "Fail",
 				Duration=5})
 		end)
 	end})
+
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
 -- ==========================================
