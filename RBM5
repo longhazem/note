@@ -2060,32 +2060,50 @@ local AutoFarm = {
 local function AutoFarm_Teleport(targetActor)
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return false end
+	local char = myActor.Character
+	if not char then return false end
+	local root = char.PrimaryPart or char:FindFirstChild("HumanoidRootPart")
+	if not root then return false end
 
 	local targetPos = targetActor.Position
-	if not targetPos then
-		local char = targetActor.Character
-		if char and char.PrimaryPart then
-			targetPos = char.PrimaryPart.Position
-		end
+	if not targetPos and targetActor.Character and targetActor.Character.PrimaryPart then
+		targetPos = targetActor.Character.PrimaryPart.Position
 	end
 	if not targetPos then return false end
 
-	-- offset ra phía sau target dựa theo camera
-	local camDir = Camera.CFrame.LookVector
-	local offset = Vector3.new(
-		AutoFarm.TeleportOffset.X,
-		AutoFarm.TeleportOffset.Y,
-		AutoFarm.TeleportOffset.Z
-	)
-	local newPos = targetPos + Vector3.new(0, 2, 0) + (camDir * -offset.Z)
+	local newPos = targetPos + Vector3.new(0, 0, 2)
+	local newCF = CFrame.new(newPos, targetPos)
 
-	-- Set position via CharacterController
+	-- Set tất cả cùng lúc để server không reject
 	pcall(function()
+		-- 1. Root CFrame — client render
+		root.CFrame = newCF
+		-- 2. SimulatedPosition — server track position
 		myActor.SimulatedPosition = newPos
-		myActor.CFrame = CFrame.new(newPos, targetPos)
+		-- 3. CharacterController internal state — tránh snap về
 		if ControllerService and ControllerService.Controller then
-			ControllerService.Controller._position = newPos
-			ControllerService.Controller._lastSafePosition = newPos
+			local cc = ControllerService.Controller
+			cc._position = newPos
+			cc._lastSafePosition = newPos  -- quan trọng nhất — server check cái này
+		end
+		-- 4. GC scan tìm CharacterController nếu ControllerService nil
+		if not (ControllerService and ControllerService.Controller) then
+			local gc
+			pcall(function() gc = filtergc("table") end)
+			if not gc then pcall(function() gc = getgc(true) end) end
+			if gc then
+				for _, v in pairs(gc) do
+					if type(v)=="table"
+						and rawget(v,"_position") and rawget(v,"_lastSafePosition")
+						and rawget(v,"SimulatedPosition")==nil
+					then
+						pcall(function()
+							v._position = newPos
+							v._lastSafePosition = newPos
+						end)
+					end
+				end
+			end
 		end
 	end)
 
