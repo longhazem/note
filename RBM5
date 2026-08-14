@@ -2846,20 +2846,23 @@ local function AK_Fire(actor)
 	local part = char:FindFirstChild(AuraKill.TargetPart)
 		or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
 	if not part then return false end
+	local pos = part.Position
 	local uid = AK_GetUID(actor)
 	if not uid then return false end
+
 	local n = math.random(1, 3)
 
-	-- Pre-encode 1 lần, fire 50 lần — không pcall overhead, không encode lại
+	-- Slash: {_code, "InventoryAction", "Slash", n} → encrypt → RemoteEvent:FireServer
 	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
-	local p = part.Position
 	local encImpact = AK_Encrypt(
-		{net._code, "InventoryAction", "Impact", {p.X, p.Y, p.Z}, uid, part.Name}, net)
-	if not encSlash or not encImpact then return false end
-	for _ = 1, 50 do
-		remote:FireServer(encSlash)
-		remote:FireServer(encImpact)
+		{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name}, net)
+	if encSlash and encImpact then
+		for _ = 1, 20 do
+			remote:FireServer(encSlash)
+			remote:FireServer(encImpact)
+		end
 	end
+
 	return true
 end
 
@@ -2870,20 +2873,22 @@ local function AK_Tick()
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return end
 	local myPos = myActor.Position or Camera.CFrame.Position
-	local fired = false
+	local best, bestDist = nil, AuraKill.Range
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
 			if not actor or not actor.Alive or not actor.Character then continue end
 			local aPos = actor.Position
 			if not aPos and actor.Character.PrimaryPart then aPos=actor.Character.PrimaryPart.Position end
 			if not aPos then continue end
-			if (aPos-myPos).Magnitude <= AuraKill.Range then
-				fired = true
-				if not AK_Fire(actor) then AuraKill._net=nil end
-			end
+			local d = (aPos-myPos).Magnitude
+			if d < bestDist then bestDist=d; best=actor end
 		end
 	end
-	if fired then AuraKill._lastFire = now end
+	if not best then return end
+	AuraKill._lastFire = now
+	task.spawn(function()
+		if not AK_Fire(best) then AuraKill._net=nil end
+	end)
 end
 
 function AuraKill.Start()
