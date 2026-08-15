@@ -2094,13 +2094,14 @@ local function AutoFarm_Teleport(targetActor)
 end
 
 -- Pick next valid enemy
--- Pick next valid enemy
--- VehicleClass.lua line 289: veh.VehicleType = "Helicopter" | "Ground"
--- NPC đứng trên heli dùng Weld vào thân, không có Seat/SeatPart → proximity only
-local HELI_PROXIMITY_SQ = 30 * 30
+-- VehicleClass.lua line 262: moi vehicle co Part ten "Hitbox" parented vao workspace model
+-- NPC dung tren heli: weld vao than, khong co Seat/SeatPart
+local _overlapParams = OverlapParams.new()
+_overlapParams.FilterType = Enum.RaycastFilterType.Include
+_overlapParams.MaxParts = 8
 
 local function IsActorOnVehicle(actor)
-	-- Layer 1: MTC internal seat refs
+	-- Layer 1: MTC internal refs
 	if actor.Seat then return true end
 	if actor.Platform then return true end
 	if actor.Turret then return true end
@@ -2109,25 +2110,26 @@ local function IsActorOnVehicle(actor)
 	local hum = actor.Character and actor.Character:FindFirstChildOfClass("Humanoid")
 	if hum and hum.SeatPart then return true end
 
-	-- Layer 3: Helicopter-only proximity
-	if VehicleService and VehicleService.Vehicles then
-		local aPos = actor.Position
-			or (actor.Character and actor.Character.PrimaryPart
-				and actor.Character.PrimaryPart.Position)
-		if aPos then
-			for _, veh in pairs(VehicleService.Vehicles) do
-				if veh.VehicleType ~= "Helicopter" then continue end
-				local vPos = nil
-				pcall(function()
-					vPos = (veh.CFrame and veh.CFrame.Position)
-						or (veh.Hitbox and veh.Hitbox.CFrame and veh.Hitbox.CFrame.Position)
-						or (veh.Model and veh.Model.PrimaryPart and veh.Model.PrimaryPart.Position)
-				end)
-				if vPos then
-					local dx = aPos.X - vPos.X
-					local dy = aPos.Y - vPos.Y
-					local dz = aPos.Z - vPos.Z
-					if (dx*dx + dy*dy + dz*dz) <= HELI_PROXIMITY_SQ then
+	-- Layer 3: Workspace spatial query -- tim Part "Hitbox" cua vehicle trong 30 studs
+	local aPos = actor.Position
+		or (actor.Character and actor.Character.PrimaryPart
+			and actor.Character.PrimaryPart.Position)
+	if aPos then
+		local ok, parts = pcall(function()
+			return workspace:GetPartBoundsInRadius(aPos, 30, _overlapParams)
+		end)
+		if not ok or not parts then
+			ok, parts = pcall(function()
+				return workspace:FindPartsInRegion3(
+					Region3.new(aPos - Vector3.new(30,30,30), aPos + Vector3.new(30,30,30)), nil, 32
+				)
+			end)
+		end
+		if ok and parts then
+			for _, part in ipairs(parts) do
+				if part.Name == "Hitbox" then
+					local mdl = part.Parent
+					if mdl and (mdl:FindFirstChild("VehicleMain") or mdl:FindFirstChild("Body")) then
 						return true
 					end
 				end
@@ -2137,7 +2139,6 @@ local function IsActorOnVehicle(actor)
 
 	return false
 end
-
 local function AutoFarm_NextTarget()
 	local enemies = ActorManager.Enemies
 	if not enemies or #enemies == 0 then return nil end
