@@ -2152,6 +2152,15 @@ local function AutoFarm_Tick()
 			return
 		end
 
+		-- Nếu target vừa leo lên phương tiện → bỏ, tìm target khác
+		if target.Seat or target.Platform or target.Turret then
+			AutoFarm._currentTarget = nil
+			ActorManager.SelectedTarget_RB = nil
+			ActorManager.SelectedActor_RB = nil
+			AutoFarm._phase = "seek"
+			return
+		end
+
 		-- Check delay giữa viên
 		if (now - AutoFarm._lastShot) < AutoFarm.ShootDelay then return end
 
