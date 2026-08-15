@@ -2882,8 +2882,8 @@ local function AK_Tick()
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
 			if not actor or not actor.Alive or not actor.Character then continue end
-			-- Skip actors seated in a vehicle
-			if actor.Seat then continue end
+			-- Skip actors on any vehicle surface (seat, passenger platform, turret)
+			if actor.Seat or actor.Platform or actor.Turret then continue end
 			local aPos = actor.Position
 			if not aPos and actor.Character.PrimaryPart then
 				aPos = actor.Character.PrimaryPart.Position
