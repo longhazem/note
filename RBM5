@@ -2105,19 +2105,23 @@ local function AutoFarm_NextTarget()
 		local idx = ((startIdx - 1 + i - 1) % count) + 1
 		local actor = enemies[idx]
 		if actor and actor.Alive and actor.Character then
-			-- Skip NPC đang trên trực thăng
-			local onHeli = false
-			if actor.Seat then
-				local uid = actor.Seat.UID
-				local veh = VehicleService and uid and VehicleService.Vehicles and VehicleService.Vehicles[uid]
-				if veh and veh.VehicleType == "Helicopter" then
-					onHeli = true
+			-- Debug: print actor.Seat structure để xem runtime value
+			if actor.Seat ~= nil then
+				local seatType = type(actor.Seat)
+				if seatType == "table" then
+					local keys = {}
+					for k, v in pairs(actor.Seat) do
+						table.insert(keys, tostring(k) .. "=" .. tostring(v))
+					end
+					print("[AK_DEBUG] actor.Seat table:", table.concat(keys, ", "))
+				else
+					print("[AK_DEBUG] actor.Seat is", seatType, "=", tostring(actor.Seat))
 				end
+				-- Tạm thời vẫn skip actor có Seat để kiểm tra
+				continue
 			end
-			if not onHeli then
-				AutoFarm._enemyIndex = (idx % count) + 1
-				return actor
-			end
+			AutoFarm._enemyIndex = (idx % count) + 1
+			return actor
 		end
 	end
 	return nil
