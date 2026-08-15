@@ -2094,47 +2094,46 @@ local function AutoFarm_Teleport(targetActor)
 end
 
 -- Pick next valid enemy
--- NPC tren heli: game set position theo vehicle CFrame moi frame, khong co Seat/SeatPart/Weld trong character
--- Detect bang: check RootPart co Weld voi part khong thuoc character (vehicle body part)
-
-local function _isPartInCharacter(part, character)
-	return part and part:IsDescendantOf(character)
-end
+-- VehicleType integer: Ground=0, Helicopter=1, FixedWing=2, Boat=3
+local HELI_TYPE = 1
+local HELI_PROX_SQ = 35 * 35
 
 local function IsActorOnVehicle(actor)
-	-- Layer 1: MTC internal refs
 	if actor.Seat then return true end
 	if actor.Platform then return true end
 	if actor.Turret then return true end
 
-	-- Layer 2: Roblox native SeatPart
 	local char = actor.Character
 	if not char then return false end
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if hum and hum.SeatPart then return true end
 
-	-- Layer 3: Check Weld tren RootPart / LowerTorso
-	local root = char:FindFirstChild("HumanoidRootPart")
-		or char:FindFirstChild("LowerTorso")
-		or char.PrimaryPart
-	if root then
-		for _, weld in ipairs(root:GetChildren()) do
-			if weld:IsA("Weld") or weld:IsA("WeldConstraint") or weld:IsA("Motor6D") then
-				local p0 = weld:IsA("WeldConstraint") and weld.Part0 or (weld.Part0 or nil)
-				local p1 = weld:IsA("WeldConstraint") and weld.Part1 or (weld.Part1 or nil)
-				if p0 and not _isPartInCharacter(p0, char) then return true end
-				if p1 and not _isPartInCharacter(p1, char) then return true end
+	if VehicleService and VehicleService.Vehicles then
+		local aPos = actor.Position
+			or (char.PrimaryPart and char.PrimaryPart.Position)
+		if aPos then
+			for _, veh in pairs(VehicleService.Vehicles) do
+				local vtype = rawget(veh, "VehicleType")
+				if vtype ~= HELI_TYPE then continue end
+				local vPos
+				pcall(function()
+					local hb = rawget(veh, "Hitbox")
+					if hb and hb.CFrame then
+						vPos = hb.CFrame.Position
+					else
+						local cf = rawget(veh, "CFrame")
+						vPos = cf and cf.Position
+					end
+				end)
+				if vPos then
+					local dx = aPos.X - vPos.X
+					local dy = aPos.Y - vPos.Y
+					local dz = aPos.Z - vPos.Z
+					if (dx*dx + dy*dy + dz*dz) <= HELI_PROX_SQ then
+						return true
+					end
+				end
 			end
-		end
-	end
-
-	-- Layer 4: Tat ca Weld tren toan bo character parts
-	for _, part in ipairs(char:GetDescendants()) do
-		if part:IsA("Weld") or part:IsA("WeldConstraint") then
-			local p0 = rawget and rawget(part, "Part0") or part.Part0
-			local p1 = rawget and rawget(part, "Part1") or part.Part1
-			if p0 and not _isPartInCharacter(p0, char) then return true end
-			if p1 and not _isPartInCharacter(p1, char) then return true end
 		end
 	end
 
