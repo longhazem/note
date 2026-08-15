@@ -2107,8 +2107,9 @@ local function AutoFarm_NextTarget()
 		if actor and actor.Alive and actor.Character then
 			-- Skip NPC đang trên trực thăng
 			local onHeli = false
-			if actor.Seat and VehicleService then
-				local veh = VehicleService:GetVehicle(actor.Seat.UID)
+			if actor.Seat then
+				local uid = actor.Seat.UID
+				local veh = VehicleService and uid and VehicleService.Vehicles and VehicleService.Vehicles[uid]
 				if veh and veh.VehicleType == "Helicopter" then
 					onHeli = true
 				end
