@@ -677,8 +677,8 @@ GetCombatTarget = function(mode)
 	local candidates=getgenv()._targetCandidates or table.create(64)
 	table.clear(candidates); getgenv()._targetCandidates=candidates
 	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouseX,mouseY
-	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
+	local mouse,mouseX,mouseY
+	if useFOV then mouse=UserInputService:GetMouseLocation(); mouseX,mouseY=mouse.X,mouse.Y end
 	local enemyList
 	if mode=="Rage" and ActorManager._sectors and ActorManager._playerSector then
 		enemyList={}
@@ -811,11 +811,13 @@ local function HookController(controller)
 	end
 end
 
-local FOVCircle=Drawing.new("Circle")
-FOVCircle.Thickness=1
-pcall(function() FOVCircle.NumSides=60 end)
-FOVCircle.Radius=Config.SilentAimFOV
-FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.NumSides = 60
+FOVCircle.Radius = Config.SilentAimFOV
+FOVCircle.Filled = false
+FOVCircle.Visible = false
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 
 getgenv().VelocityCache={}
 getgenv().PredictionDot=Drawing.new("Circle")
@@ -1342,11 +1344,13 @@ local function UpdateCombat(frameId)
 			end
 		end
 	end
+	local mouse = UserInputService:GetMouseLocation()
 	if FOVCircle then
-		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
-		local fovShow=Config.SilentAim and Config.ShowFOV
-		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
+		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
+		if FOVCircle.Visible then
+			FOVCircle.Position = mouse
+			FOVCircle.Radius = Config.SilentAimFOV
+		end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1493,24 +1497,14 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
 	-- Tính distance thực nếu LOD_Distance không có
-	local distance = actor.LOD_Distance
-	if not distance or distance <= 0 then
-		local pos = actor.Position
-		if not pos and actor.Character and actor.Character.PrimaryPart then
-			pos = actor.Character.PrimaryPart.Position
-		end
-		if pos then
-			distance = (Camera.CFrame.Position - pos).Magnitude
-		else
-			distance = 0
-		end
-	end
+	local distance = actor.LOD_Distance or 9999
 	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance > 1500 and (frameId%2) ~= 0 then return end
+	if distance > 1500 and (frameId % 4) ~= 0 then return end
+	if distance > 500 and (frameId % 2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1524,7 +1518,7 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos = actor.Position
+	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -1533,8 +1527,15 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	-- Chỉ dùng onScreen — reliable trên PC
-	if not onScreen then SetAllVisible(drawings,espData,false); return end
+	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
+	if not engineVisible then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
+	if not onScreen then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -1938,6 +1939,7 @@ S_World:AddDropdown({ Name="NVG Color", Flag="World_NVGColor", Values={"Green","
 -- FULLBRIGHT
 local _fbOriginal = nil
 local _fbColor = Color3.new(1, 1, 1)
+local _fbEnabled = false
 local _LS = game:GetService("Lighting")
 
 local function FB_Apply()
@@ -1963,13 +1965,14 @@ end
 
 S_World:AddToggle({ Name="FullBright", Flag="World_FullBright", Default=false,
 	Callback=function(v)
+		_fbEnabled = v
 		if v then FB_Apply() else FB_Restore() end
 	end })
 S_World:AddColorPicker({ Name="FB Ambient Color", Flag="World_FBColor",
 	Default=Color3.new(1, 1, 1),
 	Callback=function(v)
 		_fbColor = v
-		if Config.World_FullBright then
+		if _fbEnabled then
 			_LS.Ambient = _fbColor
 		end
 	end })
@@ -2761,7 +2764,6 @@ print("[AntiFall] Loaded")
 
 
 
--- ==========================================
 -- AURA KILL — Verified từ Flux_client.lua source
 -- Cipher đúng 100%: netEncode verified = RSpy dump match
 -- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
@@ -2995,7 +2997,8 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
--- ==========================================
+
+
 pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
@@ -3081,6 +3084,10 @@ S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, 
 	Callback=function(v) AutoFarm.OffsetY=v end})
 print("[AutoFarm] Loaded")
 end)
+
+
+
+
 
 -- AUTO LOCKPICK v4
 -- InputService._mounts["PickLock"] là callback thật
