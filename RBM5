@@ -2043,44 +2043,49 @@ table.insert(getgenv().Moon_Connections,flyKeybind)
 
 local AutoFarm = {
 	Enabled = false,
-	Range   = 0,         -- 0 = unlimited (studs)
+	TeleportOffset = Vector3.new(0, 0, 3),
+	SwitchDelay = 0.05,       -- delay giữa mỗi lần tp (giây)
 	_running = false,
 	_connection = nil,
+	_lastShot = 0,
+	_origin = nil,
 	_enemyIndex = 1,
-	_origin = nil,       -- vị trí player trước khi bắt đầu vòng
-	_lastTick = 0,
-	TickRate = 0.05,     -- giây giữa mỗi lần teleport (50ms)
 }
 
--- Teleport player đến pos — cùng pattern với Fly hook (line 1089)
-local function AutoFarm_Teleport(pos)
-	local ctrl = ControllerService and ControllerService.Controller
-	if not ctrl then return end
-	local localActor = ctrl._localActor
-		or (ReplicatorService and ReplicatorService.LocalActor)
-	if not localActor then return end
-	pcall(function()
-		ctrl._position = pos
-		ctrl._lastSafePosition = pos
-		localActor.SimulatedPosition = pos
-		localActor.Grounded = true
-		localActor.CFrame = CFrame.new(pos)
-		localActor.Orientation = localActor.Orientation or 0
-	end)
-end
-
--- Lấy vị trí hiện tại của player
-local function AutoFarm_GetMyPos()
-	local ctrl = ControllerService and ControllerService.Controller
-	if ctrl and ctrl._position then return ctrl._position end
+-- Teleport LocalActor đến vị trí gần target
+local function AutoFarm_Teleport(targetActor)
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if myActor then
-		if myActor.Position then return myActor.Position end
-		if myActor.Character and myActor.Character.PrimaryPart then
-			return myActor.Character.PrimaryPart.Position
+	if not myActor then return false end
+
+	local targetPos = targetActor.Position
+	if not targetPos then
+		local char = targetActor.Character
+		if char and char.PrimaryPart then
+			targetPos = char.PrimaryPart.Position
 		end
 	end
-	return Camera.CFrame.Position
+	if not targetPos then return false end
+
+	-- offset ra phía sau target dựa theo camera
+	local camDir = Camera.CFrame.LookVector
+	local offset = Vector3.new(
+		AutoFarm.TeleportOffset.X,
+		AutoFarm.TeleportOffset.Y,
+		AutoFarm.TeleportOffset.Z
+	)
+	local newPos = targetPos + Vector3.new(0, 2, 0) + (camDir * -offset.Z)
+
+	-- Set position via CharacterController
+	pcall(function()
+		myActor.SimulatedPosition = newPos
+		myActor.CFrame = CFrame.new(newPos, targetPos)
+		if ControllerService and ControllerService.Controller then
+			ControllerService.Controller._position = newPos
+			ControllerService.Controller._lastSafePosition = newPos
+		end
+	end)
+
+	return true
 end
 
 -- Pick next valid enemy
@@ -2103,65 +2108,52 @@ local function AutoFarm_NextTarget()
 	return nil
 end
 
--- Main farm tick: teleport đến NPC → bắn (AuraKill xử lý) → teleport về origin → next
+-- Main farm tick — chạy trên Heartbeat
 local function AutoFarm_Tick()
 	if not AutoFarm.Enabled then return end
 	if not ActorManager.Initialized then return end
 	local now = tick()
-	if now - AutoFarm._lastTick < AutoFarm.TickRate then return end
-	AutoFarm._lastTick = now
+	if now - AutoFarm._lastShot < AutoFarm.SwitchDelay then return end
+	AutoFarm._lastShot = now
 
-	-- Lưu origin đầu mỗi vòng
+	-- Lưu origin lần đầu
 	if not AutoFarm._origin then
-		AutoFarm._origin = AutoFarm_GetMyPos()
+		local myActor = ReplicatorService and ReplicatorService.LocalActor
+		if myActor then
+			AutoFarm._origin = myActor.Position
+				or (myActor.Character and myActor.Character.PrimaryPart
+					and myActor.Character.PrimaryPart.Position)
+		end
+		AutoFarm._origin = AutoFarm._origin or Camera.CFrame.Position
 	end
-
-	local enemies = ActorManager.Enemies
-	if not enemies or #enemies == 0 then return end
-	local count = #enemies
 
 	-- Tìm NPC tiếp theo
-	local target = nil
-	for i = 1, count do
-		local idx = ((AutoFarm._enemyIndex - 1 + i - 1) % count) + 1
-		local actor = enemies[idx]
-		if actor and actor.Alive and actor.Character then
-			-- Range filter
-			if AutoFarm.Range > 0 then
-				local aPos = actor.Position
-					or (actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
-				if aPos and (aPos - AutoFarm._origin).Magnitude > AutoFarm.Range then continue end
-			end
-			AutoFarm._enemyIndex = (idx % count) + 1
-			target = actor
-			break
-		end
-	end
-
+	local target = AutoFarm_NextTarget()
 	if not target then
-		-- Hết một vòng → reset về origin
-		AutoFarm_Teleport(AutoFarm._origin)
+		-- Hết vòng — về origin, reset
+		if AutoFarm._origin then
+			local fakeActor = {
+				Position = AutoFarm._origin,
+				Character = nil,
+			}
+			AutoFarm_Teleport(fakeActor)
+		end
 		AutoFarm._origin = nil
 		AutoFarm._enemyIndex = 1
 		return
 	end
 
-	-- Lấy vị trí NPC
-	local targetPos = target.Position
-		or (target.Character.PrimaryPart and target.Character.PrimaryPart.Position)
-	if not targetPos then return end
+	-- Teleport đến NPC
+	AutoFarm_Teleport(target)
 
-	-- Set ragebot target để AuraKill xử lý damage
-	local targetPart = target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
-		or target.Character:FindFirstChild("UpperTorso")
-	ActorManager.SelectedTarget_RB = targetPart
-	ActorManager.SelectedActor_RB = target
-
-	-- Teleport đến NPC (đứng trên đầu 2 studs)
-	AutoFarm_Teleport(targetPos + Vector3.new(0, 2, 0))
-
-	-- Teleport về origin ngay lập tức
-	AutoFarm_Teleport(AutoFarm._origin)
+	-- Teleport về origin ngay
+	if AutoFarm._origin then
+		local originActor = {
+			Position = AutoFarm._origin,
+			Character = nil,
+		}
+		AutoFarm_Teleport(originActor)
+	end
 end
 
 -- Start / Stop
@@ -2170,9 +2162,11 @@ function AutoFarm.Start()
 	AutoFarm._running = true
 	AutoFarm._enemyIndex = 1
 	AutoFarm._origin = nil
-	AutoFarm._lastTick = 0
+	AutoFarm._lastShot = 0
+
 	AutoFarm._connection = RunService.Heartbeat:Connect(AutoFarm_Tick)
 	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
+	print("[AutoFarm] Started")
 end
 
 function AutoFarm.Stop()
@@ -2180,10 +2174,12 @@ function AutoFarm.Stop()
 	AutoFarm._origin = nil
 	ActorManager.SelectedTarget_RB = nil
 	ActorManager.SelectedActor_RB = nil
+
 	if AutoFarm._connection then
 		pcall(function() AutoFarm._connection:Disconnect() end)
 		AutoFarm._connection = nil
 	end
+	print("[AutoFarm] Stopped")
 end
 
 
@@ -2929,11 +2925,85 @@ pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
 
+local function AF_GetTarget()
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return nil end
+	local myPos = myActor.Position or Camera.CFrame.Position
+	local best, bestDist = nil, math.huge
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if actor and actor.Alive and actor.Character then
+				local pos = actor.Position
+				if not pos and actor.Character.PrimaryPart then
+					pos = actor.Character.PrimaryPart.Position
+				end
+				if pos then
+					local d = (pos - myPos).Magnitude
+					if d < bestDist then bestDist = d; best = actor end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function AF_TeleportTo(actor)
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local pos = actor.Position
+	if not pos and actor.Character and actor.Character.PrimaryPart then
+		pos = actor.Character.PrimaryPart.Position
+	end
+	if not pos then return end
+	local targetPos = Vector3.new(pos.X, pos.Y + AutoFarm.OffsetY, pos.Z)
+	pcall(function()
+		if ControllerService and ControllerService.Controller then
+			local ctrl = ControllerService.Controller
+			ctrl._position = targetPos
+			ctrl._lastSafePosition = targetPos
+		end
+		myActor.SimulatedPosition = targetPos
+		myActor.CFrame = CFrame.new(targetPos)
+	end)
+end
+
+local function AF_Tick()
+	if not AutoFarm.Enabled then return end
+	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
+		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=2})
+		AutoFarm.Enabled = false
+		return
+	end
+	local target = AF_GetTarget()
+	if target then AF_TeleportTo(target) end
+end
+
+function AutoFarm.Start()
+	if AutoFarm._running then return end
+	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
+		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=3})
+		return
+	end
+	AutoFarm._running = true
+	AutoFarm._connection = RunService.Heartbeat:Connect(AF_Tick)
+	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
+end
+
+function AutoFarm.Stop()
+	AutoFarm._running = false
+	if AutoFarm._connection then
+		pcall(function() AutoFarm._connection:Disconnect() end)
+		AutoFarm._connection = nil
+	end
+end
+
+getgenv().AutoFarm = AutoFarm
+
 local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
 S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
 	Callback=function(v) AutoFarm.Enabled=v; if v then AutoFarm.Start() else AutoFarm.Stop() end end})
-S_AF:AddSlider({Name="Range (0 = unlimited)", Flag="AF_Range", Min=0, Max=2000, Default=0, Rounding=0,
-	Callback=function(v) AutoFarm.Range=v end})
+S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
+	Callback=function(v) AutoFarm.OffsetY=v end})
 print("[AutoFarm] Loaded")
 end)
 
