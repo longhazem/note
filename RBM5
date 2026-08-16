@@ -1935,6 +1935,45 @@ end })
 S_World:AddDropdown({ Name="NVG Color", Flag="World_NVGColor", Values={"Green","Blue"}, Default="Green", Callback=function(v)
 	CurrentNVGColor=v; ApplyNVGEffect() end })
 
+-- FULLBRIGHT
+local _fbOriginal = nil
+local _fbColor = Color3.new(1, 1, 1)
+local _LS = game:GetService("Lighting")
+
+local function FB_Apply()
+	if not _fbOriginal then
+		_fbOriginal = {
+			Brightness    = _LS.Brightness,
+			ClockTime     = _LS.ClockTime,
+			GlobalShadows = _LS.GlobalShadows,
+			Ambient       = _LS.Ambient,
+		}
+	end
+	_LS.Brightness    = 2
+	_LS.ClockTime     = 12
+	_LS.GlobalShadows = false
+	_LS.Ambient       = _fbColor
+end
+
+local function FB_Restore()
+	if not _fbOriginal then return end
+	for k, v in pairs(_fbOriginal) do _LS[k] = v end
+	_fbOriginal = nil
+end
+
+S_World:AddToggle({ Name="FullBright", Flag="World_FullBright", Default=false,
+	Callback=function(v)
+		if v then FB_Apply() else FB_Restore() end
+	end })
+S_World:AddColorPicker({ Name="FB Ambient Color", Flag="World_FBColor",
+	Default=Color3.new(1, 1, 1),
+	Callback=function(v)
+		_fbColor = v
+		if Config.World_FullBright then
+			_LS.Ambient = _fbColor
+		end
+	end })
+
 -- Vehicles Tab
 local VehicleTab=Window:DrawTab({ Name="Vehicles", Icon="car", Type="Double" })
 local S_VehVisuals=VehicleTab:DrawSection({ Name="Visuals", Position="right" })
@@ -2037,83 +2076,186 @@ end)
 table.insert(getgenv().Moon_Connections,flyKeybind)
 
 -- ==========================================
--- AUTO FARM
+-- AUTO FARM SYSTEM
+-- Teleport to enemy → shoot N shots → next enemy
+-- ==========================================
+
 local AutoFarm = {
-	Enabled     = false,
-	SwitchDelay = 0.05,
-	_running    = false,
+	Enabled = false,
+	ShotsPerTarget = 2,       -- viên bắn mỗi mục tiêu
+	TeleportOffset = Vector3.new(0, 0, 3), -- offset phía sau target
+	ShootDelay = 0.12,        -- delay giữa các viên (giây)
+	SwitchDelay = 0.3,        -- delay trước khi switch target
+	_running = false,
 	_connection = nil,
-	_lastTick   = 0,
-	_origin     = nil,
-	_index      = 1,
+	_currentTarget = nil,
+	_shotsFired = 0,
+	_lastShot = 0,
+	_phase = "seek",          -- seek | shoot | switch
+	_enemyIndex = 1,
 }
 
+-- Teleport LocalActor đến vị trí gần target
+local function AutoFarm_Teleport(targetActor)
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return false end
+
+	local targetPos = targetActor.Position
+	if not targetPos then
+		local char = targetActor.Character
+		if char and char.PrimaryPart then
+			targetPos = char.PrimaryPart.Position
+		end
+	end
+	if not targetPos then return false end
+
+	-- offset ra phía sau target dựa theo camera
+	local camDir = Camera.CFrame.LookVector
+	local offset = Vector3.new(
+		AutoFarm.TeleportOffset.X,
+		AutoFarm.TeleportOffset.Y,
+		AutoFarm.TeleportOffset.Z
+	)
+	local newPos = targetPos + Vector3.new(0, 2, 0) + (camDir * -offset.Z)
+
+	-- Set position via CharacterController
+	pcall(function()
+		myActor.SimulatedPosition = newPos
+		myActor.CFrame = CFrame.new(newPos, targetPos)
+		if ControllerService and ControllerService.Controller then
+			ControllerService.Controller._position = newPos
+			ControllerService.Controller._lastSafePosition = newPos
+		end
+	end)
+
+	return true
+end
+
+-- Pick next valid enemy
+local function AutoFarm_NextTarget()
+	local enemies = ActorManager.Enemies
+	if not enemies or #enemies == 0 then return nil end
+
+	-- cycle qua list
+	local startIdx = AutoFarm._enemyIndex
+	local count = #enemies
+
+	for i = 1, count do
+		local idx = ((startIdx - 1 + i - 1) % count) + 1
+		local actor = enemies[idx]
+		if actor and actor.Alive and actor.Character then
+			AutoFarm._enemyIndex = (idx % count) + 1
+			return actor
+		end
+	end
+	return nil
+end
+
+-- Main farm tick — chạy trên Heartbeat
 local function AutoFarm_Tick()
 	if not AutoFarm.Enabled then return end
 	if not ActorManager.Initialized then return end
+
 	local now = tick()
-	if now - AutoFarm._lastTick < AutoFarm.SwitchDelay then return end
-	AutoFarm._lastTick = now
+	local equippedController = WeaponManager.Equipped or
+		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
 
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	local myChar = myActor.Character
-	if not myChar then return end
-	local myRoot = myChar:FindFirstChild("HumanoidRootPart")
-	if not myRoot then return end
+	-- PHASE: SEEK — tìm và teleport đến target mới
+	if AutoFarm._phase == "seek" then
+		local target = AutoFarm_NextTarget()
+		if not target then return end
 
-	-- Lưu origin
-	if not AutoFarm._origin then
-		AutoFarm._origin = myRoot.CFrame
+		AutoFarm._currentTarget = target
+		AutoFarm._shotsFired = 0
+
+		-- Set ragebot target
+		ActorManager.SelectedTarget_RB = target.Character and target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
+		ActorManager.SelectedActor_RB = target
+
+		-- Teleport
+		AutoFarm_Teleport(target)
+
+		AutoFarm._phase = "shoot"
+		AutoFarm._lastShot = now
+		return
 	end
 
-	local enemies = ActorManager.Enemies
-	if not enemies or #enemies == 0 then return end
-	local count = #enemies
+	-- PHASE: SHOOT — bắn N viên
+	if AutoFarm._phase == "shoot" then
+		local target = AutoFarm._currentTarget
 
-	-- Next index, không check sống/chết
-	AutoFarm._index = (AutoFarm._index % count) + 1
-	local actor = enemies[AutoFarm._index]
-
-	-- Teleport đến NPC
-	if actor and actor.Character then
-		local enemyRoot = actor.Character:FindFirstChild("HumanoidRootPart")
-			or actor.Character:FindFirstChild("UpperTorso")
-			or actor.Character.PrimaryPart
-		if enemyRoot then
-			pcall(function()
-				myRoot.CFrame = CFrame.new(enemyRoot.Position + Vector3.new(0, 2, 0))
-			end)
+		-- Validate target còn sống
+		if not target or not target.Alive then
+			AutoFarm._phase = "seek"
+			return
 		end
+
+		-- Check delay giữa viên
+		if (now - AutoFarm._lastShot) < AutoFarm.ShootDelay then return end
+
+		-- Bắn
+		if equippedController then
+			-- Update target part mỗi viên (vì target có thể di chuyển)
+			local char = target.Character
+			if char then
+				local part = char:FindFirstChild(Config.Rage_TargetPart or "Head")
+					or char:FindFirstChild("UpperTorso")
+				if part then
+					ActorManager.SelectedTarget_RB = part
+					ActorManager.SelectedActor_RB = target
+				end
+			end
+
+			pcall(function() equippedController:Discharge() end)
+			AutoFarm._shotsFired = AutoFarm._shotsFired + 1
+			AutoFarm._lastShot = now
+		end
+
+		-- Đủ viên → chuyển phase
+		if AutoFarm._shotsFired >= AutoFarm.ShotsPerTarget then
+			AutoFarm._phase = "switch"
+			AutoFarm._lastShot = now
+		end
+		return
 	end
 
-	-- Về origin ngay
-	pcall(function()
-		myRoot.CFrame = AutoFarm._origin
-	end)
+	-- PHASE: SWITCH — chờ rồi tìm target kế
+	if AutoFarm._phase == "switch" then
+		if (now - AutoFarm._lastShot) >= AutoFarm.SwitchDelay then
+			AutoFarm._currentTarget = nil
+			ActorManager.SelectedTarget_RB = nil
+			ActorManager.SelectedActor_RB = nil
+			AutoFarm._phase = "seek"
+		end
+		return
+	end
 end
 
+-- Start / Stop
 function AutoFarm.Start()
 	if AutoFarm._running then return end
 	AutoFarm._running = true
-	AutoFarm._index   = 1
-	AutoFarm._origin  = nil
-	AutoFarm._lastTick = 0
+	AutoFarm._phase = "seek"
+	AutoFarm._enemyIndex = 1
+
 	AutoFarm._connection = RunService.Heartbeat:Connect(AutoFarm_Tick)
 	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
+	print("[AutoFarm] Started")
 end
 
 function AutoFarm.Stop()
 	AutoFarm._running = false
-	AutoFarm._origin  = nil
+	AutoFarm._currentTarget = nil
+	ActorManager.SelectedTarget_RB = nil
+	ActorManager.SelectedActor_RB = nil
+	AutoFarm._phase = "seek"
+
 	if AutoFarm._connection then
 		pcall(function() AutoFarm._connection:Disconnect() end)
 		AutoFarm._connection = nil
 	end
+	print("[AutoFarm] Stopped")
 end
-
-
-print("[AutoFarm] Loaded")
 
 
 
