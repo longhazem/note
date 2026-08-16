@@ -2052,18 +2052,35 @@ local AutoFarm = {
 	TickRate = 0.05,     -- giây giữa mỗi lần teleport (50ms)
 }
 
--- Teleport LocalActor đến một Vector3 position
+-- Teleport player đến pos — cùng pattern với Fly hook (line 1089)
 local function AutoFarm_Teleport(pos)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
+	local ctrl = ControllerService and ControllerService.Controller
+	if not ctrl then return end
+	local localActor = ctrl._localActor
+		or (ReplicatorService and ReplicatorService.LocalActor)
+	if not localActor then return end
 	pcall(function()
-		myActor.SimulatedPosition = pos
-		myActor.CFrame = CFrame.new(pos)
-		if ControllerService and ControllerService.Controller then
-			ControllerService.Controller._position = pos
-			ControllerService.Controller._lastSafePosition = pos
-		end
+		ctrl._position = pos
+		ctrl._lastSafePosition = pos
+		localActor.SimulatedPosition = pos
+		localActor.Grounded = true
+		localActor.CFrame = CFrame.new(pos)
+		localActor.Orientation = localActor.Orientation or 0
 	end)
+end
+
+-- Lấy vị trí hiện tại của player
+local function AutoFarm_GetMyPos()
+	local ctrl = ControllerService and ControllerService.Controller
+	if ctrl and ctrl._position then return ctrl._position end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if myActor then
+		if myActor.Position then return myActor.Position end
+		if myActor.Character and myActor.Character.PrimaryPart then
+			return myActor.Character.PrimaryPart.Position
+		end
+	end
+	return Camera.CFrame.Position
 end
 
 -- Pick next valid enemy
@@ -2094,12 +2111,9 @@ local function AutoFarm_Tick()
 	if now - AutoFarm._lastTick < AutoFarm.TickRate then return end
 	AutoFarm._lastTick = now
 
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-
 	-- Lưu origin đầu mỗi vòng
 	if not AutoFarm._origin then
-		AutoFarm._origin = myActor.Position or Camera.CFrame.Position
+		AutoFarm._origin = AutoFarm_GetMyPos()
 	end
 
 	local enemies = ActorManager.Enemies
