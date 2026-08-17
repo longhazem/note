@@ -677,8 +677,8 @@ GetCombatTarget = function(mode)
 	local candidates=getgenv()._targetCandidates or table.create(64)
 	table.clear(candidates); getgenv()._targetCandidates=candidates
 	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouse,mouseX,mouseY
-	if useFOV then mouse=UserInputService:GetMouseLocation(); mouseX,mouseY=mouse.X,mouse.Y end
+	local mouseX,mouseY
+	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
 	local enemyList
 	if mode=="Rage" and ActorManager._sectors and ActorManager._playerSector then
 		enemyList={}
@@ -811,13 +811,11 @@ local function HookController(controller)
 	end
 end
 
-local FOVCircle = Drawing.new("Circle")
-FOVCircle.Thickness = 1
-FOVCircle.NumSides = 60
-FOVCircle.Radius = Config.SilentAimFOV
-FOVCircle.Filled = false
-FOVCircle.Visible = false
-FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+local FOVCircle=Drawing.new("Circle")
+FOVCircle.Thickness=1
+pcall(function() FOVCircle.NumSides=60 end)
+FOVCircle.Radius=Config.SilentAimFOV
+FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
 
 getgenv().VelocityCache={}
 getgenv().PredictionDot=Drawing.new("Circle")
@@ -1344,13 +1342,11 @@ local function UpdateCombat(frameId)
 			end
 		end
 	end
-	local mouse = UserInputService:GetMouseLocation()
 	if FOVCircle then
-		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
-		if FOVCircle.Visible then
-			FOVCircle.Position = mouse
-			FOVCircle.Radius = Config.SilentAimFOV
-		end
+		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
+		local fovShow=Config.SilentAim and Config.ShowFOV
+		pcall(function() FOVCircle.Visible=fovShow end)
+		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1497,14 +1493,24 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
 	-- Tính distance thực nếu LOD_Distance không có
-	local distance = actor.LOD_Distance or 9999
+	local distance = actor.LOD_Distance
+	if not distance or distance <= 0 then
+		local pos = actor.Position
+		if not pos and actor.Character and actor.Character.PrimaryPart then
+			pos = actor.Character.PrimaryPart.Position
+		end
+		if pos then
+			distance = (Camera.CFrame.Position - pos).Magnitude
+		else
+			distance = 0
+		end
+	end
 	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance > 1500 and (frameId % 4) ~= 0 then return end
-	if distance > 500 and (frameId % 2) ~= 0 then return end
+	if distance > 1500 and (frameId%2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1518,7 +1524,7 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
+	local worldPos = actor.Position
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -1527,15 +1533,8 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
-	if not engineVisible then
-		SetAllVisible(drawings, espData, false)
-		return
-	end
-	if not onScreen then
-		SetAllVisible(drawings, espData, false)
-		return
-	end
+	-- Chỉ dùng onScreen — reliable trên PC
+	if not onScreen then SetAllVisible(drawings,espData,false); return end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -1936,47 +1935,6 @@ end })
 S_World:AddDropdown({ Name="NVG Color", Flag="World_NVGColor", Values={"Green","Blue"}, Default="Green", Callback=function(v)
 	CurrentNVGColor=v; ApplyNVGEffect() end })
 
--- FULLBRIGHT
-local _fbOriginal = nil
-local _fbColor = Color3.new(1, 1, 1)
-local _fbEnabled = false
-local _LS = game:GetService("Lighting")
-
-local function FB_Apply()
-	if not _fbOriginal then
-		_fbOriginal = {
-			Brightness    = _LS.Brightness,
-			ClockTime     = _LS.ClockTime,
-			GlobalShadows = _LS.GlobalShadows,
-			Ambient       = _LS.Ambient,
-		}
-	end
-	_LS.Brightness    = 2
-	_LS.ClockTime     = 12
-	_LS.GlobalShadows = false
-	_LS.Ambient       = _fbColor
-end
-
-local function FB_Restore()
-	if not _fbOriginal then return end
-	for k, v in pairs(_fbOriginal) do _LS[k] = v end
-	_fbOriginal = nil
-end
-
-S_World:AddToggle({ Name="FullBright", Flag="World_FullBright", Default=false,
-	Callback=function(v)
-		_fbEnabled = v
-		if v then FB_Apply() else FB_Restore() end
-	end })
-S_World:AddColorPicker({ Name="FB Ambient Color", Flag="World_FBColor",
-	Default=Color3.new(1, 1, 1),
-	Callback=function(v)
-		_fbColor = v
-		if _fbEnabled then
-			_LS.Ambient = _fbColor
-		end
-	end })
-
 -- Vehicles Tab
 local VehicleTab=Window:DrawTab({ Name="Vehicles", Icon="car", Type="Double" })
 local S_VehVisuals=VehicleTab:DrawSection({ Name="Visuals", Position="right" })
@@ -2084,180 +2042,109 @@ table.insert(getgenv().Moon_Connections,flyKeybind)
 -- ==========================================
 
 local AutoFarm = {
-	Enabled = false,
-	ShotsPerTarget = 2,       -- viên bắn mỗi mục tiêu
-	TeleportOffset = Vector3.new(0, 0, 3), -- offset phía sau target
-	ShootDelay = 0.12,        -- delay giữa các viên (giây)
-	SwitchDelay = 0.3,        -- delay trước khi switch target
-	_running = false,
+	Enabled    = false,
+	Range      = 0,
+	OffsetY    = -2,
+	ShootDelay = 0.08,
+	_origin    = nil,
 	_connection = nil,
-	_currentTarget = nil,
-	_shotsFired = 0,
-	_lastShot = 0,
-	_phase = "seek",          -- seek | shoot | switch
-	_enemyIndex = 1,
+	_index     = 1,
+	_lastShot  = 0,
 }
 
--- Teleport LocalActor đến vị trí gần target
-local function AutoFarm_Teleport(targetActor)
+local function AutoFarm_Teleport(pos)
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return false end
-
-	local targetPos = targetActor.Position
-	if not targetPos then
-		local char = targetActor.Character
-		if char and char.PrimaryPart then
-			targetPos = char.PrimaryPart.Position
-		end
-	end
-	if not targetPos then return false end
-
-	-- offset ra phía sau target dựa theo camera
-	local camDir = Camera.CFrame.LookVector
-	local offset = Vector3.new(
-		AutoFarm.TeleportOffset.X,
-		AutoFarm.TeleportOffset.Y,
-		AutoFarm.TeleportOffset.Z
-	)
-	local newPos = targetPos + Vector3.new(0, 2, 0) + (camDir * -offset.Z)
-
-	-- Set position via CharacterController
+	if not myActor then return end
 	pcall(function()
-		myActor.SimulatedPosition = newPos
-		myActor.CFrame = CFrame.new(newPos, targetPos)
+		myActor.SimulatedPosition = pos
+		myActor.CFrame = CFrame.new(pos)
 		if ControllerService and ControllerService.Controller then
-			ControllerService.Controller._position = newPos
-			ControllerService.Controller._lastSafePosition = newPos
+			ControllerService.Controller._position = pos
+			ControllerService.Controller._lastSafePosition = pos
 		end
 	end)
-
-	return true
 end
 
--- Pick next valid enemy
-local function AutoFarm_NextTarget()
-	local enemies = ActorManager.Enemies
-	if not enemies or #enemies == 0 then return nil end
-
-	-- cycle qua list
-	local startIdx = AutoFarm._enemyIndex
-	local count = #enemies
-
-	for i = 1, count do
-		local idx = ((startIdx - 1 + i - 1) % count) + 1
-		local actor = enemies[idx]
-		if actor and actor.Alive and actor.Character then
-			AutoFarm._enemyIndex = (idx % count) + 1
-			return actor
-		end
-	end
-	return nil
-end
-
--- Main farm tick — chạy trên Heartbeat
 local function AutoFarm_Tick()
 	if not AutoFarm.Enabled then return end
 	if not ActorManager.Initialized then return end
-
 	local now = tick()
-	local equippedController = WeaponManager.Equipped or
-		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+	if now - AutoFarm._lastShot < AutoFarm.ShootDelay then return end
 
-	-- PHASE: SEEK — tìm và teleport đến target mới
-	if AutoFarm._phase == "seek" then
-		local target = AutoFarm_NextTarget()
-		if not target then return end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
 
-		AutoFarm._currentTarget = target
-		AutoFarm._shotsFired = 0
+	if not AutoFarm._origin then
+		AutoFarm._origin = myActor.Position or Camera.CFrame.Position
+	end
 
-		-- Set ragebot target
-		ActorManager.SelectedTarget_RB = target.Character and target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
-		ActorManager.SelectedActor_RB = target
-
-		-- Teleport
-		AutoFarm_Teleport(target)
-
-		AutoFarm._phase = "shoot"
-		AutoFarm._lastShot = now
+	local enemies = ActorManager.Enemies
+	if not enemies or #enemies == 0 then
+		AutoFarm._origin = nil
 		return
 	end
 
-	-- PHASE: SHOOT — bắn N viên
-	if AutoFarm._phase == "shoot" then
-		local target = AutoFarm._currentTarget
+	local count = #enemies
+	local myPos = AutoFarm._origin
+	local target = nil
 
-		-- Validate target còn sống
-		if not target or not target.Alive then
-			AutoFarm._phase = "seek"
-			return
+	for i = 1, count do
+		local idx = ((AutoFarm._index - 1 + i - 1) % count) + 1
+		local actor = enemies[idx]
+		if not actor or not actor.Alive or not actor.Character then continue end
+		if AutoFarm.Range > 0 then
+			local aPos = actor.Position
+				or (actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
+			if not aPos or (aPos - myPos).Magnitude > AutoFarm.Range then continue end
 		end
+		if actor.Seat or actor.Platform or actor.Turret then continue end
+		local hum = actor.Character:FindFirstChildOfClass("Humanoid")
+		if hum and hum.SeatPart then continue end
+		AutoFarm._index = (idx % count) + 1
+		target = actor
+		break
+	end
 
-		-- Check delay giữa viên
-		if (now - AutoFarm._lastShot) < AutoFarm.ShootDelay then return end
+	if not target then
+		AutoFarm_Teleport(AutoFarm._origin)
+		AutoFarm._origin = nil
+		AutoFarm._index = 1
+		return
+	end
 
-		-- Bắn
-		if equippedController then
-			-- Update target part mỗi viên (vì target có thể di chuyển)
-			local char = target.Character
-			if char then
-				local part = char:FindFirstChild(Config.Rage_TargetPart or "Head")
-					or char:FindFirstChild("UpperTorso")
-				if part then
-					ActorManager.SelectedTarget_RB = part
-					ActorManager.SelectedActor_RB = target
-				end
+	local targetPos = target.Position
+		or (target.Character.PrimaryPart and target.Character.PrimaryPart.Position)
+	if not targetPos then return end
+
+	local shootPos = targetPos + Vector3.new(0, AutoFarm.OffsetY + 2, 0)
+	AutoFarm_Teleport(shootPos)
+
+	pcall(function()
+		if BulletService and BulletService.Discharge then
+			local myWeapon = myActor and myActor.Firearm
+			if myWeapon then
+				BulletService:Discharge(myWeapon, targetPos)
 			end
-
-			pcall(function() equippedController:Discharge() end)
-			AutoFarm._shotsFired = AutoFarm._shotsFired + 1
-			AutoFarm._lastShot = now
 		end
+	end)
 
-		-- Đủ viên → chuyển phase
-		if AutoFarm._shotsFired >= AutoFarm.ShotsPerTarget then
-			AutoFarm._phase = "switch"
-			AutoFarm._lastShot = now
-		end
-		return
-	end
-
-	-- PHASE: SWITCH — chờ rồi tìm target kế
-	if AutoFarm._phase == "switch" then
-		if (now - AutoFarm._lastShot) >= AutoFarm.SwitchDelay then
-			AutoFarm._currentTarget = nil
-			ActorManager.SelectedTarget_RB = nil
-			ActorManager.SelectedActor_RB = nil
-			AutoFarm._phase = "seek"
-		end
-		return
-	end
+	AutoFarm_Teleport(AutoFarm._origin)
+	AutoFarm._lastShot = tick()
 end
 
--- Start / Stop
 function AutoFarm.Start()
-	if AutoFarm._running then return end
-	AutoFarm._running = true
-	AutoFarm._phase = "seek"
-	AutoFarm._enemyIndex = 1
-
+	if AutoFarm._connection then AutoFarm._connection:Disconnect() end
+	AutoFarm._origin = nil
+	AutoFarm._index = 1
+	AutoFarm._lastShot = 0
 	AutoFarm._connection = RunService.Heartbeat:Connect(AutoFarm_Tick)
-	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
-	print("[AutoFarm] Started")
 end
 
 function AutoFarm.Stop()
-	AutoFarm._running = false
-	AutoFarm._currentTarget = nil
-	ActorManager.SelectedTarget_RB = nil
-	ActorManager.SelectedActor_RB = nil
-	AutoFarm._phase = "seek"
-
-	if AutoFarm._connection then
-		pcall(function() AutoFarm._connection:Disconnect() end)
-		AutoFarm._connection = nil
-	end
-	print("[AutoFarm] Stopped")
+	if AutoFarm._connection then AutoFarm._connection:Disconnect() end
+	AutoFarm._connection = nil
+	AutoFarm._origin = nil
+	AutoFarm._index = 1
 end
 
 
@@ -2545,13 +2432,15 @@ local function HS_Play()
 	if not HitSound._sound then HS_Init() end
 	pcall(function()
 		HitSound._sound.Volume = HitSound.Volume
+		HitSound._sound:Stop()
 		HitSound._sound:Play()
 	end)
 end
 
 -- Hook BulletService.Discharge — detect khi đạn trúng enemy
 local function HS_Hook()
-	if not BulletService or BulletService._hitSoundHooked then return end
+	if BulletService and BulletService._hitSoundHooked then return end
+	if not BulletService then return end
 
 	local existing = BulletService.Discharge
 	BulletService.Discharge = function(self, originCF, ...)
@@ -2596,6 +2485,13 @@ local function HS_Hook()
 end
 
 HS_Init()
+
+task.spawn(function()
+	while not (BulletService and BulletService._hitSoundHooked) do
+		if HitSound.Enabled then HS_Hook() end
+		task.wait(2)
+	end
+end)
 
 -- UI — Misc tab
 local S_HitSound = MiscTab:DrawSection({ Name="Hit Sound", Position="left" })
@@ -2764,6 +2660,7 @@ print("[AntiFall] Loaded")
 
 
 
+-- ==========================================
 -- AURA KILL — Verified từ Flux_client.lua source
 -- Cipher đúng 100%: netEncode verified = RSpy dump match
 -- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
@@ -2923,6 +2820,8 @@ local function AK_Tick()
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
 			if not actor or not actor.Alive or not actor.Character then continue end
+			-- Skip actors on any vehicle surface (seat, passenger platform, turret)
+			if actor.Seat or actor.Platform or actor.Turret then continue end
 			local aPos = actor.Position
 			if not aPos and actor.Character.PrimaryPart then
 				aPos = actor.Character.PrimaryPart.Position
@@ -2997,8 +2896,7 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
-
-
+-- ==========================================
 pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
@@ -3045,49 +2943,15 @@ local function AF_TeleportTo(actor)
 	end)
 end
 
-local function AF_Tick()
-	if not AutoFarm.Enabled then return end
-	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
-		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=2})
-		AutoFarm.Enabled = false
-		return
-	end
-	local target = AF_GetTarget()
-	if target then AF_TeleportTo(target) end
-end
-
-function AutoFarm.Start()
-	if AutoFarm._running then return end
-	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
-		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=3})
-		return
-	end
-	AutoFarm._running = true
-	AutoFarm._connection = RunService.Heartbeat:Connect(AF_Tick)
-	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
-end
-
-function AutoFarm.Stop()
-	AutoFarm._running = false
-	if AutoFarm._connection then
-		pcall(function() AutoFarm._connection:Disconnect() end)
-		AutoFarm._connection = nil
-	end
-end
-
-getgenv().AutoFarm = AutoFarm
-
 local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
 S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
 	Callback=function(v) AutoFarm.Enabled=v; if v then AutoFarm.Start() else AutoFarm.Stop() end end})
 S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
 	Callback=function(v) AutoFarm.OffsetY=v end})
+S_AF:AddSlider({Name="Range (0 = unlimited)", Flag="AF_Range", Min=0, Max=2000, Default=0, Rounding=0,
+	Callback=function(v) AutoFarm.Range=v end})
 print("[AutoFarm] Loaded")
 end)
-
-
-
-
 
 -- AUTO LOCKPICK v4
 -- InputService._mounts["PickLock"] là callback thật
@@ -3162,4 +3026,111 @@ S_ALP:AddToggle({Name="Enable Auto Lockpick", Flag="ALP_Enabled", Default=false,
         if v then AutoLockpick.Start() else AutoLockpick.Stop() end
     end})
 print("[AutoLockpick] Loaded")
+
+-- ==========================================
+-- AUTO OBJ (Plant Explosive)
+-- ==========================================
+local AutoObj = {
+	Enabled    = false,
+	_lastFire  = 0,
+	_connection = nil,
+	_net       = nil,
+}
+
+local function AOJ_FindNet()
+	if AutoObj._net and rawget(AutoObj._net, "_key") then return AutoObj._net end
+	if shared and type(shared.import) == "function" then
+		local ok, net = pcall(function() return shared.import("network") end)
+		if ok and net and rawget(net, "_key") and rawget(net, "_code") then
+			AutoObj._net = net; return net
+		end
+	end
+	local gok, gc = pcall(function() return filtergc("table") end)
+	if not gok then gok, gc = pcall(function() return getgc(true) end) end
+	if gok and gc then
+		for _, v in pairs(gc) do
+			if type(v) ~= "table" then continue end
+			local k, co, ev = rawget(v,"_key"), rawget(v,"_code"), rawget(v,"_events")
+			if type(k)=="table" and #k>=5
+				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
+				and type(ev)=="table"
+			then
+				local ok2 = true
+				for _,n in ipairs(k) do if type(n)~="number" then ok2=false; break end end
+				if ok2 then AutoObj._net = v; return v end
+			end
+		end
+	end
+	return nil
+end
+
+local function AOJ_GetPos(obj)
+	if obj:IsA("Model") then
+		return obj.PrimaryPart and obj.PrimaryPart.Position
+	elseif obj:IsA("BasePart") then
+		return obj.Position
+	end
+end
+
+local function AOJ_Tick()
+	if not AutoObj.Enabled then return end
+	local now = tick()
+	if now - AutoObj._lastFire < 2 then return end
+
+	local net = AOJ_FindNet()
+	if not net then return end
+
+	local char = LocalPlayer.Character
+	local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
+	if not root then return end
+
+	local nearest, nearestPos, nearestDist = nil, nil, math.huge
+	for _, obj in ipairs(workspace:GetChildren()) do
+		if obj.Name ~= "Explosive" then continue end
+		local pos = AOJ_GetPos(obj)
+		if not pos then continue end
+		local d = (pos - root.Position).Magnitude
+		if d < nearestDist then
+			nearest, nearestPos, nearestDist = obj, pos, d
+		end
+	end
+
+	if not nearest then return end
+
+	pcall(function() root.CFrame = CFrame.new(nearestPos + Vector3.new(0, 3, 0)) end)
+	task.wait()
+	pcall(function() net:FireServer("Interact", "Explosive", -1, nil) end)
+	AutoObj._lastFire = now
+end
+
+function AutoObj.Start()
+	if AutoObj._connection then return end
+	task.spawn(AOJ_FindNet)
+	AutoObj._connection = RunService.Heartbeat:Connect(AOJ_Tick)
+	table.insert(getgenv().Moon_Connections, AutoObj._connection)
+	print("[AutoObj] Started")
+end
+
+function AutoObj.Stop()
+	if AutoObj._connection then
+		pcall(function() AutoObj._connection:Disconnect() end)
+		AutoObj._connection = nil
+	end
+end
+
+getgenv().AutoObj = AutoObj
+
+local S_AOJ = MiscTab:DrawSection({Name="Auto Obj", Position="right"})
+S_AOJ:AddToggle({Name="Enable Auto Obj", Flag="AOJ_Enabled", Default=false,
+	Callback=function(v)
+		AutoObj.Enabled = v
+		if v then AutoObj.Start() else AutoObj.Stop() end
+	end})
+S_AOJ:AddSlider({Name="Range", Flag="AOJ_Range",
+	Min=5, Max=50, Default=15, Rounding=0,
+	Callback=function(v) AutoObj.Range=v end})
+S_AOJ:AddSlider({Name="Interval (s)", Flag="AOJ_Interval",
+	Min=1, Max=10, Default=3, Rounding=1,
+	Callback=function(v) AutoObj.Interval=v end})
+print("[AutoObj] Loaded")
 end)
