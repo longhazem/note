@@ -677,8 +677,8 @@ GetCombatTarget = function(mode)
 	local candidates=getgenv()._targetCandidates or table.create(64)
 	table.clear(candidates); getgenv()._targetCandidates=candidates
 	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouseX,mouseY
-	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
+	local mouse,mouseX,mouseY
+	if useFOV then mouse=UserInputService:GetMouseLocation(); mouseX,mouseY=mouse.X,mouse.Y end
 	local enemyList
 	if mode=="Rage" and ActorManager._sectors and ActorManager._playerSector then
 		enemyList={}
@@ -811,11 +811,13 @@ local function HookController(controller)
 	end
 end
 
-local FOVCircle=Drawing.new("Circle")
-FOVCircle.Thickness=1
-pcall(function() FOVCircle.NumSides=60 end)
-FOVCircle.Radius=Config.SilentAimFOV
-FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.NumSides = 60
+FOVCircle.Radius = Config.SilentAimFOV
+FOVCircle.Filled = false
+FOVCircle.Visible = false
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 
 getgenv().VelocityCache={}
 getgenv().PredictionDot=Drawing.new("Circle")
@@ -1342,11 +1344,13 @@ local function UpdateCombat(frameId)
 			end
 		end
 	end
+	local mouse = UserInputService:GetMouseLocation()
 	if FOVCircle then
-		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
-		local fovShow=Config.SilentAim and Config.ShowFOV
-		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
+		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
+		if FOVCircle.Visible then
+			FOVCircle.Position = mouse
+			FOVCircle.Radius = Config.SilentAimFOV
+		end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1493,24 +1497,14 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
 	-- Tính distance thực nếu LOD_Distance không có
-	local distance = actor.LOD_Distance
-	if not distance or distance <= 0 then
-		local pos = actor.Position
-		if not pos and actor.Character and actor.Character.PrimaryPart then
-			pos = actor.Character.PrimaryPart.Position
-		end
-		if pos then
-			distance = (Camera.CFrame.Position - pos).Magnitude
-		else
-			distance = 0
-		end
-	end
+	local distance = actor.LOD_Distance or 9999
 	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance > 1500 and (frameId%2) ~= 0 then return end
+	if distance > 1500 and (frameId % 4) ~= 0 then return end
+	if distance > 500 and (frameId % 2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1524,7 +1518,7 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos = actor.Position
+	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -1533,8 +1527,15 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	-- Chỉ dùng onScreen — reliable trên PC
-	if not onScreen then SetAllVisible(drawings,espData,false); return end
+	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
+	if not engineVisible then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
+	if not onScreen then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -2043,10 +2044,10 @@ table.insert(getgenv().Moon_Connections,flyKeybind)
 
 local AutoFarm = {
 	Enabled    = false,
-	Range      = 0,
+	Range      = 0,       -- 0 = unlimited
 	OffsetY    = -2,
-	ShootDelay = 0.08,
-	_origin    = nil,
+	ShootDelay = 0.08,    -- giây giữa các phát bắn mỗi NPC
+	_origin    = nil,     -- vị trí player trước khi bắt đầu loop
 	_connection = nil,
 	_index     = 1,
 	_lastShot  = 0,
@@ -2065,6 +2066,8 @@ local function AutoFarm_Teleport(pos)
 	end)
 end
 
+-- Teleport đến tất cả NPC theo thứ tự, bắn mỗi NPC 1 phát, teleport về origin
+-- NPC trên heli tự bị bỏ qua vì sau khi tp về origin vị trí heli đã thay đổi
 local function AutoFarm_Tick()
 	if not AutoFarm.Enabled then return end
 	if not ActorManager.Initialized then return end
@@ -2074,6 +2077,7 @@ local function AutoFarm_Tick()
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return end
 
+	-- Lưu vị trí origin khi bắt đầu mỗi vòng
 	if not AutoFarm._origin then
 		AutoFarm._origin = myActor.Position or Camera.CFrame.Position
 	end
@@ -2084,41 +2088,51 @@ local function AutoFarm_Tick()
 		return
 	end
 
+	-- Tìm NPC tiếp theo hợp lệ
 	local count = #enemies
 	local myPos = AutoFarm._origin
-	local target = nil
 
+	local target = nil
 	for i = 1, count do
 		local idx = ((AutoFarm._index - 1 + i - 1) % count) + 1
 		local actor = enemies[idx]
 		if not actor or not actor.Alive or not actor.Character then continue end
+
+		-- Range filter
 		if AutoFarm.Range > 0 then
 			local aPos = actor.Position
 				or (actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
 			if not aPos or (aPos - myPos).Magnitude > AutoFarm.Range then continue end
 		end
+
+		-- MTC seat tags (xe mặt đất, turret)
 		if actor.Seat or actor.Platform or actor.Turret then continue end
 		local hum = actor.Character:FindFirstChildOfClass("Humanoid")
 		if hum and hum.SeatPart then continue end
+
 		AutoFarm._index = (idx % count) + 1
 		target = actor
 		break
 	end
 
 	if not target then
+		-- Hết vòng — teleport về origin, reset
 		AutoFarm_Teleport(AutoFarm._origin)
 		AutoFarm._origin = nil
 		AutoFarm._index = 1
 		return
 	end
 
+	-- Lấy vị trí NPC
 	local targetPos = target.Position
 		or (target.Character.PrimaryPart and target.Character.PrimaryPart.Position)
 	if not targetPos then return end
 
+	-- Teleport đến NPC
 	local shootPos = targetPos + Vector3.new(0, AutoFarm.OffsetY + 2, 0)
 	AutoFarm_Teleport(shootPos)
 
+	-- Bắn ngay lập tức qua AuraKill discharge hook
 	pcall(function()
 		if BulletService and BulletService.Discharge then
 			local myWeapon = myActor and myActor.Firearm
@@ -2128,7 +2142,9 @@ local function AutoFarm_Tick()
 		end
 	end)
 
+	-- Teleport về origin ngay sau khi bắn
 	AutoFarm_Teleport(AutoFarm._origin)
+
 	AutoFarm._lastShot = tick()
 end
 
@@ -2432,12 +2448,14 @@ local function HS_Play()
 	if not HitSound._sound then HS_Init() end
 	pcall(function()
 		HitSound._sound.Volume = HitSound.Volume
+		-- Stop trước để tránh overlap khi bắn liên tiếp nhanh
 		HitSound._sound:Stop()
 		HitSound._sound:Play()
 	end)
 end
 
 -- Hook BulletService.Discharge — detect khi đạn trúng enemy
+-- Retry-safe: gọi bất cứ lúc nào, tự skip nếu chưa có BulletService
 local function HS_Hook()
 	if BulletService and BulletService._hitSoundHooked then return end
 	if not BulletService then return end
@@ -2486,6 +2504,8 @@ end
 
 HS_Init()
 
+-- Retry hook mỗi 2s cho đến khi BulletService sẵn sàng
+-- Cần thiết vì BulkScan hoàn thành async sau khi script load
 task.spawn(function()
 	while not (BulletService and BulletService._hitSoundHooked) do
 		if HitSound.Enabled then HS_Hook() end
@@ -2660,7 +2680,6 @@ print("[AntiFall] Loaded")
 
 
 
--- ==========================================
 -- AURA KILL — Verified từ Flux_client.lua source
 -- Cipher đúng 100%: netEncode verified = RSpy dump match
 -- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
@@ -2897,8 +2916,10 @@ S_AK:AddButton({Name="Rescan Network",
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
 
+pcall(function()
 -- ============================================================
--- AUTO TELEPORT + OBJ (explosive) — MOBILE
+-- AUTO TELEPORT + OBJ (explosive)
+-- Wrapped in pcall — prevents nil-value crash on inject
 -- ============================================================
 local AutoTP = {
 	Enabled     = false,
@@ -3028,7 +3049,9 @@ end
 function AutoTP.Start()
 	if AutoTP._running then return end
 	AutoTP._running = true
-	task.spawn(ATP_FindNet); task.spawn(ATP_FindRemote)
+	task.delay(1, function()
+		ATP_FindNet(); ATP_FindRemote()
+	end)
 	AutoTP._connection = RunService.Heartbeat:Connect(ATP_Tick)
 	table.insert(getgenv().Moon_Connections, AutoTP._connection)
 	print("[AutoTP] Started")
@@ -3061,64 +3084,23 @@ S_ATP:AddButton({Name="Rescan Net", Callback=function()
 end})
 
 print("[AutoTP] Loaded")
+end)
 
-
--- ==========================================
-pcall(function()
--- AUTO FARM
-local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
-
-local function AF_GetTarget()
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return nil end
-	local myPos = myActor.Position or Camera.CFrame.Position
-	local best, bestDist = nil, math.huge
-	if ActorManager.Initialized then
-		for _, actor in ipairs(ActorManager.Enemies) do
-			if actor and actor.Alive and actor.Character then
-				local pos = actor.Position
-				if not pos and actor.Character.PrimaryPart then
-					pos = actor.Character.PrimaryPart.Position
-				end
-				if pos then
-					local d = (pos - myPos).Magnitude
-					if d < bestDist then bestDist = d; best = actor end
-				end
-			end
-		end
-	end
-	return best
-end
-
-local function AF_TeleportTo(actor)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	local pos = actor.Position
-	if not pos and actor.Character and actor.Character.PrimaryPart then
-		pos = actor.Character.PrimaryPart.Position
-	end
-	if not pos then return end
-	local targetPos = Vector3.new(pos.X, pos.Y + AutoFarm.OffsetY, pos.Z)
-	pcall(function()
-		if ControllerService and ControllerService.Controller then
-			local ctrl = ControllerService.Controller
-			ctrl._position = targetPos
-			ctrl._lastSafePosition = targetPos
-		end
-		myActor.SimulatedPosition = targetPos
-		myActor.CFrame = CFrame.new(targetPos)
-	end)
-end
 
 local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
 S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
 	Callback=function(v) AutoFarm.Enabled=v; if v then AutoFarm.Start() else AutoFarm.Stop() end end})
 S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
 	Callback=function(v) AutoFarm.OffsetY=v end})
+-- Range: 0 = không giới hạn, 1–2000 = chỉ farm trong phạm vi (studs)
 S_AF:AddSlider({Name="Range (0 = unlimited)", Flag="AF_Range", Min=0, Max=2000, Default=0, Rounding=0,
 	Callback=function(v) AutoFarm.Range=v end})
 print("[AutoFarm] Loaded")
 end)
+
+
+
+
 
 -- AUTO LOCKPICK v4
 -- InputService._mounts["PickLock"] là callback thật
@@ -3196,6 +3178,10 @@ print("[AutoLockpick] Loaded")
 
 -- ==========================================
 -- AUTO OBJ (Plant Explosive)
+-- Tìm tất cả Explosive trong Workspace,
+-- fire Interact lên từng cái trong range.
+-- Pattern từ InteractionInterface.lua line 185:
+--   network:FireServer("Interact", promptName, -1, nil)
 -- ==========================================
 local AutoObj = {
 	Enabled    = false,
@@ -3247,10 +3233,12 @@ local function AOJ_Tick()
 	local net = AOJ_FindNet()
 	if not net then return end
 
+	-- Tìm character root để teleport
 	local char = LocalPlayer.Character
 	local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
 	if not root then return end
 
+	-- Tìm Explosive gần nhất trong Workspace
 	local nearest, nearestPos, nearestDist = nil, nil, math.huge
 	for _, obj in ipairs(workspace:GetChildren()) do
 		if obj.Name ~= "Explosive" then continue end
@@ -3264,9 +3252,16 @@ local function AOJ_Tick()
 
 	if not nearest then return end
 
-	pcall(function() root.CFrame = CFrame.new(nearestPos + Vector3.new(0, 3, 0)) end)
+	-- Teleport đến sát Explosive (offset 2 studs để không chui vào wall)
+	local tpCF = CFrame.new(nearestPos + Vector3.new(0, 3, 0))
+	pcall(function() root.CFrame = tpCF end)
+
+	-- Đợi 1 frame rồi fire Interact
 	task.wait()
-	pcall(function() net:FireServer("Interact", "Explosive", -1, nil) end)
+	pcall(function()
+		net:FireServer("Interact", "Explosive", -1, nil)
+	end)
+
 	AutoObj._lastFire = now
 end
 
@@ -3293,11 +3288,5 @@ S_AOJ:AddToggle({Name="Enable Auto Obj", Flag="AOJ_Enabled", Default=false,
 		AutoObj.Enabled = v
 		if v then AutoObj.Start() else AutoObj.Stop() end
 	end})
-S_AOJ:AddSlider({Name="Range", Flag="AOJ_Range",
-	Min=5, Max=50, Default=15, Rounding=0,
-	Callback=function(v) AutoObj.Range=v end})
-S_AOJ:AddSlider({Name="Interval (s)", Flag="AOJ_Interval",
-	Min=1, Max=10, Default=3, Rounding=1,
-	Callback=function(v) AutoObj.Interval=v end})
 print("[AutoObj] Loaded")
 end)
