@@ -2896,6 +2896,173 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
+
+-- ============================================================
+-- AUTO TELEPORT + OBJ (explosive) — MOBILE
+-- ============================================================
+local AutoTP = {
+	Enabled     = false,
+	_connection = nil,
+	_running    = false,
+	_lastFire   = 0,
+	_cooldown   = 2.5,
+	_net        = nil,
+	_remote     = nil,
+}
+
+local function ATP_FindNet()
+	if AutoTP._net then return AutoTP._net end
+	if getgenv().AuraKill and getgenv().AuraKill._net then
+		AutoTP._net = getgenv().AuraKill._net; return AutoTP._net
+	end
+	if shared and type(shared.import) == "function" then
+		local ok, net = pcall(function() return shared.import("network") end)
+		if ok and net and rawget(net,"_key") and rawget(net,"_code") then
+			AutoTP._net = net; return net
+		end
+	end
+	local gok, gc = pcall(function() return filtergc("table") end)
+	if not gok then gok, gc = pcall(function() return getgc(true) end) end
+	if gok and gc then
+		for _, v in pairs(gc) do
+			if type(v) ~= "table" then continue end
+			local k, co, ev = rawget(v,"_key"), rawget(v,"_code"), rawget(v,"_events")
+			if type(k)=="table" and #k>=5
+				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
+				and type(ev)=="table"
+			then
+				local ok2 = true
+				for _, n in ipairs(k) do if type(n)~="number" then ok2=false; break end end
+				if ok2 then AutoTP._net = v; return v end
+			end
+		end
+	end
+	return nil
+end
+
+local function ATP_FindRemote()
+	if AutoTP._remote and AutoTP._remote.Parent then return AutoTP._remote end
+	if getgenv().AuraKill and getgenv().AuraKill._remote and getgenv().AuraKill._remote.Parent then
+		AutoTP._remote = getgenv().AuraKill._remote; return AutoTP._remote
+	end
+	local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+	if ev then
+		local re = ev:FindFirstChild("RemoteEvent")
+		if re then AutoTP._remote = re; return re end
+	end
+	for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+		if v:IsA("RemoteEvent") then AutoTP._remote = v; return v end
+	end
+	return nil
+end
+
+local function ATP_NetEncode(jsonStr, key)
+	local result = ""
+	for i = 1, #jsonStr do
+		local nb = (string.byte(jsonStr, i) - 32 + key[i % 4 + 1]) % 95 + 32
+		result = result .. string.char(nb)
+	end
+	local fb = string.byte(jsonStr, 1)
+	for v = 1, key[5] do
+		result = result .. string.char(fb - string.byte(tostring(v), 1))
+	end
+	return result
+end
+
+local function ATP_Encrypt(data, net)
+	local ok, raw = pcall(function() return game:GetService("HttpService"):JSONEncode(data) end)
+	if not ok or not raw then return nil end
+	return ATP_NetEncode(raw, net._key)
+end
+
+local function ATP_FindTarget()
+	local lp   = game:GetService("Players").LocalPlayer
+	local char = lp and lp.Character
+	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return nil end
+	local myPos = hrp.Position
+	local best, bestDist = nil, math.huge
+	for _, v in ipairs(workspace:GetDescendants()) do
+		if v:IsA("ProximityPrompt") and v.Parent then
+			if v.Parent.Name:lower():find("explosive", 1, true) then
+				local pos = v.Parent:IsA("BasePart") and v.Parent.Position
+					or (v.Parent.PrimaryPart and v.Parent.PrimaryPart.Position)
+				if pos then
+					local d = (pos - myPos).Magnitude
+					if d < bestDist then bestDist = d; best = v end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function ATP_Tick()
+	if not AutoTP.Enabled then return end
+	local now = tick()
+	if now - AutoTP._lastFire < AutoTP._cooldown then return end
+	local prompt = ATP_FindTarget()
+	if not prompt or not prompt.Parent then return end
+	local lp   = game:GetService("Players").LocalPlayer
+	local char = lp and lp.Character
+	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local targetPos = prompt.Parent:IsA("BasePart") and prompt.Parent.Position
+		or (prompt.Parent.PrimaryPart and prompt.Parent.PrimaryPart.Position)
+	if not targetPos then return end
+	hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))
+	AutoTP._lastFire = now
+	task.delay(0.3, function()
+		if not prompt or not prompt.Parent then return end
+		local net    = ATP_FindNet()
+		local remote = ATP_FindRemote()
+		if not net or not remote then AutoTP._net = nil; return end
+		local enc = ATP_Encrypt({net._code, "Interact", prompt.Parent.Name, -1}, net)
+		if enc then
+			pcall(function() remote:FireServer(enc) end)
+			print("[AutoTP] Fired:", prompt.Parent.Name)
+		end
+	end)
+end
+
+function AutoTP.Start()
+	if AutoTP._running then return end
+	AutoTP._running = true
+	task.spawn(ATP_FindNet); task.spawn(ATP_FindRemote)
+	AutoTP._connection = RunService.Heartbeat:Connect(ATP_Tick)
+	table.insert(getgenv().Moon_Connections, AutoTP._connection)
+	print("[AutoTP] Started")
+end
+
+function AutoTP.Stop()
+	AutoTP._running = false
+	if AutoTP._connection then
+		pcall(function() AutoTP._connection:Disconnect() end)
+		AutoTP._connection = nil
+	end
+end
+
+getgenv().AutoTP = AutoTP
+
+local S_ATP = CombatTab:DrawSection({Name="Auto Obj (Explosive)", Position="right"})
+S_ATP:AddToggle({Name="Enable Auto Obj", Flag="ATP_Enabled", Default=false,
+	Callback=function(v)
+		AutoTP.Enabled = v
+		if v then AutoTP.Start() else AutoTP.Stop() end
+	end})
+S_ATP:AddSlider({Name="Cycle (s)", Flag="ATP_Cooldown", Min=1, Max=10, Default=2.5, Rounding=1,
+	Callback=function(v) AutoTP._cooldown = v end})
+S_ATP:AddButton({Name="Rescan Net", Callback=function()
+	AutoTP._net = nil; AutoTP._remote = nil
+	task.spawn(function()
+		local net = ATP_FindNet(); local re = ATP_FindRemote()
+		Notifier.new({Title="AutoTP", Content=net and re and "OK" or "Fail", Duration=4})
+	end)
+end})
+
+print("[AutoTP] Loaded")
+
+
 -- ==========================================
 pcall(function()
 -- AUTO FARM
