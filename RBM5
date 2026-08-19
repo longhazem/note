@@ -2956,192 +2956,180 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
-
 pcall(function()
 -- ============================================================
--- MELEE AUTO FARM (MOBILE)
--- Same logic as PC — scan GC for MeleeInventory, fire Slash + Impact
+-- MELEE AUTO FARM — RakNet Bitstream
+-- Step 1: Hook RemoteEvent.FireServer via getrawmetatable to
+--         intercept the first real InventoryAction/Impact packet
+--         and capture its raw encoded string.
+-- Step 2: Replay that exact string via raknet bitstream to each
+--         enemy every cycle — server sees identical packet,
+--         no cipher needed.
 -- ============================================================
-local MeleeAF = {
-	Enabled    = false,
-	_conn      = nil,
-	_running   = false,
-	_lastSwing = 0,
-	_interval  = 0.4,
-	_net       = nil,
-	_remote    = nil,
-	_meleeUID  = nil,
-	_meleeHandler = nil,
+local RakAF = {
+	Enabled      = false,
+	_conn        = nil,
+	_running     = false,
+	_lastFire    = 0,
+	_interval    = 0.3,
+	_impactPkt   = nil,  -- captured raw Impact encoded string
+	_slashPkt    = nil,  -- captured raw Slash encoded string
+	_remote      = nil,
+	_hooked      = false,
 }
 
-local function MAF_Net()
-	if MeleeAF._net then return MeleeAF._net end
-	if getgenv().AuraKill and getgenv().AuraKill._net then
-		MeleeAF._net = getgenv().AuraKill._net; return MeleeAF._net
-	end
-	local gok, gc = pcall(function() return filtergc("table") end)
-	if not gok then gok, gc = pcall(function() return getgc(true) end) end
-	if gok and gc then
-		for _, v in pairs(gc) do
-			if type(v) ~= "table" then continue end
-			local k, co, ev = rawget(v,"_key"), rawget(v,"_code"), rawget(v,"_events")
-			if type(k)=="table" and #k>=5
-				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
-				and type(ev)=="table"
-			then
-				local ok2 = true
-				for _, n in ipairs(k) do if type(n)~="number" then ok2=false; break end end
-				if ok2 then MeleeAF._net = v; return v end
-			end
-		end
-	end
-	return nil
-end
-
-local function MAF_Remote()
-	if MeleeAF._remote and MeleeAF._remote.Parent then return MeleeAF._remote end
+-- Find the RemoteEvent the script uses
+local function RAF_Remote()
+	if RakAF._remote and RakAF._remote.Parent then return RakAF._remote end
 	if getgenv().AuraKill and getgenv().AuraKill._remote and getgenv().AuraKill._remote.Parent then
-		MeleeAF._remote = getgenv().AuraKill._remote; return MeleeAF._remote
+		RakAF._remote = getgenv().AuraKill._remote; return RakAF._remote
 	end
 	for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
-		if v:IsA("RemoteEvent") then MeleeAF._remote = v; return v end
+		if v:IsA("RemoteEvent") then RakAF._remote = v; return v end
 	end
 	return nil
 end
 
-local function MAF_Encode(jsonStr, key)
-	local r = ""
-	for i = 1, #jsonStr do
-		r = r .. string.char((string.byte(jsonStr, i) - 32 + key[i%4+1]) % 95 + 32)
-	end
-	local fb = string.byte(jsonStr, 1)
-	for v = 1, key[5] do r = r .. string.char(fb - string.byte(tostring(v), 1)) end
-	return r
-end
-
-local function MAF_Fire(args)
-	local net = MAF_Net(); local remote = MAF_Remote()
-	if not net or not remote then return end
-	local ok, raw = pcall(function()
-		return game:GetService("HttpService"):JSONEncode(args)
-	end)
-	if ok and raw then
-		pcall(function() remote:FireServer(MAF_Encode(raw, net._key)) end)
-	end
-end
-
-local function MAF_FindMelee()
-	if MeleeAF._meleeHandler and rawget(MeleeAF._meleeHandler, "_build") then
-		return MeleeAF._meleeHandler
-	end
-	local gok, gc = pcall(function() return filtergc("table") end)
-	if not gok then gok, gc = pcall(function() return getgc(true) end) end
-	if not gok or not gc then return nil end
-	for _, v in pairs(gc) do
-		if type(v) ~= "table" then continue end
-		if rawget(v, "_build") ~= nil
-			and rawget(v, "_timer") ~= nil
-			and rawget(v, "_delay") ~= nil
-			and rawget(v, "_distance") ~= nil
-			and rawget(v, "_swinging") ~= nil
-			and rawget(v, "_actor") ~= nil
-		then
-			MeleeAF._meleeHandler = v; return v
-		end
-	end
-	return nil
-end
-
-local function MAF_FindUID(meleeHandler)
-	if MeleeAF._meleeUID then return MeleeAF._meleeUID end
-	local item = rawget(meleeHandler, "_item")
-	if item and rawget(item, "UID") then
-		MeleeAF._meleeUID = item.UID; return item.UID
-	end
-	local gok, gc = pcall(function() return filtergc("table") end)
-	if not gok then gok, gc = pcall(function() return getgc(true) end) end
-	if gok and gc then
-		for _, v in pairs(gc) do
-			if type(v) ~= "table" then continue end
-			local layout = rawget(v, "Layout")
-			if layout and type(layout) == "table" and rawget(layout, "Handler") == "Melee" then
-				local uid = rawget(v, "UID")
-				if uid then MeleeAF._meleeUID = uid; return uid end
+-- Hook RemoteEvent:FireServer via getrawmetatable
+-- Intercept next Impact + Slash packet, store raw encoded string
+local function RAF_Hook()
+	if RakAF._hooked then return end
+	local remote = RAF_Remote()
+	if not remote then return end
+	local mt = getrawmetatable(game)
+	if not mt then return end
+	local oldIndex = mt.__index
+	setreadonly(mt, false)
+	mt.__namecall = newcclosure(function(self, ...)
+		local method = tostring(getnamecallmethod()):lower()
+		if method == "fireserver" and self == remote then
+			local args = {...}
+			local pkt = args[1]
+			if type(pkt) == "string" then
+				-- Detect Slash vs Impact by length heuristic
+				-- Slash packet is shorter (no position/uid data)
+				if not RakAF._slashPkt and #pkt < 80 then
+					RakAF._slashPkt = pkt
+					print("[RakAF] Slash packet captured, len:", #pkt)
+				elseif not RakAF._impactPkt and #pkt >= 80 then
+					RakAF._impactPkt = pkt
+					print("[RakAF] Impact packet captured, len:", #pkt)
+				end
 			end
 		end
-	end
-	return nil
+		return oldIndex(self, method, ...)
+	end)
+	setreadonly(mt, true)
+	RakAF._hooked = true
+	print("[RakAF] Hook installed — swing melee once to capture packets")
 end
 
-local function MAF_Tick()
-	if not MeleeAF.Enabled then return end
+-- Send captured packet via raknet bitstream
+-- raknet.send(remoteEvent, packetString) bypasses Roblox RemoteEvent queue
+local function RAF_SendBitstream(pkt)
+	local remote = RAF_Remote()
+	if not remote or not pkt then return end
+	local ok, bs = pcall(function() return raknet.GetBitStream(remote) end)
+	if not ok or not bs then
+		-- Fallback: direct FireServer if raknet not ready
+		pcall(function() remote:FireServer(pkt) end)
+		return
+	end
+	bs:ResetWritePointer()
+	bs:WriteString(pkt)
+	pcall(function() raknet.Send(remote, bs) end)
+end
+
+local function RAF_Tick()
+	if not RakAF.Enabled then return end
+	if not RakAF._impactPkt then
+		-- Not captured yet — fallback to AuraKill-style fire
+		local net = getgenv().AuraKill and getgenv().AuraKill._net
+		local remote = RAF_Remote()
+		if not net or not remote then return end
+		if not ActorManager or not ActorManager.Initialized then return end
+		local now = tick()
+		if now - RakAF._lastFire < RakAF._interval then return end
+		RakAF._lastFire = now
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if not actor or not actor.Alive or not actor.Character or actor.Seat then continue end
+			local char = actor.Character
+			local part = char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
+			if not part then continue end
+			local pos = part.Position
+			local uid = nil
+			for _, field in ipairs({"UID","_id","Id","UUID"}) do
+				local v = rawget(actor, field)
+				if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then uid=v; break end
+			end
+			if not uid then
+				for k, v in pairs(actor) do
+					if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then uid=v; break end
+				end
+			end
+			if not uid then continue end
+			local n = math.random(1,3)
+			local hs = game:GetService("HttpService")
+			local function enc(raw)
+				local r=""
+				for i=1,#raw do r=r..string.char((string.byte(raw,i)-32+net._key[i%4+1])%95+32) end
+				local fb=string.byte(raw,1)
+				for v=1,net._key[5] do r=r..string.char(fb-string.byte(tostring(v),1)) end
+				return r
+			end
+			local ok1,raw1=pcall(function() return hs:JSONEncode({net._code,"InventoryAction","Slash",n}) end)
+			if ok1 and raw1 then pcall(function() remote:FireServer(enc(raw1)) end) end
+			local ok2,raw2=pcall(function() return hs:JSONEncode({net._code,"InventoryAction","Impact",{pos.X,pos.Y,pos.Z},uid,part.Name}) end)
+			if ok2 and raw2 then pcall(function() remote:FireServer(enc(raw2)) end) end
+		end
+		return
+	end
+
+	-- Packet captured — use raknet bitstream replay
 	local now = tick()
-	if now - MeleeAF._lastSwing < MeleeAF._interval then return end
+	if now - RakAF._lastFire < RakAF._interval then return end
 	if not ActorManager or not ActorManager.Initialized then return end
-	local net = MAF_Net()
-	if not net then return end
-	local melee = MAF_FindMelee()
-	local uid   = melee and MAF_FindUID(melee)
-	if not uid then return end
-	local swingVariant = math.random(1, 3)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	local myPos = myActor.Position or Vector3.zero
-	local best, bestDist = nil, math.huge
+	RakAF._lastFire = now
 	for _, actor in ipairs(ActorManager.Enemies) do
-		if not actor or not actor.Alive or actor.Seat then continue end
-		local pos = actor.Position
-		if pos then
-			local d = (pos - myPos).Magnitude
-			if d < bestDist then best = actor; bestDist = d end
+		if actor and actor.Alive and actor.Character and not actor.Seat then
+			task.spawn(function()
+				if RakAF._slashPkt then RAF_SendBitstream(RakAF._slashPkt) end
+				RAF_SendBitstream(RakAF._impactPkt)
+			end)
 		end
 	end
-	if not best then return end
-	local headPart = best.Character and best.Character:FindFirstChild("Head")
-	if not headPart then return end
-	MeleeAF._lastSwing = now
-	MAF_Fire({net._code, "InventoryAction", uid, "Slash", swingVariant})
-	local impactDelay = melee and rawget(melee, "_delay") or 0.15
-	task.delay(impactDelay, function()
-		if not best or not headPart or not headPart.Parent then return end
-		local headPos = headPart.Position
-		local dir = (headPos - myPos).Unit * (melee and rawget(melee, "_distance") or 2.5)
-		MAF_Fire({
-			net._code, "InventoryAction", uid, "Impact",
-			{dir.X, dir.Y, dir.Z}, headPart, headPart.Material.Name
-		})
-	end)
 end
 
-local S_MAF = CombatTab:DrawSection({Name="Melee Auto Farm", Position="left"})
-S_MAF:AddToggle({Name="Enable", Flag="MAF_En", Default=false,
+local S_RAF = CombatTab:DrawSection({Name="Melee Auto Farm", Position="left"})
+S_RAF:AddToggle({Name="Enable", Flag="RAF_En", Default=false,
 	Callback=function(v)
-		MeleeAF.Enabled = v
-		if v and not MeleeAF._running then
-			MeleeAF._running = true
-			MeleeAF._conn = RunService.Heartbeat:Connect(MAF_Tick)
-			table.insert(getgenv().Moon_Connections, MeleeAF._conn)
-		elseif not v and MeleeAF._conn then
-			pcall(function() MeleeAF._conn:Disconnect() end)
-			MeleeAF._conn = nil; MeleeAF._running = false
+		RakAF.Enabled = v
+		if v and not RakAF._running then
+			RakAF._running = true
+			RAF_Hook()
+			RakAF._conn = RunService.Heartbeat:Connect(RAF_Tick)
+			table.insert(getgenv().Moon_Connections, RakAF._conn)
+			Notifier.new({Title="Melee AF", Content="Swing melee once to capture packet", Duration=5})
+		elseif not v and RakAF._conn then
+			pcall(function() RakAF._conn:Disconnect() end)
+			RakAF._conn = nil; RakAF._running = false
 		end
 	end})
-S_MAF:AddSlider({Name="Swing Rate (s)", Flag="MAF_Int", Min=0.1, Max=2, Default=0.4, Rounding=2,
-	Callback=function(v) MeleeAF._interval = v end})
-S_MAF:AddButton({Name="Rescan Melee", Callback=function()
-	MeleeAF._meleeHandler = nil; MeleeAF._meleeUID = nil
-	local m = MAF_FindMelee()
-	local uid = m and MAF_FindUID(m)
-	Notifier.new({Title="Melee AF", Content=uid and "UID: "..tostring(uid):sub(1,12) or "No melee found", Duration=4})
+S_RAF:AddSlider({Name="Rate (s)", Flag="RAF_Rate", Min=0.05, Max=2, Default=0.3, Rounding=2,
+	Callback=function(v) RakAF._interval = v end})
+S_RAF:AddButton({Name="Reset Capture", Callback=function()
+	RakAF._impactPkt = nil; RakAF._slashPkt = nil
+	Notifier.new({Title="Melee AF", Content="Cleared — swing melee to recapture", Duration=4})
 end})
-S_MAF:AddButton({Name="Rescan Net", Callback=function()
-	MeleeAF._net = nil; MeleeAF._remote = nil
-	local net = MAF_Net(); local re = MAF_Remote()
-	Notifier.new({Title="Melee AF", Content=net and re and "Net OK" or "Net Fail", Duration=4})
+S_RAF:AddButton({Name="Status", Callback=function()
+	Notifier.new({Title="Melee AF",
+		Content="Slash: "..(RakAF._slashPkt and "OK("..#RakAF._slashPkt.."b)" or "none")
+			.." | Impact: "..(RakAF._impactPkt and "OK("..#RakAF._impactPkt.."b)" or "none"),
+		Duration=5})
 end})
 
-getgenv().MeleeAF = MeleeAF
-print("[MeleeAF] Loaded")
+getgenv().RakAF = RakAF
+print("[RakAF] Loaded")
 end)
 
 -- ==========================================
