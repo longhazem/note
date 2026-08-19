@@ -677,8 +677,8 @@ GetCombatTarget = function(mode)
 	local candidates=getgenv()._targetCandidates or table.create(64)
 	table.clear(candidates); getgenv()._targetCandidates=candidates
 	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouseX,mouseY
-	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
+	local mouse,mouseX,mouseY
+	if useFOV then mouse=UserInputService:GetMouseLocation(); mouseX,mouseY=mouse.X,mouse.Y end
 	local enemyList
 	if mode=="Rage" and ActorManager._sectors and ActorManager._playerSector then
 		enemyList={}
@@ -811,11 +811,13 @@ local function HookController(controller)
 	end
 end
 
-local FOVCircle=Drawing.new("Circle")
-FOVCircle.Thickness=1
-pcall(function() FOVCircle.NumSides=60 end)
-FOVCircle.Radius=Config.SilentAimFOV
-FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.NumSides = 60
+FOVCircle.Radius = Config.SilentAimFOV
+FOVCircle.Filled = false
+FOVCircle.Visible = false
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 
 getgenv().VelocityCache={}
 getgenv().PredictionDot=Drawing.new("Circle")
@@ -1342,11 +1344,13 @@ local function UpdateCombat(frameId)
 			end
 		end
 	end
+	local mouse = UserInputService:GetMouseLocation()
 	if FOVCircle then
-		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
-		local fovShow=Config.SilentAim and Config.ShowFOV
-		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
+		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
+		if FOVCircle.Visible then
+			FOVCircle.Position = mouse
+			FOVCircle.Radius = Config.SilentAimFOV
+		end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1493,24 +1497,14 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
 	-- Tính distance thực nếu LOD_Distance không có
-	local distance = actor.LOD_Distance
-	if not distance or distance <= 0 then
-		local pos = actor.Position
-		if not pos and actor.Character and actor.Character.PrimaryPart then
-			pos = actor.Character.PrimaryPart.Position
-		end
-		if pos then
-			distance = (Camera.CFrame.Position - pos).Magnitude
-		else
-			distance = 0
-		end
-	end
+	local distance = actor.LOD_Distance or 9999
 	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance > 1500 and (frameId%2) ~= 0 then return end
+	if distance > 1500 and (frameId % 4) ~= 0 then return end
+	if distance > 500 and (frameId % 2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1524,7 +1518,7 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos = actor.Position
+	local worldPos = actor.Position or (actor.RootPart and actor.RootPart.Position)
 	if not worldPos then
 		if actor.Character then
 			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
@@ -1533,8 +1527,15 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	-- Chỉ dùng onScreen — reliable trên PC
-	if not onScreen then SetAllVisible(drawings,espData,false); return end
+	local engineVisible = actor.LOD_OnScreen or (distance < 128 and actor.ViewportOnScreen)
+	if not engineVisible then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
+	if not onScreen then
+		SetAllVisible(drawings, espData, false)
+		return
+	end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -2722,7 +2723,6 @@ print("[AntiFall] Loaded")
 
 
 
--- ==========================================
 -- AURA KILL — Verified từ Flux_client.lua source
 -- Cipher đúng 100%: netEncode verified = RSpy dump match
 -- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
@@ -2956,183 +2956,45 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
+
 pcall(function()
--- ============================================================
--- MELEE AUTO FARM — RakNet Bitstream
--- Step 1: Hook RemoteEvent.FireServer via getrawmetatable to
---         intercept the first real InventoryAction/Impact packet
---         and capture its raw encoded string.
--- Step 2: Replay that exact string via raknet bitstream to each
---         enemy every cycle — server sees identical packet,
---         no cipher needed.
--- ============================================================
-local RakAF = {
-	Enabled      = false,
-	_conn        = nil,
-	_running     = false,
-	_lastFire    = 0,
-	_interval    = 0.3,
-	_impactPkt   = nil,  -- captured raw Impact encoded string
-	_slashPkt    = nil,  -- captured raw Slash encoded string
-	_remote      = nil,
-	_hooked      = false,
-}
+local MeleeAF = {Enabled=false, _conn=nil, _running=false, _lastFire=0, _interval=0.35}
 
--- Find the RemoteEvent the script uses
-local function RAF_Remote()
-	if RakAF._remote and RakAF._remote.Parent then return RakAF._remote end
-	if getgenv().AuraKill and getgenv().AuraKill._remote and getgenv().AuraKill._remote.Parent then
-		RakAF._remote = getgenv().AuraKill._remote; return RakAF._remote
-	end
-	for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
-		if v:IsA("RemoteEvent") then RakAF._remote = v; return v end
-	end
-	return nil
-end
-
--- Hook RemoteEvent:FireServer via getrawmetatable
--- Intercept next Impact + Slash packet, store raw encoded string
-local function RAF_Hook()
-	if RakAF._hooked then return end
-	local remote = RAF_Remote()
-	if not remote then return end
-	local mt = getrawmetatable(game)
-	if not mt then return end
-	local oldIndex = mt.__index
-	setreadonly(mt, false)
-	mt.__namecall = newcclosure(function(self, ...)
-		local method = tostring(getnamecallmethod()):lower()
-		if method == "fireserver" and self == remote then
-			local args = {...}
-			local pkt = args[1]
-			if type(pkt) == "string" then
-				-- Detect Slash vs Impact by length heuristic
-				-- Slash packet is shorter (no position/uid data)
-				if not RakAF._slashPkt and #pkt < 80 then
-					RakAF._slashPkt = pkt
-					print("[RakAF] Slash packet captured, len:", #pkt)
-				elseif not RakAF._impactPkt and #pkt >= 80 then
-					RakAF._impactPkt = pkt
-					print("[RakAF] Impact packet captured, len:", #pkt)
-				end
-			end
-		end
-		return oldIndex(self, method, ...)
-	end)
-	setreadonly(mt, true)
-	RakAF._hooked = true
-	print("[RakAF] Hook installed — swing melee once to capture packets")
-end
-
--- Send captured packet via raknet bitstream
--- raknet.send(remoteEvent, packetString) bypasses Roblox RemoteEvent queue
-local function RAF_SendBitstream(pkt)
-	local remote = RAF_Remote()
-	if not remote or not pkt then return end
-	local ok, bs = pcall(function() return raknet.GetBitStream(remote) end)
-	if not ok or not bs then
-		-- Fallback: direct FireServer if raknet not ready
-		pcall(function() remote:FireServer(pkt) end)
-		return
-	end
-	bs:ResetWritePointer()
-	bs:WriteString(pkt)
-	pcall(function() raknet.Send(remote, bs) end)
-end
-
-local function RAF_Tick()
-	if not RakAF.Enabled then return end
-	if not RakAF._impactPkt then
-		-- Not captured yet — fallback to AuraKill-style fire
-		local net = getgenv().AuraKill and getgenv().AuraKill._net
-		local remote = RAF_Remote()
-		if not net or not remote then return end
-		if not ActorManager or not ActorManager.Initialized then return end
-		local now = tick()
-		if now - RakAF._lastFire < RakAF._interval then return end
-		RakAF._lastFire = now
-		for _, actor in ipairs(ActorManager.Enemies) do
-			if not actor or not actor.Alive or not actor.Character or actor.Seat then continue end
-			local char = actor.Character
-			local part = char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
-			if not part then continue end
-			local pos = part.Position
-			local uid = nil
-			for _, field in ipairs({"UID","_id","Id","UUID"}) do
-				local v = rawget(actor, field)
-				if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then uid=v; break end
-			end
-			if not uid then
-				for k, v in pairs(actor) do
-					if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then uid=v; break end
-				end
-			end
-			if not uid then continue end
-			local n = math.random(1,3)
-			local hs = game:GetService("HttpService")
-			local function enc(raw)
-				local r=""
-				for i=1,#raw do r=r..string.char((string.byte(raw,i)-32+net._key[i%4+1])%95+32) end
-				local fb=string.byte(raw,1)
-				for v=1,net._key[5] do r=r..string.char(fb-string.byte(tostring(v),1)) end
-				return r
-			end
-			local ok1,raw1=pcall(function() return hs:JSONEncode({net._code,"InventoryAction","Slash",n}) end)
-			if ok1 and raw1 then pcall(function() remote:FireServer(enc(raw1)) end) end
-			local ok2,raw2=pcall(function() return hs:JSONEncode({net._code,"InventoryAction","Impact",{pos.X,pos.Y,pos.Z},uid,part.Name}) end)
-			if ok2 and raw2 then pcall(function() remote:FireServer(enc(raw2)) end) end
-		end
-		return
-	end
-
-	-- Packet captured — use raknet bitstream replay
+local function MAF_Tick()
+	if not MeleeAF.Enabled then return end
 	local now = tick()
-	if now - RakAF._lastFire < RakAF._interval then return end
+	if now - MeleeAF._lastFire < MeleeAF._interval then return end
 	if not ActorManager or not ActorManager.Initialized then return end
-	RakAF._lastFire = now
+	MeleeAF._lastFire = now
 	for _, actor in ipairs(ActorManager.Enemies) do
 		if actor and actor.Alive and actor.Character and not actor.Seat then
-			task.spawn(function()
-				if RakAF._slashPkt then RAF_SendBitstream(RakAF._slashPkt) end
-				RAF_SendBitstream(RakAF._impactPkt)
-			end)
+			task.spawn(function() AK_Fire(actor) end)
 		end
 	end
 end
 
-local S_RAF = CombatTab:DrawSection({Name="Melee Auto Farm", Position="left"})
-S_RAF:AddToggle({Name="Enable", Flag="RAF_En", Default=false,
+local S_MAF = CombatTab:DrawSection({Name="Melee Auto Farm", Position="left"})
+S_MAF:AddToggle({Name="Enable", Flag="MAF_En", Default=false,
 	Callback=function(v)
-		RakAF.Enabled = v
-		if v and not RakAF._running then
-			RakAF._running = true
-			RAF_Hook()
-			RakAF._conn = RunService.Heartbeat:Connect(RAF_Tick)
-			table.insert(getgenv().Moon_Connections, RakAF._conn)
-			Notifier.new({Title="Melee AF", Content="Swing melee once to capture packet", Duration=5})
-		elseif not v and RakAF._conn then
-			pcall(function() RakAF._conn:Disconnect() end)
-			RakAF._conn = nil; RakAF._running = false
+		MeleeAF.Enabled = v
+		if v and not MeleeAF._running then
+			MeleeAF._running = true
+			MeleeAF._conn = RunService.Heartbeat:Connect(MAF_Tick)
+			table.insert(getgenv().Moon_Connections, MeleeAF._conn)
+		elseif not v and MeleeAF._conn then
+			pcall(function() MeleeAF._conn:Disconnect() end)
+			MeleeAF._conn = nil; MeleeAF._running = false
 		end
 	end})
-S_RAF:AddSlider({Name="Rate (s)", Flag="RAF_Rate", Min=0.05, Max=2, Default=0.3, Rounding=2,
-	Callback=function(v) RakAF._interval = v end})
-S_RAF:AddButton({Name="Reset Capture", Callback=function()
-	RakAF._impactPkt = nil; RakAF._slashPkt = nil
-	Notifier.new({Title="Melee AF", Content="Cleared — swing melee to recapture", Duration=4})
-end})
-S_RAF:AddButton({Name="Status", Callback=function()
-	Notifier.new({Title="Melee AF",
-		Content="Slash: "..(RakAF._slashPkt and "OK("..#RakAF._slashPkt.."b)" or "none")
-			.." | Impact: "..(RakAF._impactPkt and "OK("..#RakAF._impactPkt.."b)" or "none"),
-		Duration=5})
-end})
+S_MAF:AddSlider({Name="Rate (s)", Flag="MAF_Rate", Min=0.05, Max=2, Default=0.35, Rounding=2,
+	Callback=function(v) MeleeAF._interval = v end})
 
-getgenv().RakAF = RakAF
-print("[RakAF] Loaded")
+getgenv().MeleeAF = MeleeAF
+print("[MeleeAF] Loaded")
 end)
 
--- ==========================================
+
+
 pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
@@ -3218,6 +3080,10 @@ S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, 
 	Callback=function(v) AutoFarm.OffsetY=v end})
 print("[AutoFarm] Loaded")
 end)
+
+
+
+
 
 -- AUTO LOCKPICK v4
 -- InputService._mounts["PickLock"] là callback thật
