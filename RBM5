@@ -2043,53 +2043,44 @@ table.insert(getgenv().Moon_Connections,flyKeybind)
 
 local AutoFarm = {
 	Enabled = false,
-	ShotsPerTarget = 2,       -- viên bắn mỗi mục tiêu
-	TeleportOffset = Vector3.new(0, 0, 3), -- offset phía sau target
-	ShootDelay = 0.12,        -- delay giữa các viên (giây)
-	SwitchDelay = 0.3,        -- delay trước khi switch target
+	Range   = 0,         -- 0 = unlimited (studs)
 	_running = false,
 	_connection = nil,
-	_currentTarget = nil,
-	_shotsFired = 0,
-	_lastShot = 0,
-	_phase = "seek",          -- seek | shoot | switch
 	_enemyIndex = 1,
+	_origin = nil,       -- vị trí player trước khi bắt đầu vòng
+	_lastTick = 0,
+	TickRate = 0.05,     -- giây giữa mỗi lần teleport (50ms)
 }
 
--- Teleport LocalActor đến vị trí gần target
-local function AutoFarm_Teleport(targetActor)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return false end
+-- Teleport player đến pos — cùng pattern với Fly hook (line 1089)
+local function AutoFarm_Teleport(pos)
+	local ctrl = ControllerService and ControllerService.Controller
+	if not ctrl then return end
+	local localActor = ctrl._localActor
+		or (ReplicatorService and ReplicatorService.LocalActor)
+	if not localActor then return end
+	pcall(function()
+		ctrl._position = pos
+		ctrl._lastSafePosition = pos
+		localActor.SimulatedPosition = pos
+		localActor.Grounded = true
+		localActor.CFrame = CFrame.new(pos)
+		localActor.Orientation = localActor.Orientation or 0
+	end)
+end
 
-	local targetPos = targetActor.Position
-	if not targetPos then
-		local char = targetActor.Character
-		if char and char.PrimaryPart then
-			targetPos = char.PrimaryPart.Position
+-- Lấy vị trí hiện tại của player
+local function AutoFarm_GetMyPos()
+	local ctrl = ControllerService and ControllerService.Controller
+	if ctrl and ctrl._position then return ctrl._position end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if myActor then
+		if myActor.Position then return myActor.Position end
+		if myActor.Character and myActor.Character.PrimaryPart then
+			return myActor.Character.PrimaryPart.Position
 		end
 	end
-	if not targetPos then return false end
-
-	-- offset ra phía sau target dựa theo camera
-	local camDir = Camera.CFrame.LookVector
-	local offset = Vector3.new(
-		AutoFarm.TeleportOffset.X,
-		AutoFarm.TeleportOffset.Y,
-		AutoFarm.TeleportOffset.Z
-	)
-	local newPos = targetPos + Vector3.new(0, 2, 0) + (camDir * -offset.Z)
-
-	-- Set position via CharacterController
-	pcall(function()
-		myActor.SimulatedPosition = newPos
-		myActor.CFrame = CFrame.new(newPos, targetPos)
-		if ControllerService and ControllerService.Controller then
-			ControllerService.Controller._position = newPos
-			ControllerService.Controller._lastSafePosition = newPos
-		end
-	end)
-
-	return true
+	return Camera.CFrame.Position
 end
 
 -- Pick next valid enemy
@@ -2112,110 +2103,87 @@ local function AutoFarm_NextTarget()
 	return nil
 end
 
--- Main farm tick — chạy trên Heartbeat
+-- Main farm tick: teleport đến NPC → bắn (AuraKill xử lý) → teleport về origin → next
 local function AutoFarm_Tick()
 	if not AutoFarm.Enabled then return end
 	if not ActorManager.Initialized then return end
-
 	local now = tick()
-	local equippedController = WeaponManager.Equipped or
-		(InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
+	if now - AutoFarm._lastTick < AutoFarm.TickRate then return end
+	AutoFarm._lastTick = now
 
-	-- PHASE: SEEK — tìm và teleport đến target mới
-	if AutoFarm._phase == "seek" then
-		local target = AutoFarm_NextTarget()
-		if not target then return end
-
-		AutoFarm._currentTarget = target
-		AutoFarm._shotsFired = 0
-
-		-- Set ragebot target
-		ActorManager.SelectedTarget_RB = target.Character and target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
-		ActorManager.SelectedActor_RB = target
-
-		-- Teleport
-		AutoFarm_Teleport(target)
-
-		AutoFarm._phase = "shoot"
-		AutoFarm._lastShot = now
-		return
+	-- Lưu origin đầu mỗi vòng
+	if not AutoFarm._origin then
+		AutoFarm._origin = AutoFarm_GetMyPos()
 	end
 
-	-- PHASE: SHOOT — bắn N viên
-	if AutoFarm._phase == "shoot" then
-		local target = AutoFarm._currentTarget
+	local enemies = ActorManager.Enemies
+	if not enemies or #enemies == 0 then return end
+	local count = #enemies
 
-		-- Validate target còn sống
-		if not target or not target.Alive then
-			AutoFarm._phase = "seek"
-			return
-		end
-
-		-- Check delay giữa viên
-		if (now - AutoFarm._lastShot) < AutoFarm.ShootDelay then return end
-
-		-- Bắn
-		if equippedController then
-			-- Update target part mỗi viên (vì target có thể di chuyển)
-			local char = target.Character
-			if char then
-				local part = char:FindFirstChild(Config.Rage_TargetPart or "Head")
-					or char:FindFirstChild("UpperTorso")
-				if part then
-					ActorManager.SelectedTarget_RB = part
-					ActorManager.SelectedActor_RB = target
-				end
+	-- Tìm NPC tiếp theo
+	local target = nil
+	for i = 1, count do
+		local idx = ((AutoFarm._enemyIndex - 1 + i - 1) % count) + 1
+		local actor = enemies[idx]
+		if actor and actor.Alive and actor.Character then
+			-- Range filter
+			if AutoFarm.Range > 0 then
+				local aPos = actor.Position
+					or (actor.Character.PrimaryPart and actor.Character.PrimaryPart.Position)
+				if aPos and (aPos - AutoFarm._origin).Magnitude > AutoFarm.Range then continue end
 			end
-
-			pcall(function() equippedController:Discharge() end)
-			AutoFarm._shotsFired = AutoFarm._shotsFired + 1
-			AutoFarm._lastShot = now
+			AutoFarm._enemyIndex = (idx % count) + 1
+			target = actor
+			break
 		end
+	end
 
-		-- Đủ viên → chuyển phase
-		if AutoFarm._shotsFired >= AutoFarm.ShotsPerTarget then
-			AutoFarm._phase = "switch"
-			AutoFarm._lastShot = now
-		end
+	if not target then
+		-- Hết một vòng → reset về origin
+		AutoFarm_Teleport(AutoFarm._origin)
+		AutoFarm._origin = nil
+		AutoFarm._enemyIndex = 1
 		return
 	end
 
-	-- PHASE: SWITCH — chờ rồi tìm target kế
-	if AutoFarm._phase == "switch" then
-		if (now - AutoFarm._lastShot) >= AutoFarm.SwitchDelay then
-			AutoFarm._currentTarget = nil
-			ActorManager.SelectedTarget_RB = nil
-			ActorManager.SelectedActor_RB = nil
-			AutoFarm._phase = "seek"
-		end
-		return
-	end
+	-- Lấy vị trí NPC
+	local targetPos = target.Position
+		or (target.Character.PrimaryPart and target.Character.PrimaryPart.Position)
+	if not targetPos then return end
+
+	-- Set ragebot target để AuraKill xử lý damage
+	local targetPart = target.Character:FindFirstChild(Config.Rage_TargetPart or "Head")
+		or target.Character:FindFirstChild("UpperTorso")
+	ActorManager.SelectedTarget_RB = targetPart
+	ActorManager.SelectedActor_RB = target
+
+	-- Teleport đến NPC (đứng trên đầu 2 studs)
+	AutoFarm_Teleport(targetPos + Vector3.new(0, 2, 0))
+
+	-- Teleport về origin ngay lập tức
+	AutoFarm_Teleport(AutoFarm._origin)
 end
 
 -- Start / Stop
 function AutoFarm.Start()
 	if AutoFarm._running then return end
 	AutoFarm._running = true
-	AutoFarm._phase = "seek"
 	AutoFarm._enemyIndex = 1
-
+	AutoFarm._origin = nil
+	AutoFarm._lastTick = 0
 	AutoFarm._connection = RunService.Heartbeat:Connect(AutoFarm_Tick)
 	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
-	print("[AutoFarm] Started")
 end
 
 function AutoFarm.Stop()
 	AutoFarm._running = false
-	AutoFarm._currentTarget = nil
+	AutoFarm._origin = nil
 	ActorManager.SelectedTarget_RB = nil
 	ActorManager.SelectedActor_RB = nil
-	AutoFarm._phase = "seek"
-
 	if AutoFarm._connection then
 		pcall(function() AutoFarm._connection:Disconnect() end)
 		AutoFarm._connection = nil
 	end
-	print("[AutoFarm] Stopped")
 end
 
 
@@ -2956,162 +2924,16 @@ S_AK:AddButton({Name="Rescan Network",
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
 
-
-pcall(function()
--- MELEE AUTO FARM — no range limit, works on distant NPCs
--- AK_Fire fails on distant NPCs because actor.Character is nil.
--- This version uses actor.Position directly when character not loaded.
-local MeleeAF = {Enabled=false, _conn=nil, _running=false, _lastFire=0, _interval=0.35}
-
-local function MAF_Fire(actor)
-	local net = AK_FindNet()
-	if not net then return end
-	local remote = AK_GetRemote()
-	if not remote then return end
-
-	-- Get position: prefer Head, fallback to actor.Position (works on distant NPCs)
-	local pos, partName
-	local char = actor.Character
-	if char then
-		local head = char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
-		if head then pos = head.Position; partName = head.Name end
-	end
-	if not pos then
-		pos = actor.Position
-		partName = "Head"
-	end
-	if not pos then return end
-
-	local uid = AK_GetUID(actor)
-	if not uid then return end
-
-	local n = math.random(1, 3)
-	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
-	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
-	local encImpact = AK_Encrypt(
-		{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, partName},
-		net
-	)
-	if encImpact then pcall(function() remote:FireServer(encImpact) end) end
-end
-
-local function MAF_Tick()
-	if not MeleeAF.Enabled then return end
-	local now = tick()
-	if now - MeleeAF._lastFire < MeleeAF._interval then return end
-	if not ActorManager or not ActorManager.Initialized then return end
-	MeleeAF._lastFire = now
-	for _, actor in ipairs(ActorManager.Enemies) do
-		if actor and actor.Alive and not actor.Seat then
-			task.spawn(function() MAF_Fire(actor) end)
-		end
-	end
-end
-
-local S_MAF = CombatTab:DrawSection({Name="Melee Auto Farm", Position="left"})
-S_MAF:AddToggle({Name="Enable", Flag="MAF_En", Default=false,
-	Callback=function(v)
-		MeleeAF.Enabled = v
-		if v and not MeleeAF._running then
-			MeleeAF._running = true
-			MeleeAF._conn = RunService.Heartbeat:Connect(MAF_Tick)
-			table.insert(getgenv().Moon_Connections, MeleeAF._conn)
-		elseif not v and MeleeAF._conn then
-			pcall(function() MeleeAF._conn:Disconnect() end)
-			MeleeAF._conn = nil; MeleeAF._running = false
-		end
-	end})
-S_MAF:AddSlider({Name="Rate (s)", Flag="MAF_Rate", Min=0.05, Max=2, Default=0.35, Rounding=2,
-	Callback=function(v) MeleeAF._interval = v end})
-
-getgenv().MeleeAF = MeleeAF
-print("[MeleeAF] Loaded")
-end)
-
 -- ==========================================
 pcall(function()
 -- AUTO FARM
 local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
 
-local function AF_GetTarget()
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return nil end
-	local myPos = myActor.Position or Camera.CFrame.Position
-	local best, bestDist = nil, math.huge
-	if ActorManager.Initialized then
-		for _, actor in ipairs(ActorManager.Enemies) do
-			if actor and actor.Alive and actor.Character then
-				local pos = actor.Position
-				if not pos and actor.Character.PrimaryPart then
-					pos = actor.Character.PrimaryPart.Position
-				end
-				if pos then
-					local d = (pos - myPos).Magnitude
-					if d < bestDist then bestDist = d; best = actor end
-				end
-			end
-		end
-	end
-	return best
-end
-
-local function AF_TeleportTo(actor)
-	local myActor = ReplicatorService and ReplicatorService.LocalActor
-	if not myActor then return end
-	local pos = actor.Position
-	if not pos and actor.Character and actor.Character.PrimaryPart then
-		pos = actor.Character.PrimaryPart.Position
-	end
-	if not pos then return end
-	local targetPos = Vector3.new(pos.X, pos.Y + AutoFarm.OffsetY, pos.Z)
-	pcall(function()
-		if ControllerService and ControllerService.Controller then
-			local ctrl = ControllerService.Controller
-			ctrl._position = targetPos
-			ctrl._lastSafePosition = targetPos
-		end
-		myActor.SimulatedPosition = targetPos
-		myActor.CFrame = CFrame.new(targetPos)
-	end)
-end
-
-local function AF_Tick()
-	if not AutoFarm.Enabled then return end
-	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
-		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=2})
-		AutoFarm.Enabled = false
-		return
-	end
-	local target = AF_GetTarget()
-	if target then AF_TeleportTo(target) end
-end
-
-function AutoFarm.Start()
-	if AutoFarm._running then return end
-	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
-		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=3})
-		return
-	end
-	AutoFarm._running = true
-	AutoFarm._connection = RunService.Heartbeat:Connect(AF_Tick)
-	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
-end
-
-function AutoFarm.Stop()
-	AutoFarm._running = false
-	if AutoFarm._connection then
-		pcall(function() AutoFarm._connection:Disconnect() end)
-		AutoFarm._connection = nil
-	end
-end
-
-getgenv().AutoFarm = AutoFarm
-
 local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
 S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
 	Callback=function(v) AutoFarm.Enabled=v; if v then AutoFarm.Start() else AutoFarm.Stop() end end})
-S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
-	Callback=function(v) AutoFarm.OffsetY=v end})
+S_AF:AddSlider({Name="Range (0 = unlimited)", Flag="AF_Range", Min=0, Max=2000, Default=0, Rounding=0,
+	Callback=function(v) AutoFarm.Range=v end})
 print("[AutoFarm] Loaded")
 end)
 
@@ -3188,4 +3010,204 @@ S_ALP:AddToggle({Name="Enable Auto Lockpick", Flag="ALP_Enabled", Default=false,
         if v then AutoLockpick.Start() else AutoLockpick.Stop() end
     end})
 print("[AutoLockpick] Loaded")
+end)
+
+
+-- ============================================================
+-- WEAPON CHROMA / TRANSPARENCY / COLOR (MOBILE)
+-- ============================================================
+pcall(function()
+
+local WeaponChroma = {
+	Enabled      = false,
+	Mode         = "Rainbow",
+	SolidColor   = Color3.fromRGB(255, 80, 200),
+	Alpha        = 0.5,
+	_hue         = 0,
+	_speed       = 0.4,
+	_connection  = nil,
+	_running     = false,
+	_originals   = {},
+}
+
+local function WC_GetParts()
+	local parts = {}
+	for _, rep in ipairs(WeaponManager and WeaponManager.Visuals or {}) do
+		local firearm = rawget(rep, "_firearm")
+		if firearm then
+			local pm = rawget(firearm, "ParentModel")
+			if pm then
+				for _, p in ipairs(pm:GetDescendants()) do
+					if p:IsA("BasePart") and p.Transparency < 0.9 then parts[#parts+1] = p end
+				end
+			end
+		end
+		local vm = rawget(rep, "_actor") and rawget(rep._actor, "ViewModel")
+		if vm then
+			local vmModel = rawget(vm, "Model") or (type(vm)=="table" and vm.Model)
+			if vmModel and typeof(vmModel)=="Instance" then
+				for _, p in ipairs(vmModel:GetDescendants()) do
+					if p:IsA("BasePart") and p.Transparency < 0.9 then parts[#parts+1] = p end
+				end
+			end
+		end
+	end
+	local char = game:GetService("Players").LocalPlayer.Character
+	if char then
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") and p.Transparency < 0.9 then parts[#parts+1] = p end
+		end
+	end
+	return parts
+end
+
+local function WC_SaveOriginal(part)
+	if not WeaponChroma._originals[part] then
+		WeaponChroma._originals[part] = {Color=part.Color, Material=part.Material, Transparency=part.Transparency}
+	end
+end
+
+local function WC_Restore()
+	for part, orig in pairs(WeaponChroma._originals) do
+		pcall(function() part.Color=orig.Color; part.Material=orig.Material; part.Transparency=orig.Transparency end)
+	end
+	WeaponChroma._originals = {}
+end
+
+local function WC_Tick(dt)
+	if not WeaponChroma.Enabled then return end
+	WeaponChroma._hue = (WeaponChroma._hue + dt * WeaponChroma._speed) % 1
+	for _, part in ipairs(WC_GetParts()) do
+		WC_SaveOriginal(part)
+		pcall(function()
+			if WeaponChroma.Mode == "Rainbow" then
+				part.Color = Color3.fromHSV(WeaponChroma._hue,1,1); part.Material=Enum.Material.Neon; part.Transparency=0
+			elseif WeaponChroma.Mode == "Solid" then
+				part.Color = WeaponChroma.SolidColor; part.Material=Enum.Material.Neon; part.Transparency=0
+			elseif WeaponChroma.Mode == "Transparency" then
+				part.Transparency = WeaponChroma.Alpha
+			end
+		end)
+	end
+end
+
+function WeaponChroma.Start()
+	if WeaponChroma._running then return end
+	WeaponChroma._running = true
+	WeaponChroma._connection = RunService.Heartbeat:Connect(function(dt) pcall(WC_Tick,dt) end)
+	table.insert(getgenv().Moon_Connections, WeaponChroma._connection)
+end
+
+function WeaponChroma.Stop()
+	WeaponChroma._running = false
+	if WeaponChroma._connection then pcall(function() WeaponChroma._connection:Disconnect() end); WeaponChroma._connection=nil end
+	WC_Restore()
+end
+
+getgenv().WeaponChroma = WeaponChroma
+
+local S_WC = VisualsTab:DrawSection({Name="Weapon Chroma", Position="left"})
+S_WC:AddToggle({Name="Enable Weapon Chroma", Flag="WC_Enabled", Default=false,
+	Callback=function(v) WeaponChroma.Enabled=v; if v then WeaponChroma.Start() else WeaponChroma.Stop() end end})
+S_WC:AddDropdown({Name="Mode", Flag="WC_Mode", Default="Rainbow",
+	Values={"Rainbow","Solid","Transparency"},
+	Callback=function(v) WeaponChroma.Mode=v end})
+S_WC:AddColorPicker("WC_SolidColor", {Name="Solid Color", Default=Color3.fromRGB(255,80,200),
+	Callback=function(v) WeaponChroma.SolidColor=v end})
+S_WC:AddSlider({Name="Transparency", Flag="WC_Alpha", Min=0, Max=100, Default=50, Rounding=0,
+	Callback=function(v) WeaponChroma.Alpha=v/100 end})
+S_WC:AddSlider({Name="Rainbow Speed", Flag="WC_Speed", Min=1, Max=20, Default=4, Rounding=0,
+	Callback=function(v) WeaponChroma._speed=v/10 end})
+
+print("[WeaponChroma] Loaded")
+end)
+
+
+-- ============================================================
+-- CHARACTER CHROMA / TRANSPARENCY / COLOR (MOBILE)
+-- ============================================================
+pcall(function()
+
+local CharChroma = {
+	Enabled      = false,
+	Mode         = "Rainbow",
+	SolidColor   = Color3.fromRGB(0, 200, 255),
+	Alpha        = 0.5,
+	_hue         = 0,
+	_speed       = 0.4,
+	_connection  = nil,
+	_running     = false,
+	_originals   = {},
+}
+
+local function CC_GetParts()
+	local parts = {}
+	local char = game:GetService("Players").LocalPlayer.Character
+	if not char then return parts end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") then parts[#parts+1] = p end
+	end
+	return parts
+end
+
+local function CC_SaveOriginal(part)
+	if not CharChroma._originals[part] then
+		CharChroma._originals[part] = {Color=part.Color, Material=part.Material, Transparency=part.Transparency}
+	end
+end
+
+local function CC_Restore()
+	for part, orig in pairs(CharChroma._originals) do
+		pcall(function() part.Color=orig.Color; part.Material=orig.Material; part.Transparency=orig.Transparency end)
+	end
+	CharChroma._originals = {}
+end
+
+local function CC_Tick(dt)
+	if not CharChroma.Enabled then return end
+	CharChroma._hue = (CharChroma._hue + dt * CharChroma._speed) % 1
+	for _, part in ipairs(CC_GetParts()) do
+		CC_SaveOriginal(part)
+		pcall(function()
+			if CharChroma.Mode == "Rainbow" then
+				part.Color=Color3.fromHSV(CharChroma._hue,1,1); part.Material=Enum.Material.Neon; part.Transparency=0
+			elseif CharChroma.Mode == "Solid" then
+				part.Color=CharChroma.SolidColor; part.Material=Enum.Material.Neon; part.Transparency=0
+			elseif CharChroma.Mode == "Transparency" then
+				part.Transparency=CharChroma.Alpha
+			end
+		end)
+	end
+end
+
+function CharChroma.Start()
+	if CharChroma._running then return end
+	CharChroma._running = true
+	game:GetService("Players").LocalPlayer.CharacterAdded:Connect(function() CharChroma._originals={} end)
+	CharChroma._connection = RunService.Heartbeat:Connect(function(dt) pcall(CC_Tick,dt) end)
+	table.insert(getgenv().Moon_Connections, CharChroma._connection)
+end
+
+function CharChroma.Stop()
+	CharChroma._running = false
+	if CharChroma._connection then pcall(function() CharChroma._connection:Disconnect() end); CharChroma._connection=nil end
+	CC_Restore()
+end
+
+getgenv().CharChroma = CharChroma
+
+local S_CC = VisualsTab:DrawSection({Name="Character Chroma", Position="right"})
+S_CC:AddToggle({Name="Enable Character Chroma", Flag="CC_Enabled", Default=false,
+	Callback=function(v) CharChroma.Enabled=v; if v then CharChroma.Start() else CharChroma.Stop() end end})
+S_CC:AddDropdown({Name="Mode", Flag="CC_Mode", Default="Rainbow",
+	Values={"Rainbow","Solid","Transparency"},
+	Callback=function(v) CharChroma.Mode=v end})
+S_CC:AddColorPicker("CC_SolidColor", {Name="Solid Color", Default=Color3.fromRGB(0,200,255),
+	Callback=function(v) CharChroma.SolidColor=v end})
+S_CC:AddSlider({Name="Transparency", Flag="CC_Alpha", Min=0, Max=100, Default=50, Rounding=0,
+	Callback=function(v) CharChroma.Alpha=v/100 end})
+S_CC:AddSlider({Name="Rainbow Speed", Flag="CC_Speed", Min=1, Max=20, Default=4, Rounding=0,
+	Callback=function(v) CharChroma._speed=v/10 end})
+
+print("[CharChroma] Loaded")
 end)
