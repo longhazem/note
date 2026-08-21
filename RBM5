@@ -1,8 +1,7 @@
 -- ==========================================
 -- AURA KILL V2 – MELEE + RAKNET DESYNC
--- Sửa lỗi heartbeat, chạy độc lập, UI riêng
+-- FIX heartbeat – dùng game:GetService trực tiếp
 -- ==========================================
-local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
@@ -187,7 +186,7 @@ local function AKV2_Execute(target)
     return true
 end
 
--- Heartbeat loop
+-- Heartbeat loop – dùng game:GetService tại chỗ
 local function AKV2_Tick()
     if not AuraKillV2.Enabled then return end
     if not ActorManager or not ActorManager.Enemies then return end
@@ -209,7 +208,9 @@ function AuraKillV2.Start()
     AuraKillV2._running = true
     AKV2_FindNet()
     AKV2_GetRemote()
-    AuraKillV2._connection = RunService.Heartbeat:Connect(AKV2_Tick)
+    -- Gọi service trực tiếp để tránh nil
+    local rs = game:GetService("RunService")
+    AuraKillV2._connection = rs.Heartbeat:Connect(AKV2_Tick)
     table.insert(getgenv().Moon_Connections, AuraKillV2._connection)
     print("[AuraKillV2] Started (Melee + RakNet)")
 end
