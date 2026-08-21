@@ -1,18 +1,18 @@
 -- ==========================================
--- AURA KILL V2 – RAKNET DESYNC + UI RIÊNG
--- Không range, teleport đến từng enemy, bắn, về vị trí cũ.
--- UI nhỏ gọn, kéo thả, nút bật/tắt.
+-- AURA KILL V2 – MELEE + RAKNET DESYNC
+-- Teleport đến từng enemy, thực hiện Slash + Impact (melee), về vị trí cũ.
+-- UI riêng, nút bật/tắt, kéo thả.
 -- ==========================================
 local AuraKillV2 = {
     Enabled = false,
-    FireDelay = 0.05,
-    TargetPart = "Head",
+    FireDelay = 0.04,          -- thời gian đứng tại target để đánh (giây)
     _net = nil,
+    _remote = nil,
     _connection = nil,
     _running = false,
 }
 
--- Tìm network table (chứa _key, _code, Send/Fire)
+-- === SAO CHÉP HÀM TỪ AURAKILL V1 (để độc lập) ===
 local function AKV2_FindNet()
     if AuraKillV2._net then return AuraKillV2._net end
     if shared and type(shared.import) == "function" then
@@ -33,21 +33,84 @@ local function AKV2_FindNet()
     return nil
 end
 
--- Lấy weapon hiện tại
-local function AKV2_GetWeapon()
-    local inv = InventoryService
-    if inv and inv.Equipped then return inv.Equipped.Handler end
-    return WeaponManager.Equipped
+local function AKV2_GetRemote()
+    if AuraKillV2._remote and AuraKillV2._remote.Parent then return AuraKillV2._remote end
+    local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+    if ev then
+        local re = ev:FindFirstChild("RemoteEvent")
+        if re then AuraKillV2._remote = re; return re end
+    end
+    for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+        if v:IsA("RemoteEvent") then AuraKillV2._remote = v; return v end
+    end
+    return nil
 end
 
--- Gửi gói tin CFrame qua RakNet (dùng bitstream)
+local function AKV2_NetEncode(jsonStr, key)
+    local result = ""
+    for i = 1, #jsonStr do
+        local ki = i % 4
+        local kval = key[ki + 1]
+        local nb = (string.byte(jsonStr, i) - 32 + kval) % 95 + 32
+        result = result .. string.char(nb)
+    end
+    local firstByte = string.byte(jsonStr, 1)
+    for v24 = 1, key[5] do
+        local v26 = tostring(v24)
+        local v27 = firstByte - string.byte(v26, 1)
+        result = result .. string.char(v27)
+    end
+    return result
+end
+
+local function AKV2_Encrypt(data, net)
+    local hs = game:GetService("HttpService")
+    local ok, raw = pcall(function() return hs:JSONEncode(data) end)
+    if not ok or not raw then return nil end
+    return AKV2_NetEncode(raw, net._key)
+end
+
+local function AKV2_GetUID(actor)
+    for _, field in ipairs({"UID","_id","Id","UUID"}) do
+        local v = rawget(actor, field)
+        if type(v) == "string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
+    end
+    return nil
+end
+
+local function AKV2_FireMelee(actor)
+    local net = AKV2_FindNet()
+    if not net then return false end
+    local remote = AKV2_GetRemote()
+    if not remote then return false end
+    local char = actor.Character
+    if not char then return false end
+    local part = char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
+    if not part then return false end
+    local pos = part.Position
+    local uid = AKV2_GetUID(actor)
+    if not uid then return false end
+
+    local n = math.random(1, 3)
+    local encSlash = AKV2_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
+    if encSlash then pcall(function() remote:FireServer(encSlash) end) end
+
+    local encImpact = AKV2_Encrypt(
+        {net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
+        net
+    )
+    if encImpact then pcall(function() remote:FireServer(encImpact) end) end
+    return true
+end
+
+-- === TELEPORT QUA RAKNET BITSTREAM ===
 local function AKV2_SendCFrame(position, cframe)
     local net = AKV2_FindNet()
     if not net then return false end
 
     local success, stream = pcall(function()
         local bs = bitstream()
-        bs:WriteByte(0x1D)  -- opcode cho SetCFrame / PhysicsUpdate
+        bs:WriteByte(0x1D)  -- opcode SetCFrame / PhysicsUpdate
         bs:WriteFloat(position.X)
         bs:WriteFloat(position.Y)
         bs:WriteFloat(position.Z)
@@ -55,7 +118,7 @@ local function AKV2_SendCFrame(position, cframe)
         bs:WriteFloat(rX)
         bs:WriteFloat(rY)
         bs:WriteFloat(rZ)
-        bs:WriteByte(0)     -- padding
+        bs:WriteByte(0)
         bs:ResetWritePointer()
         return bs
     end)
@@ -70,7 +133,7 @@ local function AKV2_SendCFrame(position, cframe)
         return true
     end
 
-    -- Fallback gán trực tiếp
+    -- fallback
     local actor = ReplicatorService and ReplicatorService.LocalActor
     if actor then
         pcall(function()
@@ -82,11 +145,8 @@ local function AKV2_SendCFrame(position, cframe)
     return false
 end
 
--- Teleport → bắn → về
+-- === XỬ LÝ MỘT TARGET ===
 local function AKV2_Execute(target)
-    local weapon = AKV2_GetWeapon()
-    if not weapon then return false end
-
     local actor = ReplicatorService and ReplicatorService.LocalActor
     if not actor then return false end
 
@@ -111,11 +171,8 @@ local function AKV2_Execute(target)
 
     task.wait(AuraKillV2.FireDelay)
 
-    -- Bắn
-    pcall(function()
-        if weapon._discharge then weapon:_discharge(true)
-        elseif weapon.Discharge then weapon:Discharge() end
-    end)
+    -- Melee kill
+    AKV2_FireMelee(target)
 
     task.wait(0.02)
 
@@ -129,24 +186,18 @@ local function AKV2_Execute(target)
     return true
 end
 
--- Vòng lặp chính: lấy tất cả enemy (không giới hạn range)
+-- === VÒNG LẶP CHÍNH (KHÔNG RANGE) ===
 local function AKV2_Tick()
     if not AuraKillV2.Enabled then return end
-
-    local myActor = ReplicatorService and ReplicatorService.LocalActor
-    if not myActor then return end
-
-    -- Lấy danh sách enemy từ ActorManager
     local enemies = ActorManager.Enemies
     if not enemies or #enemies == 0 then return end
 
-    -- Xử lý lần lượt từng enemy
     for _, enemy in ipairs(enemies) do
         if enemy and enemy.Alive and enemy.Character then
             task.spawn(function()
                 AKV2_Execute(enemy)
             end)
-            task.wait(0.01)  -- chống spam
+            task.wait(0.01)   -- ngăn spam quá mức
         end
     end
 end
@@ -155,9 +206,10 @@ function AuraKillV2.Start()
     if AuraKillV2._running then return end
     AuraKillV2._running = true
     AKV2_FindNet()
+    AKV2_GetRemote()
     AuraKillV2._connection = RunService.Heartbeat:Connect(AKV2_Tick)
     table.insert(getgenv().Moon_Connections, AuraKillV2._connection)
-    print("[AuraKillV2] Started")
+    print("[AuraKillV2] Started (Melee + RakNet)")
 end
 
 function AuraKillV2.Stop()
@@ -169,10 +221,8 @@ function AuraKillV2.Stop()
     print("[AuraKillV2] Stopped")
 end
 
--- ==========================================
--- TẠO UI RIÊNG (không ghép vào UI chính)
--- ==========================================
-local function CreateAuraUI()
+-- === UI RIÊNG ===
+local function CreateAuraV2UI()
     local gui = Instance.new("ScreenGui")
     gui.Name = "AuraKillV2_GUI"
     gui.ResetOnSpawn = false
@@ -181,10 +231,10 @@ local function CreateAuraUI()
     gui.Parent = container
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 150, 0, 60)
-    frame.Position = UDim2.new(0.5, -75, 0.5, -30)
+    frame.Size = UDim2.new(0, 140, 0, 60)
+    frame.Position = UDim2.new(0.5, -70, 0.5, -30)
     frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    frame.BackgroundTransparency = 0.2
+    frame.BackgroundTransparency = 0.15
     frame.BorderSizePixel = 0
     frame.Active = true
     frame.Draggable = true
@@ -195,9 +245,9 @@ local function CreateAuraUI()
     corner.Parent = frame
 
     local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(0, 120, 0, 30)
-    toggleBtn.Position = UDim2.new(0.5, -60, 0.5, -15)
-    toggleBtn.Text = "Aura OFF"
+    toggleBtn.Size = UDim2.new(0, 110, 0, 28)
+    toggleBtn.Position = UDim2.new(0.5, -55, 0.5, -14)
+    toggleBtn.Text = "🔴 OFF"
     toggleBtn.TextColor3 = Color3.new(1, 1, 1)
     toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
     toggleBtn.BorderSizePixel = 0
@@ -211,20 +261,19 @@ local function CreateAuraUI()
         AuraKillV2.Enabled = not AuraKillV2.Enabled
         if AuraKillV2.Enabled then
             AuraKillV2.Start()
-            toggleBtn.Text = "Aura ON"
+            toggleBtn.Text = "🟢 ON"
             toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
         else
             AuraKillV2.Stop()
-            toggleBtn.Text = "Aura OFF"
+            toggleBtn.Text = "🔴 OFF"
             toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
         end
     end)
 
-    -- Nút đóng UI (X)
     local closeBtn = Instance.new("TextButton")
     closeBtn.Size = UDim2.new(0, 20, 0, 20)
-    closeBtn.Position = UDim2.new(1, -25, 0, 5)
-    closeBtn.Text = "X"
+    closeBtn.Position = UDim2.new(1, -24, 0, 4)
+    closeBtn.Text = "✕"
     closeBtn.TextColor3 = Color3.new(1, 1, 1)
     closeBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
     closeBtn.BorderSizePixel = 0
@@ -235,20 +284,16 @@ local function CreateAuraUI()
     closeCorner.Parent = closeBtn
 
     closeBtn.MouseButton1Click:Connect(function()
+        if AuraKillV2.Enabled then AuraKillV2.Stop() end
         gui:Destroy()
-        if AuraKillV2.Enabled then
-            AuraKillV2.Stop()
-            AuraKillV2.Enabled = false
-        end
     end)
 
     return gui
 end
 
--- Tạo UI ngay khi script load
 task.spawn(function()
-    CreateAuraUI()
-    print("[AuraKillV2] UI created – click 'Aura OFF' to toggle")
+    CreateAuraV2UI()
+    print("[AuraKillV2] UI ready – click OFF/ON để dùng melee")
 end)
 
 getgenv().AuraKillV2 = AuraKillV2
