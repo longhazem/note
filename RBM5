@@ -317,33 +317,48 @@ function VehicleFly.Toggle()
 	print("[Vehicle Fly]", Config.VehicleFly_Enabled and "ENABLED" or "DISABLED")
 end
 
--- Third Person Unlock System - Bypass _lockedFP and call POV
-local ThirdPersonUnlock = { Active = false }
+-- Third Person Unlock System - Hook CharacterCamera.Update to bypass FIRST_PERSON lock
+local ThirdPersonUnlock = { OriginalUpdate = nil, HookApplied = false }
 
 function ThirdPersonUnlock.Toggle()
 	Config.UnlockThirdPerson = not Config.UnlockThirdPerson
 	print("[Third Person Unlock]", Config.UnlockThirdPerson and "ENABLED" or "DISABLED")
+	if not ThirdPersonUnlock.HookApplied then
+		ThirdPersonUnlock.ApplyHook()
+	end
+end
+
+function ThirdPersonUnlock.ApplyHook()
+	if ThirdPersonUnlock.HookApplied then return end
+	task.spawn(function()
+		task.wait(1)
+		pcall(function()
+			for _, obj in pairs(getgc(true)) do
+				if type(obj) == "table" and rawget(obj, "Update") and rawget(obj, "Render") and rawget(obj, "Watch") then
+					if not obj._ThirdPersonHooked then
+						ThirdPersonUnlock.OriginalUpdate = obj.Update
+						obj.Update = function(self, ...)
+							local result = ThirdPersonUnlock.OriginalUpdate(self, ...)
+							if Config.UnlockThirdPerson and self._localActor then
+								if self._localActor.Zoom == 0 then
+									self._localActor.Zoom = 5
+								end
+							end
+							return result
+						end
+						obj._ThirdPersonHooked = true
+						ThirdPersonUnlock.HookApplied = true
+						print("[Third Person Unlock] Hook applied")
+						break
+					end
+				end
+			end
+		end)
+	end)
 end
 
 function ThirdPersonUnlock.Update()
-	if not Config.UnlockThirdPerson then return end
-	pcall(function()
-		if CharacterCamera and CharacterCamera._localActor then
-			local actor = CharacterCamera._localActor
-			if actor then
-				-- Bypass FP lock
-				if CharacterCamera._lockedFP then
-					CharacterCamera._lockedFP = false
-				end
-				-- Toggle POV - simulate the POV input handler behavior
-				if actor.Zoom and actor.Zoom > 0 then
-					actor.Zoom = 0
-				else
-					actor.Zoom = 5
-				end
-			end
-		end
-	end)
+	-- Hook maintained via patched Update method
 end
 
 local Places = {
@@ -2055,7 +2070,6 @@ local espLoop=RunService.RenderStepped:Connect(function()
 	UpdateESP()
 	if frameCount%2==0 then UpdateVehicles(frameCount,Config) end
 	UpdateCombat(frameCount)
-	ThirdPersonUnlock.Update()
 end)
 table.insert(getgenv().Moon_Connections,espLoop)
 
@@ -2070,6 +2084,9 @@ task.spawn(function()
 	task.wait(0.5)
 	VehicleFly.HookVehicles()
 	print("[Vehicle Fly] Ready! Press X to toggle")
+	task.wait(0.5)
+	ThirdPersonUnlock.ApplyHook()
+	print("[Third Person Unlock] Ready! Press V to toggle")
 end)
 
 local flyKeybind=UserInputService.InputBegan:Connect(function(input,gameProcessed)
