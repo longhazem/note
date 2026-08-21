@@ -1,9 +1,10 @@
 -- ==========================================
 -- AURA KILL V2 – MELEE + RAKNET DESYNC
--- FIX heartbeat – dùng game:GetService trực tiếp
+-- FIX table.insert lỗi – dùng bảng riêng
 -- ==========================================
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 
 local AuraKillV2 = {
     Enabled = false,
@@ -12,6 +13,7 @@ local AuraKillV2 = {
     _remote = nil,
     _connection = nil,
     _running = false,
+    _connections = {},   -- bảng riêng để quản lý
 }
 
 -- Tìm network object
@@ -186,7 +188,7 @@ local function AKV2_Execute(target)
     return true
 end
 
--- Heartbeat loop – dùng game:GetService tại chỗ
+-- Heartbeat loop
 local function AKV2_Tick()
     if not AuraKillV2.Enabled then return end
     if not ActorManager or not ActorManager.Enemies then return end
@@ -208,10 +210,9 @@ function AuraKillV2.Start()
     AuraKillV2._running = true
     AKV2_FindNet()
     AKV2_GetRemote()
-    -- Gọi service trực tiếp để tránh nil
-    local rs = game:GetService("RunService")
-    AuraKillV2._connection = rs.Heartbeat:Connect(AKV2_Tick)
-    table.insert(getgenv().Moon_Connections, AuraKillV2._connection)
+    AuraKillV2._connection = RunService.Heartbeat:Connect(AKV2_Tick)
+    -- Thêm vào bảng riêng, không dùng Moon_Connections
+    table.insert(AuraKillV2._connections, AuraKillV2._connection)
     print("[AuraKillV2] Started (Melee + RakNet)")
 end
 
@@ -221,6 +222,11 @@ function AuraKillV2.Stop()
         pcall(AuraKillV2._connection.Disconnect, AuraKillV2._connection)
         AuraKillV2._connection = nil
     end
+    -- Dọn sạch bảng riêng
+    for _, conn in ipairs(AuraKillV2._connections) do
+        pcall(conn.Disconnect, conn)
+    end
+    table.clear(AuraKillV2._connections)
     print("[AuraKillV2] Stopped")
 end
 
