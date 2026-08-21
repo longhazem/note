@@ -1,18 +1,21 @@
 -- ==========================================
 -- AURA KILL V2 – MELEE + RAKNET DESYNC
--- Teleport đến từng enemy, thực hiện Slash + Impact (melee), về vị trí cũ.
--- UI riêng, nút bật/tắt, kéo thả.
+-- Sửa lỗi heartbeat, chạy độc lập, UI riêng
 -- ==========================================
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
 local AuraKillV2 = {
     Enabled = false,
-    FireDelay = 0.04,          -- thời gian đứng tại target để đánh (giây)
+    FireDelay = 0.04,
     _net = nil,
     _remote = nil,
     _connection = nil,
     _running = false,
 }
 
--- === SAO CHÉP HÀM TỪ AURAKILL V1 (để độc lập) ===
+-- Tìm network object
 local function AKV2_FindNet()
     if AuraKillV2._net then return AuraKillV2._net end
     if shared and type(shared.import) == "function" then
@@ -33,19 +36,21 @@ local function AKV2_FindNet()
     return nil
 end
 
+-- Tìm RemoteEvent
 local function AKV2_GetRemote()
     if AuraKillV2._remote and AuraKillV2._remote.Parent then return AuraKillV2._remote end
-    local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+    local ev = ReplicatedStorage:FindFirstChild("Events")
     if ev then
         local re = ev:FindFirstChild("RemoteEvent")
         if re then AuraKillV2._remote = re; return re end
     end
-    for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+    for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
         if v:IsA("RemoteEvent") then AuraKillV2._remote = v; return v end
     end
     return nil
 end
 
+-- netEncode
 local function AKV2_NetEncode(jsonStr, key)
     local result = ""
     for i = 1, #jsonStr do
@@ -64,8 +69,7 @@ local function AKV2_NetEncode(jsonStr, key)
 end
 
 local function AKV2_Encrypt(data, net)
-    local hs = game:GetService("HttpService")
-    local ok, raw = pcall(function() return hs:JSONEncode(data) end)
+    local ok, raw = pcall(function() return HttpService:JSONEncode(data) end)
     if not ok or not raw then return nil end
     return AKV2_NetEncode(raw, net._key)
 end
@@ -78,6 +82,7 @@ local function AKV2_GetUID(actor)
     return nil
 end
 
+-- Gửi Slash + Impact (melee)
 local function AKV2_FireMelee(actor)
     local net = AKV2_FindNet()
     if not net then return false end
@@ -103,14 +108,14 @@ local function AKV2_FireMelee(actor)
     return true
 end
 
--- === TELEPORT QUA RAKNET BITSTREAM ===
+-- Teleport via bitstream (RakNet)
 local function AKV2_SendCFrame(position, cframe)
     local net = AKV2_FindNet()
     if not net then return false end
 
     local success, stream = pcall(function()
         local bs = bitstream()
-        bs:WriteByte(0x1D)  -- opcode SetCFrame / PhysicsUpdate
+        bs:WriteByte(0x1D)
         bs:WriteFloat(position.X)
         bs:WriteFloat(position.Y)
         bs:WriteFloat(position.Z)
@@ -133,7 +138,6 @@ local function AKV2_SendCFrame(position, cframe)
         return true
     end
 
-    -- fallback
     local actor = ReplicatorService and ReplicatorService.LocalActor
     if actor then
         pcall(function()
@@ -145,13 +149,13 @@ local function AKV2_SendCFrame(position, cframe)
     return false
 end
 
--- === XỬ LÝ MỘT TARGET ===
+-- Xử lý một target
 local function AKV2_Execute(target)
     local actor = ReplicatorService and ReplicatorService.LocalActor
     if not actor then return false end
 
-    local origPos = actor.Position or Camera.CFrame.Position
-    local origCF = actor.CFrame or Camera.CFrame
+    local origPos = actor.Position or (Camera and Camera.CFrame.Position) or Vector3.new()
+    local origCF = actor.CFrame or (Camera and Camera.CFrame) or CFrame.new()
 
     local targetPos = target.Position
     if not targetPos and target.Character and target.Character.PrimaryPart then
@@ -162,7 +166,6 @@ local function AKV2_Execute(target)
     local teleportPos = targetPos + Vector3.new(0, 2, 0)
     local teleportCF = CFrame.new(teleportPos, targetPos)
 
-    -- Teleport đến
     AKV2_SendCFrame(teleportPos, teleportCF)
     pcall(function()
         actor.SimulatedPosition = teleportPos
@@ -171,12 +174,10 @@ local function AKV2_Execute(target)
 
     task.wait(AuraKillV2.FireDelay)
 
-    -- Melee kill
     AKV2_FireMelee(target)
 
     task.wait(0.02)
 
-    -- Về vị trí cũ
     AKV2_SendCFrame(origPos, origCF)
     pcall(function()
         actor.SimulatedPosition = origPos
@@ -186,18 +187,19 @@ local function AKV2_Execute(target)
     return true
 end
 
--- === VÒNG LẶP CHÍNH (KHÔNG RANGE) ===
+-- Heartbeat loop
 local function AKV2_Tick()
     if not AuraKillV2.Enabled then return end
+    if not ActorManager or not ActorManager.Enemies then return end
     local enemies = ActorManager.Enemies
-    if not enemies or #enemies == 0 then return end
+    if #enemies == 0 then return end
 
     for _, enemy in ipairs(enemies) do
         if enemy and enemy.Alive and enemy.Character then
             task.spawn(function()
                 AKV2_Execute(enemy)
             end)
-            task.wait(0.01)   -- ngăn spam quá mức
+            task.wait(0.01)
         end
     end
 end
@@ -221,13 +223,16 @@ function AuraKillV2.Stop()
     print("[AuraKillV2] Stopped")
 end
 
--- === UI RIÊNG ===
+-- ===== UI RIÊNG =====
 local function CreateAuraV2UI()
     local gui = Instance.new("ScreenGui")
     gui.Name = "AuraKillV2_GUI"
     gui.ResetOnSpawn = false
 
-    local container = gethui() or game:GetService("CoreGui")
+    local container
+    local s, hui = pcall(gethui)
+    if s and hui then container = hui
+    else container = game:GetService("CoreGui") end
     gui.Parent = container
 
     local frame = Instance.new("Frame")
@@ -293,7 +298,7 @@ end
 
 task.spawn(function()
     CreateAuraV2UI()
-    print("[AuraKillV2] UI ready – click OFF/ON để dùng melee")
+    print("[AuraKillV2] UI ready – click OFF/ON")
 end)
 
 getgenv().AuraKillV2 = AuraKillV2
