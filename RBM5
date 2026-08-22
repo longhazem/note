@@ -1937,9 +1937,28 @@ S_World:AddDropdown({ Name="NVG Color", Flag="World_NVGColor", Values={"Green","
 	CurrentNVGColor=v; ApplyNVGEffect() end })
 
 -- Vehicles Tab
--- ═══════════════════════════════════════════════════════
+local VehicleTab=Window:DrawTab({ Name="Vehicles", Icon="car", Type="Double" })
+local S_VehVisuals=VehicleTab:DrawSection({ Name="Visuals", Position="right" })
+local S_VehFly=VehicleTab:DrawSection({ Name="Vehicle Fly", Position="left" })
+local VehFlyToggle=S_VehFly:AddToggle({ Name="Enable Fly", Flag="Veh_FlyEnabled", Default=false, Callback=function(v) Config.VehicleFly_Enabled=v end })
+VehFlyToggle.Link:AddKeybind({ Name="Toggle Key", Flag="Veh_FlyKey", Default=Config.VehicleFly_ToggleKey, Callback=function(v) Config.VehicleFly_ToggleKey=v end })
+S_VehFly:AddSlider({ Name="Fly Speed", Min=10, Max=500, Default=100, Flag="Veh_FlySpeed", Callback=function(v) Config.VehicleFly_Speed=v end })
+local S_VehTurret=VehicleTab:DrawSection({ Name="Turret Mods", Position="left" })
+S_VehTurret:AddToggle({ Name="Unlock Firemodes", Flag="Veh_UnlockFiremodes", Default=false, Callback=function(v) Config.TurretUnlockFiremodes=v end })
+S_VehTurret:AddToggle({ Name="No Recoil", Flag="Veh_NoRecoil", Default=false, Callback=function(v) Config.TurretNoRecoil=v end })
+S_VehTurret:AddToggle({ Name="No Spread", Flag="Veh_NoSpread", Default=false, Callback=function(v) Config.TurretNoSpread=v end })
+S_VehVisuals:AddToggle({ Name="Enabled", Flag="ESP_Vehicles", Default=false, Callback=function(v) Config.ShowVehicles=v end })
+S_VehVisuals:AddToggle({ Name="Ignore Local Vehicle", Flag="ESP_VehIgnoreLocal", Default=true, Callback=function(v) Config.IgnoreLocalVehicle=v end })
+S_VehVisuals:AddToggle({ Name="Show Box", Flag="ESP_VehBox", Default=true, Callback=function(v) Config.ShowVehicleBox=v end })
+S_VehVisuals:AddDropdown({ Name="Box Style", Values={"Full","Corner"}, Default="Full", Flag="ESP_VehBoxStyle", Callback=function(v) Config.VehicleBoxStyle=v end })
+S_VehVisuals:AddColorPicker({ Name="Box Color", Flag="ESP_VehColor", Default=Config.VehicleColor, Callback=function(v) Config.VehicleColor=v end })
+S_VehVisuals:AddToggle({ Name="Show Name", Flag="ESP_VehName", Default=true, Callback=function(v) Config.ShowVehicleName=v end })
+S_VehVisuals:AddToggle({ Name="Show Health", Flag="ESP_VehHealth", Default=true, Callback=function(v) Config.ShowVehicleHealth=v end })
+S_VehVisuals:AddDropdown({ Name="Health Bar Pos", Values={"Left","Right","Bottom"}, Default="Bottom", Flag="ESP_VehBarSide", Callback=function(v) Config.VehicleHealthBarSide=v end })
+S_VehVisuals:AddColorPicker({ Name="Health Color", Flag="ESP_VehHealthColor", Default=Config.VehicleHealthColor, Callback=function(v) Config.VehicleHealthColor=v end })
+
+pcall(function()
 -- VEHICLE TELEPORTER
--- ═══════════════════════════════════════════════════════
 local VehTeleporter = {
 	TargetPos = nil,
 	_holdConn = nil,
@@ -2013,21 +2032,15 @@ local function VT_Execute()
 
 	VT_Cleanup()
 
-	-- Giữ nguyên hướng xe, chỉ đổi vị trí
 	local targetCF = primaryPart.CFrame + (targetPos - primaryPart.CFrame.Position)
 
-	-- Phase 1: zero velocities trước khi move
 	pcall(function()
 		primaryPart.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
 		primaryPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
 	end)
 
-	-- Phase 2: set CFrame ngay lập tức
 	pcall(function() vehicle:SetPrimaryPartCFrame(targetCF) end)
 
-	-- Phase 3: AlignPosition chống server correction
-	-- Client có network ownership của xe khi ngồi trong → AlignPosition với
-	-- RigidityEnabled = true sẽ override server position replication
 	pcall(function()
 		local att = Instance.new("Attachment")
 		att.Parent = primaryPart
@@ -2046,7 +2059,6 @@ local function VT_Execute()
 		VehTeleporter._alignPos = ap
 	end)
 
-	-- Phase 4: Heartbeat loop 180 frame (~3s) backup nếu AlignPos không đủ
 	local frameCount = 0
 	VehTeleporter._holdConn = RunService.Heartbeat:Connect(function()
 		frameCount = frameCount + 1
@@ -2075,27 +2087,6 @@ end
 
 getgenv().VehTeleporter = VehTeleporter
 
-local VehicleTab=Window:DrawTab({ Name="Vehicles", Icon="car", Type="Double" })
-local S_VehVisuals=VehicleTab:DrawSection({ Name="Visuals", Position="right" })
-local S_VehFly=VehicleTab:DrawSection({ Name="Vehicle Fly", Position="left" })
-local VehFlyToggle=S_VehFly:AddToggle({ Name="Enable Fly", Flag="Veh_FlyEnabled", Default=false, Callback=function(v) Config.VehicleFly_Enabled=v end })
-VehFlyToggle.Link:AddKeybind({ Name="Toggle Key", Flag="Veh_FlyKey", Default=Config.VehicleFly_ToggleKey, Callback=function(v) Config.VehicleFly_ToggleKey=v end })
-S_VehFly:AddSlider({ Name="Fly Speed", Min=10, Max=500, Default=100, Flag="Veh_FlySpeed", Callback=function(v) Config.VehicleFly_Speed=v end })
-local S_VehTurret=VehicleTab:DrawSection({ Name="Turret Mods", Position="left" })
-S_VehTurret:AddToggle({ Name="Unlock Firemodes", Flag="Veh_UnlockFiremodes", Default=false, Callback=function(v) Config.TurretUnlockFiremodes=v end })
-S_VehTurret:AddToggle({ Name="No Recoil", Flag="Veh_NoRecoil", Default=false, Callback=function(v) Config.TurretNoRecoil=v end })
-S_VehTurret:AddToggle({ Name="No Spread", Flag="Veh_NoSpread", Default=false, Callback=function(v) Config.TurretNoSpread=v end })
-S_VehVisuals:AddToggle({ Name="Enabled", Flag="ESP_Vehicles", Default=false, Callback=function(v) Config.ShowVehicles=v end })
-S_VehVisuals:AddToggle({ Name="Ignore Local Vehicle", Flag="ESP_VehIgnoreLocal", Default=true, Callback=function(v) Config.IgnoreLocalVehicle=v end })
-S_VehVisuals:AddToggle({ Name="Show Box", Flag="ESP_VehBox", Default=true, Callback=function(v) Config.ShowVehicleBox=v end })
-S_VehVisuals:AddDropdown({ Name="Box Style", Values={"Full","Corner"}, Default="Full", Flag="ESP_VehBoxStyle", Callback=function(v) Config.VehicleBoxStyle=v end })
-S_VehVisuals:AddColorPicker({ Name="Box Color", Flag="ESP_VehColor", Default=Config.VehicleColor, Callback=function(v) Config.VehicleColor=v end })
-S_VehVisuals:AddToggle({ Name="Show Name", Flag="ESP_VehName", Default=true, Callback=function(v) Config.ShowVehicleName=v end })
-S_VehVisuals:AddToggle({ Name="Show Health", Flag="ESP_VehHealth", Default=true, Callback=function(v) Config.ShowVehicleHealth=v end })
-S_VehVisuals:AddDropdown({ Name="Health Bar Pos", Values={"Left","Right","Bottom"}, Default="Bottom", Flag="ESP_VehBarSide", Callback=function(v) Config.VehicleHealthBarSide=v end })
-S_VehVisuals:AddColorPicker({ Name="Health Color", Flag="ESP_VehHealthColor", Default=Config.VehicleHealthColor, Callback=function(v) Config.VehicleHealthColor=v end })
-
--- Vehicle Teleporter UI
 local S_VehTele = VehicleTab:DrawSection({ Name="Vehicle Teleporter", Position="right" })
 S_VehTele:AddButton({
 	Name     = "Lấy toạ độ hiện tại",
@@ -2109,6 +2100,8 @@ S_VehTele:AddButton({
 	Name     = "Xóa toạ độ",
 	Callback = function() VT_Clear() end
 })
+print("[VehTeleporter] Loaded")
+end)
 
 -- Misc Tab
 local MiscTab=Window:DrawTab({ Name="Misc", Icon="droplets", Type="Double" })
