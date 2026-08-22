@@ -249,7 +249,6 @@ local Config = {
 	AutoReload = false,
 	Character_Fly = false, Character_FlySpeed = 50, Character_WalkSpeedEnabled = false, Character_WalkSpeed = 16,
 	Character_SprintSpeedEnabled = false, Character_SprintSpeed = 25,
-	UnlockThirdPerson = false,
 	TurretUnlockFiremodes = false, TurretNoRecoil = false, TurretNoSpread = false,
 	AlwaysDay = false, NoFog = false, ThermalVision = false, NightVision = false,
 	BoxColor = nil, HealthBarColor = nil,
@@ -315,50 +314,6 @@ end
 function VehicleFly.Toggle()
 	Config.VehicleFly_Enabled = not Config.VehicleFly_Enabled
 	print("[Vehicle Fly]", Config.VehicleFly_Enabled and "ENABLED" or "DISABLED")
-end
-
--- Third Person Unlock System - Hook CharacterCamera.Update to bypass FIRST_PERSON lock
-local ThirdPersonUnlock = { OriginalUpdate = nil, HookApplied = false }
-
-function ThirdPersonUnlock.Toggle()
-	Config.UnlockThirdPerson = not Config.UnlockThirdPerson
-	print("[Third Person Unlock]", Config.UnlockThirdPerson and "ENABLED" or "DISABLED")
-	if not ThirdPersonUnlock.HookApplied then
-		ThirdPersonUnlock.ApplyHook()
-	end
-end
-
-function ThirdPersonUnlock.ApplyHook()
-	if ThirdPersonUnlock.HookApplied then return end
-	task.spawn(function()
-		task.wait(1)
-		pcall(function()
-			for _, obj in pairs(getgc(true)) do
-				if type(obj) == "table" and rawget(obj, "Update") and rawget(obj, "Render") and rawget(obj, "Watch") then
-					if not obj._ThirdPersonHooked then
-						ThirdPersonUnlock.OriginalUpdate = obj.Update
-						obj.Update = function(self, ...)
-							local result = ThirdPersonUnlock.OriginalUpdate(self, ...)
-							if Config.UnlockThirdPerson and self._localActor then
-								if self._localActor.Zoom == 0 then
-									self._localActor.Zoom = 5
-								end
-							end
-							return result
-						end
-						obj._ThirdPersonHooked = true
-						ThirdPersonUnlock.HookApplied = true
-						print("[Third Person Unlock] Hook applied")
-						break
-					end
-				end
-			end
-		end)
-	end)
-end
-
-function ThirdPersonUnlock.Update()
-	-- Hook maintained via patched Update method
 end
 
 local Places = {
@@ -1181,17 +1136,7 @@ local function InitializeServices()
 						local vel=BulletService:GetInfo(p49,p50)
 						if vel and vel>0 then muzzle_velocity=vel; lastUsedCaliber=p49; lastUsedVelocity=vel end
 					end
-					local targetVelocity=targetActor and (targetActor._oldDirection and targetActor._oldDirection*60 or Vector3_new(0,0,0)) or Vector3_new(0,0,0)
-				-- Add vehicle velocity if target seated
-				if targetActor and targetActor.Seat then
-					pcall(function()
-						if targetActor.Seat.Model and targetActor.Seat.Model.PrimaryPart then
-							local vehicleVel=targetActor.Seat.Model.PrimaryPart.AssemblyLinearVelocity or Vector3_new(0,0,0)
-							targetVelocity=targetVelocity+vehicleVel
-						end
-					end)
-				end
-				local gravity=32.2
+					local targetVelocity=getgenv()._lastPredVel or Vector3_new(0,0,0); local gravity=32.2
 					if originCF then muzzlePos=originCF.Position end
 					if not muzzlePos and GetMuzzlePosition then muzzlePos=GetMuzzlePosition() end
 					if muzzlePos and targetPos then
@@ -1992,6 +1937,144 @@ S_World:AddDropdown({ Name="NVG Color", Flag="World_NVGColor", Values={"Green","
 	CurrentNVGColor=v; ApplyNVGEffect() end })
 
 -- Vehicles Tab
+-- ═══════════════════════════════════════════════════════
+-- VEHICLE TELEPORTER
+-- ═══════════════════════════════════════════════════════
+local VehTeleporter = {
+	TargetPos = nil,
+	_holdConn = nil,
+	_alignPos = nil,
+	_att      = nil,
+}
+
+local function VT_CapturePos()
+	local pos
+	pcall(function()
+		local actor = ReplicatorService and ReplicatorService.LocalActor
+		if actor and actor.Position then
+			pos = actor.Position
+			return
+		end
+		local char = game:GetService("Players").LocalPlayer.Character
+		if char then
+			local root = char:FindFirstChild("HumanoidRootPart")
+				or char:FindFirstChild("UpperTorso")
+				or char.PrimaryPart
+			if root then pos = root.Position end
+		end
+	end)
+	if pos then
+		VehTeleporter.TargetPos = pos
+		print(string.format("[VehTeleporter] Đã lấy toạ độ: %.1f, %.1f, %.1f", pos.X, pos.Y, pos.Z))
+	else
+		warn("[VehTeleporter] Không lấy được toạ độ")
+	end
+end
+
+local function VT_Cleanup()
+	if VehTeleporter._holdConn then
+		pcall(function() VehTeleporter._holdConn:Disconnect() end)
+		VehTeleporter._holdConn = nil
+	end
+	if VehTeleporter._alignPos then
+		pcall(function() VehTeleporter._alignPos:Destroy() end)
+		VehTeleporter._alignPos = nil
+	end
+	if VehTeleporter._att then
+		pcall(function() VehTeleporter._att:Destroy() end)
+		VehTeleporter._att = nil
+	end
+end
+
+local function VT_Execute()
+	local targetPos = VehTeleporter.TargetPos
+	if not targetPos then
+		warn("[VehTeleporter] Chưa nhập toạ độ")
+		return
+	end
+
+	local myActor, seat, vehicle, primaryPart
+
+	local ok = pcall(function()
+		myActor = ReplicatorService.LocalActor
+		if not myActor then error("no actor") end
+		seat = myActor.Seat
+		if not seat then error("not in vehicle") end
+		vehicle = seat.Model
+		if not vehicle then error("no vehicle model") end
+		primaryPart = vehicle.PrimaryPart
+		if not primaryPart then error("no primarypart") end
+	end)
+
+	if not ok or not primaryPart then
+		warn("[VehTeleporter] Bạn chưa vào xe hoặc xe không hợp lệ")
+		return
+	end
+
+	VT_Cleanup()
+
+	-- Giữ nguyên hướng xe, chỉ đổi vị trí
+	local targetCF = primaryPart.CFrame + (targetPos - primaryPart.CFrame.Position)
+
+	-- Phase 1: zero velocities trước khi move
+	pcall(function()
+		primaryPart.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
+		primaryPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+	end)
+
+	-- Phase 2: set CFrame ngay lập tức
+	pcall(function() vehicle:SetPrimaryPartCFrame(targetCF) end)
+
+	-- Phase 3: AlignPosition chống server correction
+	-- Client có network ownership của xe khi ngồi trong → AlignPosition với
+	-- RigidityEnabled = true sẽ override server position replication
+	pcall(function()
+		local att = Instance.new("Attachment")
+		att.Parent = primaryPart
+		VehTeleporter._att = att
+
+		local ap = Instance.new("AlignPosition")
+		ap.Mode               = Enum.PositionAlignmentMode.OneAttachment
+		ap.Attachment0        = att
+		ap.Position           = targetPos
+		ap.MaxForce           = math.huge
+		ap.MaxVelocity        = math.huge
+		ap.Responsiveness     = 200
+		ap.RigidityEnabled    = true
+		ap.ApplyAtCenterOfMass = true
+		ap.Parent             = primaryPart
+		VehTeleporter._alignPos = ap
+	end)
+
+	-- Phase 4: Heartbeat loop 180 frame (~3s) backup nếu AlignPos không đủ
+	local frameCount = 0
+	VehTeleporter._holdConn = RunService.Heartbeat:Connect(function()
+		frameCount = frameCount + 1
+		pcall(function()
+			if not primaryPart or not primaryPart.Parent then
+				VT_Cleanup()
+				return
+			end
+			vehicle:SetPrimaryPartCFrame(targetCF)
+			primaryPart.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
+			primaryPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+		end)
+		if frameCount >= 180 then
+			VT_Cleanup()
+		end
+	end)
+
+	print(string.format("[VehTeleporter] Teleport → (%.1f, %.1f, %.1f)", targetPos.X, targetPos.Y, targetPos.Z))
+end
+
+local function VT_Clear()
+	VehTeleporter.TargetPos = nil
+	VT_Cleanup()
+	print("[VehTeleporter] Đã xóa toạ độ")
+end
+
+getgenv().VehTeleporter = VehTeleporter
+
 local VehicleTab=Window:DrawTab({ Name="Vehicles", Icon="car", Type="Double" })
 local S_VehVisuals=VehicleTab:DrawSection({ Name="Visuals", Position="right" })
 local S_VehFly=VehicleTab:DrawSection({ Name="Vehicle Fly", Position="left" })
@@ -2011,6 +2094,21 @@ S_VehVisuals:AddToggle({ Name="Show Name", Flag="ESP_VehName", Default=true, Cal
 S_VehVisuals:AddToggle({ Name="Show Health", Flag="ESP_VehHealth", Default=true, Callback=function(v) Config.ShowVehicleHealth=v end })
 S_VehVisuals:AddDropdown({ Name="Health Bar Pos", Values={"Left","Right","Bottom"}, Default="Bottom", Flag="ESP_VehBarSide", Callback=function(v) Config.VehicleHealthBarSide=v end })
 S_VehVisuals:AddColorPicker({ Name="Health Color", Flag="ESP_VehHealthColor", Default=Config.VehicleHealthColor, Callback=function(v) Config.VehicleHealthColor=v end })
+
+-- Vehicle Teleporter UI
+local S_VehTele = VehicleTab:DrawSection({ Name="Vehicle Teleporter", Position="right" })
+S_VehTele:AddButton({
+	Name     = "Lấy toạ độ hiện tại",
+	Callback = function() VT_CapturePos() end
+})
+S_VehTele:AddButton({
+	Name     = "Teleport Xe",
+	Callback = function() VT_Execute() end
+})
+S_VehTele:AddButton({
+	Name     = "Xóa toạ độ",
+	Callback = function() VT_Clear() end
+})
 
 -- Misc Tab
 local MiscTab=Window:DrawTab({ Name="Misc", Icon="droplets", Type="Double" })
@@ -2084,15 +2182,11 @@ task.spawn(function()
 	task.wait(0.5)
 	VehicleFly.HookVehicles()
 	print("[Vehicle Fly] Ready! Press X to toggle")
-	task.wait(0.5)
-	ThirdPersonUnlock.ApplyHook()
-	print("[Third Person Unlock] Ready! Press V to toggle")
 end)
 
 local flyKeybind=UserInputService.InputBegan:Connect(function(input,gameProcessed)
 	if gameProcessed then return end
 	if input.KeyCode==Config.VehicleFly_ToggleKey then VehicleFly.Toggle() end
-	if input.KeyCode==Enum.KeyCode.V then ThirdPersonUnlock.Toggle() end
 end)
 table.insert(getgenv().Moon_Connections,flyKeybind)
 
