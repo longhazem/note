@@ -1,36 +1,16 @@
 -- ============================================================
---  MTC Script — TokaiHub UI
---  Fly Bypass + Noclip + HitboxExpander + Movement
--- ============================================================
-
-local TokaiHub = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/Library.lua"
-))()
-
-local SaveManager = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/SaveManager.lua"
-))()
-
-local ThemeManager = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/ThemeManager.lua"
-))()
-
--- ============================================================
---  SERVICES
+--  MTC Script v3 — Hook-Based AC Bypass
+--  hookmetamethod __newindex + __namecall
+--  + BanishmentTP connection killer
+--  + EntityCollisionHandler neutralizer
 -- ============================================================
 
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local PhysicsService   = game:GetService("PhysicsService")
-local HttpService      = game:GetService("HttpService")
 
 local lp     = Players.LocalPlayer
 local camera = workspace.CurrentCamera
-
--- ============================================================
---  UTILITIES
--- ============================================================
 
 local function getChar()  return lp.Character end
 local function getRoot()
@@ -47,15 +27,204 @@ end
 -- ============================================================
 
 local State = {
-    fly        = false,
-    flySpeed   = 60,
-    noclip     = false,
-    hitbox     = false,
-    hitboxSize = Vector3.new(8, 8, 8),
+    fly         = false,
+    flySpeed    = 60,
+    noclip      = false,
+    hitbox      = false,
+    hitboxSize  = Vector3.new(8, 8, 8),
+    hitboxDebug = false,
+    hookActive  = false,
 }
 
 -- ============================================================
---  FLY BYPASS (BodyVelocity — không jump CFrame)
+--  HOOK LAYER
+--  __newindex: chặn forced CFrame/Position/CanCollide/PlatformStand
+--  __namecall: chặn :MoveTo() :TeleportToPos() từ game scripts
+-- ============================================================
+
+local hookNewindex
+local hookNamecall
+
+-- Track CFrame chúng ta đang set để không tự block mình
+local ourCFrameSets = {}
+
+local function isOurCode()
+    -- Executor closures không có debug.info level thấp
+    -- Game scripts thì có — đây là cách phân biệt
+    local info = debug.info(3, "s")
+    return info == nil or info == "[C]"
+end
+
+local function setupHooks()
+    if State.hookActive then return end
+
+    -- ── __newindex hook ──────────────────────────────────────
+    hookNewindex = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+
+        local char = getChar()
+        local root = getRoot()
+        local hum  = getHum()
+
+        -- 1. Block forced CFrame/Position/Velocity set trên HRP
+        --    khi fly active — đây là BanishmentTP rubber-band
+        if State.fly and root and self == root then
+            if key == "CFrame" or key == "Position" then
+                -- Chỉ cho qua nếu là code của chúng ta (executor)
+                if not ourCFrameSets[self] then
+                    return  -- drop, không gọi original
+                end
+            end
+        end
+
+        -- 2. Block CanCollide = true trên character parts khi noclip
+        --    EntityCollisionHandler cố reset về true mỗi frame
+        if State.noclip and key == "CanCollide" and value == true then
+            if char and self:IsDescendantOf(char) then
+                return  -- drop
+            end
+        end
+
+        -- 3. Block PlatformStand = true từ game scripts
+        --    CharacterClient dùng cái này để ragdoll/kill
+        if hum and self == hum and key == "PlatformStand" and value == true then
+            if not isOurCode() then
+                return  -- drop
+            end
+        end
+
+        -- 4. Block WalkSpeed/JumpPower bị reset về default bởi AC
+        if hum and self == hum then
+            if key == "WalkSpeed" and value == 16 and not isOurCode() then
+                return  -- drop nếu game cố reset
+            end
+        end
+
+        return hookNewindex(self, key, value)
+    end))
+
+    -- ── __namecall hook ──────────────────────────────────────
+    hookNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local char   = getChar()
+        local root   = getRoot()
+        local hum    = getHum()
+
+        -- 5. Block :MoveTo() từ game scripts trên character
+        --    BanishmentStatic dùng MoveTo hoặc CFrame set để rubber-band
+        if State.fly and method == "MoveTo" then
+            if char and self:IsDescendantOf(char) then
+                if not isOurCode() then return end
+            end
+        end
+
+        -- 6. Block :ChangeState() calls từ game — giữ Physics state
+        if State.fly and hum and self == hum and method == "ChangeState" then
+            local args = {...}
+            local targetState = args[1]
+            -- Allow: Physics (3), FallingDown (5) — chúng ta set cái này
+            -- Block: GettingUp (4), Running (8), Landed (14) nếu từ game
+            if targetState ~= Enum.HumanoidStateType.Physics then
+                if not isOurCode() then
+                    return  -- giữ nguyên Physics state
+                end
+            end
+        end
+
+        -- 7. Block :FireServer() trên BanishmentTP events
+        --    Nếu game client cố report position về server
+        if method == "FireServer" and not isOurCode() then
+            local name = pcall(function() return self.Name end) and self.Name or ""
+            if name:find("Banish") or name:find("Position") or name:find("AC") then
+                return  -- drop server report
+            end
+        end
+
+        return hookNamecall(self, ...)
+    end))
+
+    State.hookActive = true
+    print("[MTC] Hooks installed — __newindex + __namecall active")
+end
+
+local function removeHooks()
+    -- Hooks không uninstall được cleanly — disable bằng cách reset state
+    -- Actual hook removal cần executor support (replaceclosure với original)
+    if hookNewindex then
+        pcall(function()
+            hookmetamethod(game, "__newindex", hookNewindex)  -- restore original
+        end)
+    end
+    if hookNamecall then
+        pcall(function()
+            hookmetamethod(game, "__namecall", hookNamecall)  -- restore original
+        end)
+    end
+    State.hookActive = false
+    print("[MTC] Hooks removed")
+end
+
+-- ============================================================
+--  BANISHMENTTP CONNECTION KILLER
+--  Tìm tất cả RemoteEvent/BindableEvent trong BanishmentTP folder
+--  Disconnect connections không phải của executor
+-- ============================================================
+
+local killedConnections = {}
+
+local function killBanishmentConnections()
+    local bt = game:GetService("ReplicatedStorage"):FindFirstChild("BanishmentTP")
+    if not bt then
+        warn("[MTC] BanishmentTP folder not found")
+        return
+    end
+
+    local function killEvent(event)
+        -- getconnections = executor API (Synapse X / KRNL / Fluxus)
+        local ok, conns = pcall(getconnections, event)
+        if not ok or not conns then return end
+        for _, conn in ipairs(conns) do
+            local isExec = pcall(isexecutorclosure, conn.Function)
+                and isexecutorclosure(conn.Function)
+            if not isExec then
+                pcall(function() conn:Disable() end)
+                table.insert(killedConnections, conn)
+                print("[MTC] Killed BanishmentTP connection:", event.Name)
+            end
+        end
+    end
+
+    -- Scan tất cả descendants
+    for _, obj in ipairs(bt:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("BindableEvent") then
+            killEvent(obj)
+        end
+    end
+
+    -- BanishmentStatic có thể là ModuleScript được require bởi CharacterClient
+    -- Cũng kill events trong ReplicatedStorage/Events/FireEvent
+    local fireEvent = game:GetService("ReplicatedStorage")
+        :FindFirstChild("Events")
+        and game:GetService("ReplicatedStorage").Events:FindFirstChild("FireEvent")
+    if fireEvent then
+        for _, obj in ipairs(fireEvent:GetDescendants()) do
+            if obj:IsA("RemoteEvent") or obj:IsA("BindableEvent") then
+                killEvent(obj)
+            end
+        end
+    end
+end
+
+local function restoreBanishmentConnections()
+    for _, conn in ipairs(killedConnections) do
+        pcall(function() conn:Enable() end)
+    end
+    killedConnections = {}
+end
+
+-- ============================================================
+--  FLY v3 — Hook-backed
+--  __newindex block kết hợp với BodyVelocity
+--  CFrame sets của chúng ta đi qua ourCFrameSets flag
 -- ============================================================
 
 local flyObjects = {}
@@ -63,9 +232,16 @@ local flyConn
 
 local function destroyFlyObjects()
     for _, obj in pairs(flyObjects) do
-        if obj and obj.Parent then obj:Destroy() end
+        pcall(function() if obj and obj.Parent then obj:Destroy() end end)
     end
     flyObjects = {}
+end
+
+local function setCFrameSafe(root, cf)
+    -- Flag để hook biết đây là set của chúng ta
+    ourCFrameSets[root] = true
+    root.CFrame = cf
+    ourCFrameSets[root] = nil
 end
 
 local function createFlyObjects(root)
@@ -89,29 +265,36 @@ local function enableFly()
     local root = getRoot()
     local hum  = getHum()
     if not root or not hum then return end
-    hum.PlatformStand = true
+    hum:ChangeState(Enum.HumanoidStateType.Physics)
     createFlyObjects(root)
     flyConn = RunService.RenderStepped:Connect(function(dt)
         local r  = getRoot()
         local bv = flyObjects.bv
         local bg = flyObjects.bg
         if not r or not bv or not bg then return end
-        local camCF  = camera.CFrame
-        local fwd    = camCF.LookVector
-        local rgt    = camCF.RightVector
-        local up     = Vector3.new(0, 1, 0)
-        local dir    = Vector3.zero
-        if UserInputService:IsKeyDown(Enum.KeyCode.W)          then dir += fwd end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S)          then dir -= fwd end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A)          then dir -= rgt end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D)          then dir += rgt end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Space)      then dir += up  end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)  then dir -= up  end
+        local h = getHum()
+        if h and h:GetState() ~= Enum.HumanoidStateType.Physics then
+            h:ChangeState(Enum.HumanoidStateType.Physics)
+        end
+        local camCF = camera.CFrame
+        local fwd   = camCF.LookVector
+        local rgt   = camCF.RightVector
+        local up    = Vector3.new(0, 1, 0)
+        local dir   = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W)         then dir += fwd end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S)         then dir -= fwd end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A)         then dir -= rgt end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D)         then dir += rgt end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space)     then dir += up  end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir -= up  end
         local targetVel = dir.Magnitude > 0.01
             and dir.Unit * State.flySpeed
-            or  bv.Velocity * 0.85
-        bv.Velocity = bv.Velocity:Lerp(targetVel, math.min(1, 180 * dt / State.flySpeed))
-        bg.CFrame   = CFrame.new(r.Position, r.Position + camCF.LookVector)
+            or  bv.Velocity * 0.82
+        bv.Velocity = bv.Velocity:Lerp(
+            targetVel,
+            math.min(1, 160 * dt / math.max(State.flySpeed, 1))
+        )
+        bg.CFrame = CFrame.new(r.Position, r.Position + camCF.LookVector)
     end)
 end
 
@@ -120,58 +303,57 @@ local function disableFly()
     destroyFlyObjects()
     local hum  = getHum()
     local root = getRoot()
-    if hum  then hum.PlatformStand = false end
+    if hum  then hum:ChangeState(Enum.HumanoidStateType.GettingUp) end
     if root then root.Velocity = Vector3.zero end
 end
 
 -- ============================================================
---  NOCLIP BYPASS (CollisionGroup swap — engine-level)
+--  NOCLIP v3 — Hook-backed
+--  __newindex block CanCollide = true từ game scripts
+--  Heartbeat loop là backup nếu hook miss
 -- ============================================================
 
-local NOCLIP_GROUP  = "MTC_NC_" .. HttpService:GenerateGUID(false):sub(1, 6)
 local noclipConn
-
-local function ensureNoclipGroup()
-    pcall(function()
-        PhysicsService:RegisterCollisionGroup(NOCLIP_GROUP)
-        PhysicsService:CollisionGroupSetCollidable(NOCLIP_GROUP, NOCLIP_GROUP, false)
-        PhysicsService:CollisionGroupSetCollidable(NOCLIP_GROUP, "Default", false)
-    end)
-end
-
-local function applyNoclipGroup(char)
-    ensureNoclipGroup()
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then p.CollisionGroup = NOCLIP_GROUP end
-    end
-end
-
-local function removeNoclipGroup(char)
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then p.CollisionGroup = "Default" end
-    end
-end
+local noclipAddedConn
 
 local function enableNoclip()
     local char = getChar()
     if not char then return end
-    applyNoclipGroup(char)
-    noclipConn = char.DescendantAdded:Connect(function(d)
-        if d:IsA("BasePart") then d.CollisionGroup = NOCLIP_GROUP end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = false end
+    end
+    -- Backup heartbeat — hook lẽ ra đã chặn hết rồi
+    -- Giữ lại phòng khi hook miss một số edge case
+    noclipConn = RunService.Heartbeat:Connect(function()
+        local c = getChar()
+        if not c then return end
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") and p.CanCollide then
+                p.CanCollide = false
+            end
+        end
+    end)
+    noclipAddedConn = char.DescendantAdded:Connect(function(d)
+        if d:IsA("BasePart") then d.CanCollide = false end
     end)
 end
 
 local function disableNoclip()
-    if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
+    if noclipConn      then noclipConn:Disconnect();      noclipConn      = nil end
+    if noclipAddedConn then noclipAddedConn:Disconnect(); noclipAddedConn = nil end
     local char = getChar()
-    if char then removeNoclipGroup(char) end
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = true end
+    end
 end
 
 -- ============================================================
---  HITBOX EXPANDER
+--  HITBOX EXPANDER v3
 -- ============================================================
 
 local expandedHitboxes = {}
+local hitboxConn
 
 local function getTargets()
     local t = {}
@@ -191,53 +373,86 @@ local function getTargets()
     return t
 end
 
-local hitboxConn
+local function expandHitbox(char)
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp or expandedHitboxes[hrp] then return end
+    expandedHitboxes[hrp] = {
+        size     = hrp.Size,
+        color    = hrp.BrickColor,
+        material = hrp.Material,
+        transpar = hrp.Transparency,
+    }
+    hrp.Size = State.hitboxSize
+    if State.hitboxDebug then
+        hrp.BrickColor   = BrickColor.new("Bright red")
+        hrp.Material     = Enum.Material.Neon
+        hrp.Transparency = 0.5
+    else
+        hrp.Transparency = 1
+    end
+end
+
+local function restoreHitbox(hrp)
+    local d = expandedHitboxes[hrp]
+    if not d then return end
+    if hrp and hrp.Parent then
+        hrp.Size         = d.size
+        hrp.BrickColor   = d.color
+        hrp.Material     = d.material
+        hrp.Transparency = d.transpar
+    end
+    expandedHitboxes[hrp] = nil
+end
 
 local function enableHitbox()
     hitboxConn = RunService.Heartbeat:Connect(function()
-        for _, char in ipairs(getTargets()) do
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if hrp and not expandedHitboxes[hrp] then
-                expandedHitboxes[hrp] = hrp.Size
-                hrp.Size = State.hitboxSize
-                hrp.LocalTransparencyModifier = 1
-            end
-        end
+        for _, char in ipairs(getTargets()) do expandHitbox(char) end
         for hrp in pairs(expandedHitboxes) do
-            if not hrp or not hrp.Parent then
-                expandedHitboxes[hrp] = nil
-            end
+            if not hrp or not hrp.Parent then expandedHitboxes[hrp] = nil end
         end
     end)
 end
 
 local function disableHitbox()
     if hitboxConn then hitboxConn:Disconnect(); hitboxConn = nil end
-    for hrp, orig in pairs(expandedHitboxes) do
-        if hrp and hrp.Parent then hrp.Size = orig end
-    end
+    for hrp in pairs(expandedHitboxes) do restoreHitbox(hrp) end
     expandedHitboxes = {}
 end
 
 -- ============================================================
---  RESPAWN HANDLER
+--  RESPAWN
 -- ============================================================
 
 lp.CharacterAdded:Connect(function(char)
     char:WaitForChild("HumanoidRootPart", 10)
     char:WaitForChild("Humanoid", 10)
-    task.wait(0.5)
+    task.wait(0.6)
     if State.fly    then enableFly()    end
     if State.noclip then enableNoclip() end
+    -- Re-kill BanishmentTP connections trên character mới
+    if State.hookActive then
+        task.wait(1)
+        killBanishmentConnections()
+    end
 end)
 
 -- ============================================================
---  WINDOW
+--  TOKAIHUB UI
 -- ============================================================
+
+local TokaiHub = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/Library.lua"
+))()
+local SaveManager = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/SaveManager.lua"
+))()
+local ThemeManager = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/ThemeManager.lua"
+))()
 
 local Window = TokaiHub:CreateWindow({
     Title             = "MTC Script",
-    Footer            = "v1.0.0",
+    Footer            = "v3.0 — Hook Layer",
     ToggleKeybind     = Enum.KeyCode.RightControl,
     Center            = true,
     AutoShow          = true,
@@ -247,11 +462,8 @@ local Window = TokaiHub:CreateWindow({
     MobileButtonsSide = "Left",
 })
 
--- ============================================================
---  TABS
--- ============================================================
-
 local Tabs = {
+    Hooks    = Window:AddTab("Hooks",    "shield"),
     Movement = Window:AddTab("Movement", "zap"),
     Combat   = Window:AddTab("Combat",   "crosshair"),
     Visual   = Window:AddTab("Visual",   "eye"),
@@ -259,331 +471,274 @@ local Tabs = {
 }
 
 -- ============================================================
---  [Movement] Left — Fly + Noclip
+--  [Hooks] Left — AC Bypass
 -- ============================================================
 
-local MoveLeft = Tabs.Movement:AddLeftGroupbox("Movement")
+local HookLeft = Tabs.Hooks:AddLeftGroupbox("Anti-Cheat Bypass")
+
+HookLeft:AddToggle("HookToggle", {
+    Text    = "Hook Layer",
+    Default = false,
+    Tooltip = "__newindex + __namecall — chặn AC tại metamethod level",
+    Callback = function(v)
+        if v then
+            setupHooks()
+        else
+            removeHooks()
+        end
+    end,
+})
+
+HookLeft:AddDivider()
+
+HookLeft:AddButton({
+    Text        = "Kill BanishmentTP Connections",
+    DoubleClick = false,
+    Tooltip     = "Disconnect OnClientEvent của BanishmentTP",
+    Func        = function()
+        killBanishmentConnections()
+        TokaiHub:Notify({
+            Title       = "BanishmentTP Killed",
+            Description = "Connections disconnected — rubber-band disabled",
+            Time        = 3,
+        })
+    end,
+})
+
+HookLeft:AddButton({
+    Text        = "Restore BanishmentTP",
+    DoubleClick = true,
+    Tooltip     = "Double-click để restore connections",
+    Func        = function()
+        restoreBanishmentConnections()
+    end,
+})
+
+-- ============================================================
+--  [Hooks] Right — Debug / Log
+-- ============================================================
+
+local HookRight = Tabs.Hooks:AddRightGroupbox("Hook Info")
+
+HookRight:AddLabel("Hooks block:")
+HookRight:AddLabel("• CFrame/Position forced sets")
+HookRight:AddLabel("• CanCollide resets (EntityCollisionHandler)")
+HookRight:AddLabel("• PlatformStand = true (CharacterClient)")
+HookRight:AddLabel("• Humanoid:ChangeState từ AC")
+HookRight:AddLabel("• :MoveTo() từ BanishmentStatic")
+HookRight:AddLabel("• FireServer position reports")
+
+HookRight:AddDivider()
+
+HookRight:AddButton({
+    Text = "Log All BanishmentTP Events",
+    Func = function()
+        local bt = game:GetService("ReplicatedStorage"):FindFirstChild("BanishmentTP")
+        if not bt then
+            print("[MTC] BanishmentTP folder không tìm thấy")
+            return
+        end
+        for _, obj in ipairs(bt:GetDescendants()) do
+            print("[MTC] BanishmentTP child:", obj.ClassName, obj.Name)
+            if obj:IsA("RemoteEvent") or obj:IsA("BindableEvent") then
+                local ok, conns = pcall(getconnections, obj)
+                if ok and conns then
+                    for i, conn in ipairs(conns) do
+                        print("  Connection", i, "- executor:", 
+                            pcall(isexecutorclosure, conn.Function) 
+                            and isexecutorclosure(conn.Function))
+                    end
+                end
+            end
+        end
+    end,
+})
+
+-- ============================================================
+--  [Movement] Left + Right
+-- ============================================================
+
+local MoveLeft  = Tabs.Movement:AddLeftGroupbox("Movement")
+local MoveRight = Tabs.Movement:AddRightGroupbox("Player")
 
 MoveLeft:AddToggle("FlyToggle", {
-    Text     = "Fly (AC Bypass)",
+    Text     = "Fly",
     Default  = false,
-    Tooltip  = "BodyVelocity-based fly — không trigger BanishmentTP",
+    Tooltip  = "BodyVelocity + Physics state + hook block",
     Callback = function(v)
         State.fly = v
         if v then enableFly() else disableFly() end
     end,
 })
-
 MoveLeft:AddSlider("FlySpeed", {
-    Text     = "Fly Speed",
-    Default  = 60,
-    Min      = 10,
-    Max      = 300,
-    Rounding = 0,
-    Suffix   = " st/s",
-    Callback = function(v)
-        State.flySpeed = v
-    end,
+    Text = "Fly Speed", Default = 60, Min = 10, Max = 300, Rounding = 0, Suffix = " st/s",
+    Callback = function(v) State.flySpeed = v end,
 })
-
 MoveLeft:AddDivider()
-
 MoveLeft:AddToggle("NoclipToggle", {
-    Text     = "Noclip (AC Bypass)",
+    Text     = "Noclip",
     Default  = false,
-    Tooltip  = "CollisionGroup swap — engine-level, không phải CanCollide loop",
+    Tooltip  = "CanCollide hook + Heartbeat backup",
     Callback = function(v)
         State.noclip = v
         if v then enableNoclip() else disableNoclip() end
     end,
 })
 
--- ============================================================
---  [Movement] Right — WalkSpeed / JumpPower
--- ============================================================
-
-local MoveRight = Tabs.Movement:AddRightGroupbox("Player")
-
 local WalkToggle = MoveRight:AddToggle("WalkSpeed", {
-    Text     = "Custom Walk Speed",
-    Default  = false,
+    Text = "Custom Walk Speed", Default = false,
     Callback = function(v)
-        if not v then
-            local hum = getHum()
-            if hum then hum.WalkSpeed = 16 end
-        end
+        if not v then local h = getHum(); if h then h.WalkSpeed = 16 end end
     end,
 })
-
 MoveRight:AddSlider("WalkSpeedValue", {
-    Text     = "Speed",
-    Default  = 16,
-    Min      = 16,
-    Max      = 250,
-    Rounding = 0,
+    Text = "Speed", Default = 16, Min = 16, Max = 250, Rounding = 0,
     Callback = function(v)
-        if WalkToggle.Value then
-            local hum = getHum()
-            if hum then hum.WalkSpeed = v end
-        end
+        if WalkToggle.Value then local h = getHum(); if h then h.WalkSpeed = v end end
     end,
 })
-
 local JumpToggle = MoveRight:AddToggle("JumpPower", {
-    Text     = "Custom Jump Power",
-    Default  = false,
+    Text = "Custom Jump Power", Default = false,
     Callback = function(v)
-        if not v then
-            local hum = getHum()
-            if hum then hum.JumpPower = 50 end
-        end
+        if not v then local h = getHum(); if h then h.JumpPower = 50 end end
     end,
 })
-
 MoveRight:AddSlider("JumpPowerValue", {
-    Text     = "Power",
-    Default  = 50,
-    Min      = 0,
-    Max      = 500,
-    Rounding = 0,
+    Text = "Power", Default = 50, Min = 0, Max = 500, Rounding = 0,
     Callback = function(v)
-        if JumpToggle.Value then
-            local hum = getHum()
-            if hum then hum.JumpPower = v end
-        end
+        if JumpToggle.Value then local h = getHum(); if h then h.JumpPower = v end end
     end,
 })
-
 MoveRight:AddDivider()
-
 MoveRight:AddButton({
-    Text        = "Teleport to Spawn",
-    DoubleClick = false,
-    Func        = function()
+    Text = "Teleport to Spawn", DoubleClick = false,
+    Func = function()
         local root = getRoot()
         if root then
-            root.CFrame = CFrame.new(workspace.SpawnLocation.Position + Vector3.new(0, 5, 0))
+            setCFrameSafe(root, CFrame.new(workspace.SpawnLocation.Position + Vector3.new(0, 5, 0)))
         end
     end,
 })
 
 -- ============================================================
---  [Combat] Left — HitboxExpander
+--  [Combat]
 -- ============================================================
 
-local CombatLeft = Tabs.Combat:AddLeftGroupbox("Hitbox")
+local CombatLeft  = Tabs.Combat:AddLeftGroupbox("Hitbox")
+local CombatRight = Tabs.Combat:AddRightGroupbox("Aim")
 
 CombatLeft:AddToggle("HitboxToggle", {
-    Text     = "Hitbox Expander",
-    Default  = false,
-    Tooltip  = "Inflate HumanoidRootPart của enemies + NPCs",
+    Text = "Hitbox Expander", Default = false,
     Callback = function(v)
         State.hitbox = v
         if v then enableHitbox() else disableHitbox() end
     end,
 })
-
-CombatLeft:AddSlider("HitboxX", {
-    Text     = "Size X",
-    Default  = 8,
-    Min      = 1,
-    Max      = 50,
-    Rounding = 0,
+CombatLeft:AddToggle("HitboxDebug", {
+    Text = "Debug Visible (đỏ)", Default = false,
+    Callback = function(v)
+        State.hitboxDebug = v
+        if State.hitbox then
+            for hrp in pairs(expandedHitboxes) do
+                if hrp and hrp.Parent then
+                    if v then
+                        hrp.BrickColor = BrickColor.new("Bright red")
+                        hrp.Material   = Enum.Material.Neon
+                        hrp.Transparency = 0.5
+                    else
+                        hrp.Transparency = 1
+                    end
+                end
+            end
+        end
+    end,
+})
+CombatLeft:AddDivider()
+CombatLeft:AddSlider("HitboxX", { Text = "Size X", Default = 8, Min = 1, Max = 60, Rounding = 0,
     Callback = function(v)
         State.hitboxSize = Vector3.new(v, State.hitboxSize.Y, State.hitboxSize.Z)
-        -- Re-apply nếu đang active
-        if State.hitbox then
-            disableHitbox()
-            enableHitbox()
-        end
+        if State.hitbox then disableHitbox(); enableHitbox() end
     end,
 })
-
-CombatLeft:AddSlider("HitboxY", {
-    Text     = "Size Y",
-    Default  = 8,
-    Min      = 1,
-    Max      = 50,
-    Rounding = 0,
+CombatLeft:AddSlider("HitboxY", { Text = "Size Y", Default = 8, Min = 1, Max = 60, Rounding = 0,
     Callback = function(v)
         State.hitboxSize = Vector3.new(State.hitboxSize.X, v, State.hitboxSize.Z)
-        if State.hitbox then
-            disableHitbox()
-            enableHitbox()
-        end
+        if State.hitbox then disableHitbox(); enableHitbox() end
     end,
 })
-
-CombatLeft:AddSlider("HitboxZ", {
-    Text     = "Size Z",
-    Default  = 8,
-    Min      = 1,
-    Max      = 50,
-    Rounding = 0,
+CombatLeft:AddSlider("HitboxZ", { Text = "Size Z", Default = 8, Min = 1, Max = 60, Rounding = 0,
     Callback = function(v)
         State.hitboxSize = Vector3.new(State.hitboxSize.X, State.hitboxSize.Y, v)
-        if State.hitbox then
-            disableHitbox()
-            enableHitbox()
-        end
+        if State.hitbox then disableHitbox(); enableHitbox() end
     end,
 })
-
--- ============================================================
---  [Combat] Right — Aim
--- ============================================================
-
-local CombatRight = Tabs.Combat:AddRightGroupbox("Aim")
 
 local AimbotToggle = CombatRight:AddToggle("Aimbot", {
-    Text     = "Aimbot",
-    Default  = false,
-    Callback = function(v)
-        print("[MTC] Aimbot:", v)
-    end,
+    Text = "Aimbot", Default = false,
+    Callback = function(v) print("[MTC] Aimbot:", v) end,
 })
-
 AimbotToggle:AddKeyPicker("AimbotKey", {
-    Default         = "E",
-    Mode            = "Hold",
-    Text            = "Aimbot",
-    SyncToggleState = false,
-    Callback        = function(v)
-        print("[MTC] Aimbot key:", v)
-    end,
+    Default = "E", Mode = "Hold", Text = "Aimbot", SyncToggleState = false,
+    Callback = function(v) print("[MTC] Aimbot key:", v) end,
 })
-
 CombatRight:AddDropdown("AimbotPart", {
-    Text     = "Target Part",
-    Values   = { "Head", "HumanoidRootPart", "UpperTorso", "LeftLeg", "RightLeg" },
-    Default  = 1,
-    Callback = function(v)
-        print("[MTC] Target Part:", v)
-    end,
+    Text = "Target Part", Values = {"Head","HumanoidRootPart","UpperTorso","LeftLeg","RightLeg"}, Default = 1,
+    Callback = function(v) print("[MTC] Target:", v) end,
 })
-
-CombatRight:AddSlider("AimbotFOV", {
-    Text     = "FOV",
-    Default  = 90,
-    Min      = 10,
-    Max      = 360,
-    Rounding = 0,
-    Suffix   = "°",
-    Callback = function(v)
-        print("[MTC] FOV:", v)
-    end,
+CombatRight:AddSlider("AimbotFOV", { Text = "FOV", Default = 90, Min = 10, Max = 360, Rounding = 0, Suffix = "°",
+    Callback = function(v) print("[MTC] FOV:", v) end,
 })
-
-CombatRight:AddSlider("AimbotSmooth", {
-    Text     = "Smoothness",
-    Default  = 5,
-    Min      = 0,
-    Max      = 20,
-    Rounding = 1,
-    Callback = function(v)
-        print("[MTC] Smooth:", v)
-    end,
+CombatRight:AddSlider("AimbotSmooth", { Text = "Smoothness", Default = 5, Min = 0, Max = 20, Rounding = 1,
+    Callback = function(v) print("[MTC] Smooth:", v) end,
 })
 
 -- ============================================================
---  [Visual] Tabbox — ESP / World
+--  [Visual]
 -- ============================================================
 
 local VisualTabbox = Tabs.Visual:AddLeftTabbox("Visual")
 local ESPTab       = VisualTabbox:AddTab("ESP")
 local ChamsTab     = VisualTabbox:AddTab("Chams")
 
--- ESP
-local ESPToggle = ESPTab:AddToggle("ESP", {
-    Text     = "ESP",
-    Default  = false,
-    Callback = function(v)
-        print("[MTC] ESP:", v)
-    end,
-})
-
+local ESPToggle = ESPTab:AddToggle("ESP", { Text = "ESP", Default = false,
+    Callback = function(v) print("[MTC] ESP:", v) end })
 ESPToggle:AddColorPicker("ESPColor", {
-    Default      = Color3.fromRGB(255, 110, 180),
-    Title        = "ESP Color",
-    Transparency = 0,
-    Callback     = function(v)
-        print("[MTC] ESP Color:", v)
-    end,
+    Default = Color3.fromRGB(255,110,180), Title = "ESP Color", Transparency = 0,
+    Callback = function(v) print("[MTC] ESP Color:", v) end,
 })
-
 ESPTab:AddDropdown("ESPOptions", {
-    Text    = "Components",
-    Values  = { "Boxes", "Names", "Health", "Distance", "Skeleton" },
-    Default = { "Boxes", "Names" },
-    Multi   = true,
+    Text = "Components", Values = {"Boxes","Names","Health","Distance","Skeleton"},
+    Default = {"Boxes","Names"}, Multi = true,
     Callback = function(vs)
-        for k, active in pairs(vs) do
-            if active then print("[MTC] ESP:", k) end
-        end
+        for k, a in pairs(vs) do if a then print("[MTC] ESP:", k) end end
     end,
 })
-
 ESPTab:AddSlider("ESPDistance", {
-    Text     = "Max Distance",
-    Default  = 500,
-    Min      = 50,
-    Max      = 2000,
-    Rounding = 0,
-    Suffix   = " studs",
-    Callback = function(v)
-        print("[MTC] ESP Dist:", v)
-    end,
+    Text = "Max Distance", Default = 500, Min = 50, Max = 2000, Rounding = 0, Suffix = " studs",
+    Callback = function(v) print("[MTC] ESP Dist:", v) end,
 })
 
--- Chams
-local ChamsToggle = ChamsTab:AddToggle("Chams", {
-    Text     = "Chams",
-    Default  = false,
-    Callback = function(v)
-        print("[MTC] Chams:", v)
-    end,
-})
-
+local ChamsToggle = ChamsTab:AddToggle("Chams", { Text = "Chams", Default = false,
+    Callback = function(v) print("[MTC] Chams:", v) end })
 ChamsToggle:AddColorPicker("ChamsColor", {
-    Default      = Color3.fromRGB(255, 110, 180),
-    Title        = "Chams Color",
-    Transparency = 0.3,
-    Callback     = function(v)
-        print("[MTC] Chams Color:", v)
-    end,
+    Default = Color3.fromRGB(255,110,180), Title = "Chams Color", Transparency = 0.3,
+    Callback = function(v) print("[MTC] Chams Color:", v) end,
 })
-
 ChamsTab:AddDropdown("ChamsMaterial", {
-    Text     = "Material",
-    Values   = { "Neon", "Glass", "Foil", "SmoothPlastic" },
-    Default  = 1,
-    Callback = function(v)
-        print("[MTC] Chams Material:", v)
-    end,
+    Text = "Material", Values = {"Neon","Glass","Foil","SmoothPlastic"}, Default = 1,
+    Callback = function(v) print("[MTC] Chams Material:", v) end,
 })
 
--- World (right)
 local WorldBox = Tabs.Visual:AddRightGroupbox("World")
-
-WorldBox:AddToggle("Fullbright", {
-    Text     = "Fullbright",
-    Default  = false,
+WorldBox:AddToggle("Fullbright", { Text = "Fullbright", Default = false,
     Callback = function(v)
         game.Lighting.Brightness    = v and 2 or 1
         game.Lighting.GlobalShadows = not v
     end,
 })
-
 WorldBox:AddSlider("TimeOfDay", {
-    Text     = "Time of Day",
-    Default  = 14,
-    Min      = 0,
-    Max      = 24,
-    Rounding = 1,
-    Suffix   = "h",
-    Callback = function(v)
-        game.Lighting.ClockTime = v
-    end,
+    Text = "Time of Day", Default = 14, Min = 0, Max = 24, Rounding = 1, Suffix = "h",
+    Callback = function(v) game.Lighting.ClockTime = v end,
 })
 
 -- ============================================================
@@ -592,24 +747,26 @@ WorldBox:AddSlider("TimeOfDay", {
 
 ThemeManager:SetLibrary(TokaiHub)
 SaveManager:SetLibrary(TokaiHub)
-
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({})
-
 ThemeManager:SetFolder("MTCSettings")
 SaveManager:SetFolder("MTCSettings/Configs")
-
 ThemeManager:ApplyToTab(Tabs.Config)
 SaveManager:BuildConfigSection(Tabs.Config)
-
 SaveManager:LoadAutoloadConfig()
 
 -- ============================================================
---  NOTIFY
+--  INIT — Auto-enable hooks + kill BanishmentTP
 -- ============================================================
 
+task.spawn(function()
+    task.wait(1)
+    setupHooks()
+    killBanishmentConnections()
+end)
+
 TokaiHub:Notify({
-    Title       = "MTC Script Loaded",
-    Description = "RightCtrl = toggle UI  |  F = Fly  |  G = Noclip  |  H = Hitbox",
+    Title       = "MTC v3 — Hook Layer Active",
+    Description = "Hooks installed. BanishmentTP killed. RCtrl = UI",
     Time        = 5,
 })
