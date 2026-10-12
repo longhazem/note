@@ -1,0 +1,615 @@
+-- ============================================================
+--  MTC Script — TokaiHub UI
+--  Fly Bypass + Noclip + HitboxExpander + Movement
+-- ============================================================
+
+local TokaiHub = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/Library.lua"
+))()
+
+local SaveManager = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/SaveManager.lua"
+))()
+
+local ThemeManager = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/ThemeManager.lua"
+))()
+
+-- ============================================================
+--  SERVICES
+-- ============================================================
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local PhysicsService   = game:GetService("PhysicsService")
+local HttpService      = game:GetService("HttpService")
+
+local lp     = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- ============================================================
+--  UTILITIES
+-- ============================================================
+
+local function getChar()  return lp.Character end
+local function getRoot()
+    local c = getChar()
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function getHum()
+    local c = getChar()
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+-- ============================================================
+--  STATE
+-- ============================================================
+
+local State = {
+    fly        = false,
+    flySpeed   = 60,
+    noclip     = false,
+    hitbox     = false,
+    hitboxSize = Vector3.new(8, 8, 8),
+}
+
+-- ============================================================
+--  FLY BYPASS (BodyVelocity — không jump CFrame)
+-- ============================================================
+
+local flyObjects = {}
+local flyConn
+
+local function destroyFlyObjects()
+    for _, obj in pairs(flyObjects) do
+        if obj and obj.Parent then obj:Destroy() end
+    end
+    flyObjects = {}
+end
+
+local function createFlyObjects(root)
+    destroyFlyObjects()
+    local bv     = Instance.new("BodyVelocity")
+    bv.Velocity  = Vector3.zero
+    bv.MaxForce  = Vector3.new(1e5, 1e5, 1e5)
+    bv.P         = 9000
+    bv.Parent    = root
+    local bg     = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+    bg.P         = 1e5
+    bg.D         = 500
+    bg.CFrame    = root.CFrame
+    bg.Parent    = root
+    flyObjects.bv = bv
+    flyObjects.bg = bg
+end
+
+local function enableFly()
+    local root = getRoot()
+    local hum  = getHum()
+    if not root or not hum then return end
+    hum.PlatformStand = true
+    createFlyObjects(root)
+    flyConn = RunService.RenderStepped:Connect(function(dt)
+        local r  = getRoot()
+        local bv = flyObjects.bv
+        local bg = flyObjects.bg
+        if not r or not bv or not bg then return end
+        local camCF  = camera.CFrame
+        local fwd    = camCF.LookVector
+        local rgt    = camCF.RightVector
+        local up     = Vector3.new(0, 1, 0)
+        local dir    = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W)          then dir += fwd end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S)          then dir -= fwd end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A)          then dir -= rgt end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D)          then dir += rgt end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space)      then dir += up  end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)  then dir -= up  end
+        local targetVel = dir.Magnitude > 0.01
+            and dir.Unit * State.flySpeed
+            or  bv.Velocity * 0.85
+        bv.Velocity = bv.Velocity:Lerp(targetVel, math.min(1, 180 * dt / State.flySpeed))
+        bg.CFrame   = CFrame.new(r.Position, r.Position + camCF.LookVector)
+    end)
+end
+
+local function disableFly()
+    if flyConn then flyConn:Disconnect(); flyConn = nil end
+    destroyFlyObjects()
+    local hum  = getHum()
+    local root = getRoot()
+    if hum  then hum.PlatformStand = false end
+    if root then root.Velocity = Vector3.zero end
+end
+
+-- ============================================================
+--  NOCLIP BYPASS (CollisionGroup swap — engine-level)
+-- ============================================================
+
+local NOCLIP_GROUP  = "MTC_NC_" .. HttpService:GenerateGUID(false):sub(1, 6)
+local noclipConn
+
+local function ensureNoclipGroup()
+    pcall(function()
+        PhysicsService:RegisterCollisionGroup(NOCLIP_GROUP)
+        PhysicsService:CollisionGroupSetCollidable(NOCLIP_GROUP, NOCLIP_GROUP, false)
+        PhysicsService:CollisionGroupSetCollidable(NOCLIP_GROUP, "Default", false)
+    end)
+end
+
+local function applyNoclipGroup(char)
+    ensureNoclipGroup()
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CollisionGroup = NOCLIP_GROUP end
+    end
+end
+
+local function removeNoclipGroup(char)
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CollisionGroup = "Default" end
+    end
+end
+
+local function enableNoclip()
+    local char = getChar()
+    if not char then return end
+    applyNoclipGroup(char)
+    noclipConn = char.DescendantAdded:Connect(function(d)
+        if d:IsA("BasePart") then d.CollisionGroup = NOCLIP_GROUP end
+    end)
+end
+
+local function disableNoclip()
+    if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
+    local char = getChar()
+    if char then removeNoclipGroup(char) end
+end
+
+-- ============================================================
+--  HITBOX EXPANDER
+-- ============================================================
+
+local expandedHitboxes = {}
+
+local function getTargets()
+    local t = {}
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= lp and pl.Character then table.insert(t, pl.Character) end
+    end
+    for _, folder in ipairs({"Entities","TemporaryEntities","HardStructures"}) do
+        local f = workspace:FindFirstChild(folder)
+        if f then
+            for _, e in ipairs(f:GetDescendants()) do
+                if e:IsA("Model") and e:FindFirstChildOfClass("Humanoid") then
+                    table.insert(t, e)
+                end
+            end
+        end
+    end
+    return t
+end
+
+local hitboxConn
+
+local function enableHitbox()
+    hitboxConn = RunService.Heartbeat:Connect(function()
+        for _, char in ipairs(getTargets()) do
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp and not expandedHitboxes[hrp] then
+                expandedHitboxes[hrp] = hrp.Size
+                hrp.Size = State.hitboxSize
+                hrp.LocalTransparencyModifier = 1
+            end
+        end
+        for hrp in pairs(expandedHitboxes) do
+            if not hrp or not hrp.Parent then
+                expandedHitboxes[hrp] = nil
+            end
+        end
+    end)
+end
+
+local function disableHitbox()
+    if hitboxConn then hitboxConn:Disconnect(); hitboxConn = nil end
+    for hrp, orig in pairs(expandedHitboxes) do
+        if hrp and hrp.Parent then hrp.Size = orig end
+    end
+    expandedHitboxes = {}
+end
+
+-- ============================================================
+--  RESPAWN HANDLER
+-- ============================================================
+
+lp.CharacterAdded:Connect(function(char)
+    char:WaitForChild("HumanoidRootPart", 10)
+    char:WaitForChild("Humanoid", 10)
+    task.wait(0.5)
+    if State.fly    then enableFly()    end
+    if State.noclip then enableNoclip() end
+end)
+
+-- ============================================================
+--  WINDOW
+-- ============================================================
+
+local Window = TokaiHub:CreateWindow({
+    Title             = "MTC Script",
+    Footer            = "v1.0.0",
+    ToggleKeybind     = Enum.KeyCode.RightControl,
+    Center            = true,
+    AutoShow          = true,
+    ShowCustomCursor  = true,
+    NotifySide        = "Right",
+    Resizable         = true,
+    MobileButtonsSide = "Left",
+})
+
+-- ============================================================
+--  TABS
+-- ============================================================
+
+local Tabs = {
+    Movement = Window:AddTab("Movement", "zap"),
+    Combat   = Window:AddTab("Combat",   "crosshair"),
+    Visual   = Window:AddTab("Visual",   "eye"),
+    Config   = Window:AddTab("Config",   "settings"),
+}
+
+-- ============================================================
+--  [Movement] Left — Fly + Noclip
+-- ============================================================
+
+local MoveLeft = Tabs.Movement:AddLeftGroupbox("Movement")
+
+MoveLeft:AddToggle("FlyToggle", {
+    Text     = "Fly (AC Bypass)",
+    Default  = false,
+    Tooltip  = "BodyVelocity-based fly — không trigger BanishmentTP",
+    Callback = function(v)
+        State.fly = v
+        if v then enableFly() else disableFly() end
+    end,
+})
+
+MoveLeft:AddSlider("FlySpeed", {
+    Text     = "Fly Speed",
+    Default  = 60,
+    Min      = 10,
+    Max      = 300,
+    Rounding = 0,
+    Suffix   = " st/s",
+    Callback = function(v)
+        State.flySpeed = v
+    end,
+})
+
+MoveLeft:AddDivider()
+
+MoveLeft:AddToggle("NoclipToggle", {
+    Text     = "Noclip (AC Bypass)",
+    Default  = false,
+    Tooltip  = "CollisionGroup swap — engine-level, không phải CanCollide loop",
+    Callback = function(v)
+        State.noclip = v
+        if v then enableNoclip() else disableNoclip() end
+    end,
+})
+
+-- ============================================================
+--  [Movement] Right — WalkSpeed / JumpPower
+-- ============================================================
+
+local MoveRight = Tabs.Movement:AddRightGroupbox("Player")
+
+local WalkToggle = MoveRight:AddToggle("WalkSpeed", {
+    Text     = "Custom Walk Speed",
+    Default  = false,
+    Callback = function(v)
+        if not v then
+            local hum = getHum()
+            if hum then hum.WalkSpeed = 16 end
+        end
+    end,
+})
+
+MoveRight:AddSlider("WalkSpeedValue", {
+    Text     = "Speed",
+    Default  = 16,
+    Min      = 16,
+    Max      = 250,
+    Rounding = 0,
+    Callback = function(v)
+        if WalkToggle.Value then
+            local hum = getHum()
+            if hum then hum.WalkSpeed = v end
+        end
+    end,
+})
+
+local JumpToggle = MoveRight:AddToggle("JumpPower", {
+    Text     = "Custom Jump Power",
+    Default  = false,
+    Callback = function(v)
+        if not v then
+            local hum = getHum()
+            if hum then hum.JumpPower = 50 end
+        end
+    end,
+})
+
+MoveRight:AddSlider("JumpPowerValue", {
+    Text     = "Power",
+    Default  = 50,
+    Min      = 0,
+    Max      = 500,
+    Rounding = 0,
+    Callback = function(v)
+        if JumpToggle.Value then
+            local hum = getHum()
+            if hum then hum.JumpPower = v end
+        end
+    end,
+})
+
+MoveRight:AddDivider()
+
+MoveRight:AddButton({
+    Text        = "Teleport to Spawn",
+    DoubleClick = false,
+    Func        = function()
+        local root = getRoot()
+        if root then
+            root.CFrame = CFrame.new(workspace.SpawnLocation.Position + Vector3.new(0, 5, 0))
+        end
+    end,
+})
+
+-- ============================================================
+--  [Combat] Left — HitboxExpander
+-- ============================================================
+
+local CombatLeft = Tabs.Combat:AddLeftGroupbox("Hitbox")
+
+CombatLeft:AddToggle("HitboxToggle", {
+    Text     = "Hitbox Expander",
+    Default  = false,
+    Tooltip  = "Inflate HumanoidRootPart của enemies + NPCs",
+    Callback = function(v)
+        State.hitbox = v
+        if v then enableHitbox() else disableHitbox() end
+    end,
+})
+
+CombatLeft:AddSlider("HitboxX", {
+    Text     = "Size X",
+    Default  = 8,
+    Min      = 1,
+    Max      = 50,
+    Rounding = 0,
+    Callback = function(v)
+        State.hitboxSize = Vector3.new(v, State.hitboxSize.Y, State.hitboxSize.Z)
+        -- Re-apply nếu đang active
+        if State.hitbox then
+            disableHitbox()
+            enableHitbox()
+        end
+    end,
+})
+
+CombatLeft:AddSlider("HitboxY", {
+    Text     = "Size Y",
+    Default  = 8,
+    Min      = 1,
+    Max      = 50,
+    Rounding = 0,
+    Callback = function(v)
+        State.hitboxSize = Vector3.new(State.hitboxSize.X, v, State.hitboxSize.Z)
+        if State.hitbox then
+            disableHitbox()
+            enableHitbox()
+        end
+    end,
+})
+
+CombatLeft:AddSlider("HitboxZ", {
+    Text     = "Size Z",
+    Default  = 8,
+    Min      = 1,
+    Max      = 50,
+    Rounding = 0,
+    Callback = function(v)
+        State.hitboxSize = Vector3.new(State.hitboxSize.X, State.hitboxSize.Y, v)
+        if State.hitbox then
+            disableHitbox()
+            enableHitbox()
+        end
+    end,
+})
+
+-- ============================================================
+--  [Combat] Right — Aim
+-- ============================================================
+
+local CombatRight = Tabs.Combat:AddRightGroupbox("Aim")
+
+local AimbotToggle = CombatRight:AddToggle("Aimbot", {
+    Text     = "Aimbot",
+    Default  = false,
+    Callback = function(v)
+        print("[MTC] Aimbot:", v)
+    end,
+})
+
+AimbotToggle:AddKeyPicker("AimbotKey", {
+    Default         = "E",
+    Mode            = "Hold",
+    Text            = "Aimbot",
+    SyncToggleState = false,
+    Callback        = function(v)
+        print("[MTC] Aimbot key:", v)
+    end,
+})
+
+CombatRight:AddDropdown("AimbotPart", {
+    Text     = "Target Part",
+    Values   = { "Head", "HumanoidRootPart", "UpperTorso", "LeftLeg", "RightLeg" },
+    Default  = 1,
+    Callback = function(v)
+        print("[MTC] Target Part:", v)
+    end,
+})
+
+CombatRight:AddSlider("AimbotFOV", {
+    Text     = "FOV",
+    Default  = 90,
+    Min      = 10,
+    Max      = 360,
+    Rounding = 0,
+    Suffix   = "°",
+    Callback = function(v)
+        print("[MTC] FOV:", v)
+    end,
+})
+
+CombatRight:AddSlider("AimbotSmooth", {
+    Text     = "Smoothness",
+    Default  = 5,
+    Min      = 0,
+    Max      = 20,
+    Rounding = 1,
+    Callback = function(v)
+        print("[MTC] Smooth:", v)
+    end,
+})
+
+-- ============================================================
+--  [Visual] Tabbox — ESP / World
+-- ============================================================
+
+local VisualTabbox = Tabs.Visual:AddLeftTabbox("Visual")
+local ESPTab       = VisualTabbox:AddTab("ESP")
+local ChamsTab     = VisualTabbox:AddTab("Chams")
+
+-- ESP
+local ESPToggle = ESPTab:AddToggle("ESP", {
+    Text     = "ESP",
+    Default  = false,
+    Callback = function(v)
+        print("[MTC] ESP:", v)
+    end,
+})
+
+ESPToggle:AddColorPicker("ESPColor", {
+    Default      = Color3.fromRGB(255, 110, 180),
+    Title        = "ESP Color",
+    Transparency = 0,
+    Callback     = function(v)
+        print("[MTC] ESP Color:", v)
+    end,
+})
+
+ESPTab:AddDropdown("ESPOptions", {
+    Text    = "Components",
+    Values  = { "Boxes", "Names", "Health", "Distance", "Skeleton" },
+    Default = { "Boxes", "Names" },
+    Multi   = true,
+    Callback = function(vs)
+        for k, active in pairs(vs) do
+            if active then print("[MTC] ESP:", k) end
+        end
+    end,
+})
+
+ESPTab:AddSlider("ESPDistance", {
+    Text     = "Max Distance",
+    Default  = 500,
+    Min      = 50,
+    Max      = 2000,
+    Rounding = 0,
+    Suffix   = " studs",
+    Callback = function(v)
+        print("[MTC] ESP Dist:", v)
+    end,
+})
+
+-- Chams
+local ChamsToggle = ChamsTab:AddToggle("Chams", {
+    Text     = "Chams",
+    Default  = false,
+    Callback = function(v)
+        print("[MTC] Chams:", v)
+    end,
+})
+
+ChamsToggle:AddColorPicker("ChamsColor", {
+    Default      = Color3.fromRGB(255, 110, 180),
+    Title        = "Chams Color",
+    Transparency = 0.3,
+    Callback     = function(v)
+        print("[MTC] Chams Color:", v)
+    end,
+})
+
+ChamsTab:AddDropdown("ChamsMaterial", {
+    Text     = "Material",
+    Values   = { "Neon", "Glass", "Foil", "SmoothPlastic" },
+    Default  = 1,
+    Callback = function(v)
+        print("[MTC] Chams Material:", v)
+    end,
+})
+
+-- World (right)
+local WorldBox = Tabs.Visual:AddRightGroupbox("World")
+
+WorldBox:AddToggle("Fullbright", {
+    Text     = "Fullbright",
+    Default  = false,
+    Callback = function(v)
+        game.Lighting.Brightness    = v and 2 or 1
+        game.Lighting.GlobalShadows = not v
+    end,
+})
+
+WorldBox:AddSlider("TimeOfDay", {
+    Text     = "Time of Day",
+    Default  = 14,
+    Min      = 0,
+    Max      = 24,
+    Rounding = 1,
+    Suffix   = "h",
+    Callback = function(v)
+        game.Lighting.ClockTime = v
+    end,
+})
+
+-- ============================================================
+--  [Config]
+-- ============================================================
+
+ThemeManager:SetLibrary(TokaiHub)
+SaveManager:SetLibrary(TokaiHub)
+
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+
+ThemeManager:SetFolder("MTCSettings")
+SaveManager:SetFolder("MTCSettings/Configs")
+
+ThemeManager:ApplyToTab(Tabs.Config)
+SaveManager:BuildConfigSection(Tabs.Config)
+
+SaveManager:LoadAutoloadConfig()
+
+-- ============================================================
+--  NOTIFY
+-- ============================================================
+
+TokaiHub:Notify({
+    Title       = "MTC Script Loaded",
+    Description = "RightCtrl = toggle UI  |  F = Fly  |  G = Noclip  |  H = Hitbox",
+    Time        = 5,
+})
