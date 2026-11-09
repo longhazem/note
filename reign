@@ -1,0 +1,3178 @@
+-- This file was generated at discord.gg/syncrypt
+
+local unpack_ = unpack or table.unpack
+local s1 = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local t1 = {
+	value1 = loadstring(game:HttpGet(s1 .. "Library.lua"))()
+}
+local lib = loadstring(game:HttpGet(s1 .. "addons/ThemeManager.lua"))()
+local lib2 = loadstring(game:HttpGet(s1 .. "addons/SaveManager.lua"))()
+local Options = t1.value1.Options
+local _ = t1.value1.Toggles
+
+t1.value1.ForceCheckbox = false
+t1.value1.ShowToggleFrameInKeybinds = true
+t1.value1.Scheme.MainColor = Color3.fromRGB(25, 25, 35)
+t1.value1.Scheme.AccentColor = Color3.fromRGB(3, 170, 0)
+t1.value1.Scheme.BackgroundColor = Color3.fromRGB(20, 20, 30)
+t1.value1.Scheme.OutlineColor = Color3.fromRGB(45, 45, 60)
+t1.value1.Scheme.FontColor = Color3.fromRGB(255, 255, 255)
+
+local v8 = t1.value1:CreateWindow({
+	Title = "Tk",
+	Footer = "Reign Fall",
+	Icon = ,
+	NotifySide = "Right",
+	ShowCustomCursor = true
+})
+
+v8:SetCornerRadius(11)
+t1.value2 = "https://discord.gg/j5CvpeN7DZ"
+
+local Discord = v8:AddTab("Discord", "message-circle")
+local t2 = {
+	Main = v8:AddTab("Main", "crosshair"),
+	Visual = v8:AddTab("Visual", "eye"),
+	Maps = v8:AddTab("Maps", "map-pinned"),
+	Settings = v8:AddTab("Settings", "settings")
+}
+local v11 = Discord:AddLeftGroupbox("Community Info", "crown")
+
+v11:AddLabel("Welcome to our community!\n\n• Script updates\n• Game support\n• Announcements\n• Community events\n• Support & feedback", true)
+v11:AddDivider()
+v11:AddLabel("Discord Server: Online")
+
+local Discord2 = Discord:AddLeftGroupbox("Discord", "external-link")
+
+Discord2:AddButton({
+	Text = "Join Discord",
+	Func = function()
+		if setclipboard then
+			setclipboard(t1.value2)
+		end
+
+		t1.value1:Notify({
+			Title = "Discord",
+			Description = "Invite link copied!",
+			Time = 3
+		})
+
+		local function v13()
+			local syn_ = syn
+
+			if syn_ then
+				syn_ = syn.request
+			end
+
+			if not syn_ then
+				return
+			end
+
+			syn.request({
+				Url = t1.value2,
+				Method = "GET"
+			})
+		end
+
+		pcall(v13)
+	end
+})
+Discord2.AddButton(Discord2, {
+	Text = "Copy Invite Link",
+	Func = function()
+		if setclipboard then
+			setclipboard(t1.value2)
+			t1.value1:Notify({
+				Title = "Discord",
+				Description = "Invite link copied to clipboard!",
+				Time = 3
+			})
+		else
+			t1.value1:Notify({
+				Title = "Discord",
+				Description = t1.value2,
+				Time = 5
+			})
+		end
+	end
+})
+Discord2:AddDivider()
+Discord2:AddLabel("Server Status")
+t1.value3 = Discord2:AddLabel("● Checking...", false)
+t1.value4 = Discord2:AddLabel("Members: Checking...", false)
+task.spawn(function()
+	while task.wait(30) do
+		local function v15()
+			return game:HttpGet("https://discord.com/api/v10/invites/" .. t1.value2:match("discord.gg/(.+)$") .. "?with_counts=true")
+		end
+
+		local ok, result = pcall(v15)
+
+		if ok and result then
+			local data = game:GetService("HttpService"):JSONDecode(result)
+			local approximate_presence_count
+
+			if data then
+				approximate_presence_count = data.approximate_presence_count
+			else
+				approximate_presence_count = data
+			end
+
+			if approximate_presence_count then
+				t1.value3:SetText("● Server Online")
+
+				local value4 = t1.value4
+				local approximate_presence_count2 = data.approximate_presence_count
+
+				value4:SetText("Members Online: " .. tostring(approximate_presence_count2))
+			else
+				t1.value3:SetText("● Server Available")
+			end
+		else
+			t1.value3:SetText("● Status Unavailable")
+			t1.value4:SetText("Members: Unknown")
+		end
+	end
+end)
+t1.value3:SetText("● Server Available")
+t1.value4:SetText("Members: Loading...")
+
+local v22 = Discord:AddRightGroupbox("Update Logs", "scroll-text")
+
+v22:AddLabel("Reign Fall V1.3\n\n+ Infinite Ammo \n+ Infinite Stamina (Sometimes Lag)\n+ No Recoil \n+ Primary, Secondary, Melee  Auto Hit\n+ Hitbox Expander \n+ AimBot Zombie \n+ AimBot Distance \n+ AimBot Smoothness \n+ HipHeight \n+ NoClip \n+ Church Map SafeZone Teleport\n+ FPS Booster \n+ FPS Cap Limit \n+ ESP Features Fixed (Objective ESP)\n+ Weapon Skin Change \n+ Anti AFK\n+ Anti Kick\n+ Other Features Fixed \n+ Auto Hit Feature Fixed \n+ Auto Hit Bulwark Only Feature \n+ Every Maps Objective Item Near Teleport Feature \n", true)
+v22:AddDivider()
+v22:AddLabel("Reign Fall V1.4\n\nAvoid Zombie Distance Check Avoid Auto Feature (New)\n+ ESP Features Fixed \n+ Objectives ESP Fixed (Line, Distance)\n+ Ammo, Armor, Medkit, Money ESP Fixed ( Distance, Name )\n+ HipHeight Feature Fixed (HipHeight Silder And HipHeight Set Feature)\n+ Auto Weapon Upgrade Feature (New)\n+ Auto Farm SafeZone Teleport Map 2 New ( FarmMap, DinerMap)\n+ Zonbies ESP Fixed\n+ Faster Auto Hit\n+ Silent Aim Feature\n+ Others Features Fixed\n", true)
+
+local v23 = t2.Main:AddLeftGroupbox("Main Features")
+
+t1.value5 = false
+t1.value6 = nil
+v23.AddToggle(v23, "InfAmmoToggle", {
+	Text = "Infinite Ammo",
+	Default = false,
+	Callback = function(p1)
+		t1.value5 = p1
+
+		local value5 = t1.value5
+
+		if value5 then
+			value5 = not t1.value6
+		end
+
+		if not value5 then
+			print("Infinite Ammo:", p1)
+
+			return
+		end
+
+		task.spawn(function()
+			while t1.value5 do
+				pcall(function()
+					local Character = game:GetService("Players").LocalPlayer.Character
+
+					if not Character then
+						return
+					end
+
+					for _, v in ipairs({ "primary", "secondary" }) do
+						local v28 = Character:FindFirstChild(v)
+						local ClientEvents
+
+						if v28 then
+							ClientEvents = v28:FindFirstChild("ClientEvents")
+						else
+							ClientEvents = v28
+						end
+
+						if ClientEvents then
+							firesignal(v28.ClientEvents.SetLocalAmmo.OnClientEvent, v28, math.huge, false)
+						end
+					end
+				end)
+				task.wait(0.5)
+			end
+		end)
+		print("Infinite Ammo:", p1)
+	end
+})
+v23.AddToggle(v23, "InfiniteStaminaToggle", {
+	Text = "Infinite Stamina",
+	Default = false,
+	Callback = function(p2)
+		local LocalPlayer = game:GetService("Players").LocalPlayer
+
+		if not p2 then
+			getgenv().InfiniteStamina = false
+
+			return
+		end
+
+		getgenv().InfiniteStamina = true
+		task.spawn(function()
+			while getgenv().InfiniteStamina do
+				pcall(function()
+					local Character = LocalPlayer.Character
+
+					if not Character then
+						return
+					end
+
+					local Humanoid = Character:FindFirstChild("Humanoid")
+					local Values = Humanoid and Humanoid:FindFirstChild("Values")
+
+					if not Values then
+						return
+					end
+
+					local Stamina = Values:FindFirstChild("Stamina")
+					local isValueBase
+
+					if Stamina then
+						isValueBase = Stamina:IsA("ValueBase")
+					else
+						isValueBase = Stamina
+					end
+
+					if not isValueBase then
+						return
+					end
+
+					Stamina.Value = 100
+				end)
+				task.wait(0.2)
+			end
+		end)
+	end
+})
+t1.value7 = false
+v23.AddToggle(v23, "NoRecoilToggle", {
+	Text = "No Recoil",
+	Default = false,
+	Callback = function(p3)
+		t1.value7 = p3
+
+		if not p3 then
+			return
+		end
+
+		task.spawn(function()
+			while t1.value7 do
+				pcall(function()
+					for _, child in ipairs(game.Players.LocalPlayer.PlayerGui:WaitForChild("Scripts"):WaitForChild("Game"):WaitForChild("MAIN_CoreViewmodelController"):WaitForChild("Offsets"):GetChildren()) do
+						if child.Name == "camera_recoil" and true or child.Name == "visual_recoil" then
+							child:Destroy()
+						end
+					end
+				end)
+				task.wait(0.5)
+			end
+		end)
+	end
+})
+t1.value8 = false
+
+function t1.value9()
+	while t1.value8 do
+		local Character = game:GetService("Players").LocalPlayer.Character
+
+		if Character then
+			local t3 = { workspace.Game.Spawned.Ragdolls, workspace.Game.Current.Spawned.NPCs.enemies, workspace.Game.Current.Scene.Map.Corpses }
+			local t4 = { "primary", "secondary", "melee" }
+
+			for _, v in ipairs(t3) do
+				pcall(function()
+					local v43 = v
+
+					for _, child in ipairs(v43.GetChildren(v43)) do
+						local Humanoid = child:FindFirstChild("Humanoid")
+						local Head = child:FindFirstChild("Head")
+
+						if Humanoid then
+							if Head then
+								Humanoid = Humanoid.Health > 0
+							else
+								Humanoid = Head
+							end
+						end
+
+						if Humanoid then
+							for _, v2 in ipairs(t4) do
+								pcall(function()
+									local v50 = Character:FindFirstChild(v2)
+									local ServerEvents
+
+									if v50 then
+										ServerEvents = v50:FindFirstChild("ServerEvents")
+									else
+										ServerEvents = v50
+									end
+
+									if not ServerEvents then
+										return
+									end
+
+									local RegisterHit = v50.ServerEvents.RegisterHit
+									local t5 = {
+										{
+											amount = 1,
+											target = child,
+											is_friendly = false,
+											part = Head
+										}
+									}
+
+									RegisterHit.FireServer(RegisterHit, t5, {})
+								end)
+							end
+						end
+					end
+				end)
+			end
+		end
+
+		task.wait(0.1)
+	end
+end
+
+v23.AddToggle(v23, "AutoHitToggle", {
+	Text = "Auto Hit Zombies",
+	Default = false,
+	Callback = function(p4)
+		t1.value8 = p4
+
+		if not p4 then
+			return
+		end
+
+		task.spawn(t1.value9)
+	end
+})
+t1.value10 = false
+
+function t1.value11()
+	while t1.value10 do
+		local Character = game:GetService("Players").LocalPlayer.Character
+
+		if Character then
+			local bosses = workspace.Game.Current.Spawned.NPCs.bosses
+			local t6 = { "primary", "secondary", "melee" }
+
+			for _, child in ipairs(bosses:GetChildren()) do
+				local Humanoid = child:FindFirstChild("Humanoid")
+				local Head = child:FindFirstChild("Head")
+
+				if Humanoid then
+					if Head then
+						Humanoid = Humanoid.Health > 0
+					else
+						Humanoid = Head
+					end
+				end
+
+				if Humanoid then
+					for _, v in ipairs(t6) do
+						pcall(function()
+							local v63 = Character:FindFirstChild(v)
+
+							if not v63 then
+								return
+							end
+
+							local ServerEvents = v63:FindFirstChild("ServerEvents")
+
+							if ServerEvents then
+								ServerEvents = ServerEvents:FindFirstChild("RegisterHit")
+							end
+
+							if not ServerEvents then
+								return
+							end
+
+							local t7 = {
+								{
+									amount = 1,
+									target = child,
+									is_friendly = false,
+									part = Head
+								}
+							}
+
+							ServerEvents.FireServer(ServerEvents, t7, {})
+						end)
+					end
+				end
+			end
+		end
+
+		task.wait(0.1)
+	end
+end
+
+v23:AddToggle("AutoHitToggle", {
+	Text = "Auto Hit Bosses",
+	Default = false,
+	Callback = function(p5)
+		t1.value10 = p5
+
+		if not p5 then
+			return
+		end
+
+		task.spawn(t1.value11)
+	end
+})
+t1.value12 = false
+
+function t1.value13(p6)
+	local LocalPlayer = game:GetService("Players").LocalPlayer
+	local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+	local infected_bulwark = workspace.Game.Current.Spawned.NPCs.enemies:FindFirstChild("infected_bulwark")
+
+	if infected_bulwark then
+		local Head = infected_bulwark:FindFirstChild("Head") or infected_bulwark.PrimaryPart
+
+		if Head then
+			for _, v in ipairs({ "primary", "secondary", "melee" }) do
+				local v72 = Character:FindFirstChild(v)
+
+				if v72 then
+					local ServerEvents = v72:FindFirstChild("ServerEvents")
+
+					if ServerEvents then
+						ServerEvents = v72.ServerEvents:FindFirstChild("RegisterHit")
+					end
+
+					if ServerEvents then
+						ServerEvents.FireServer(ServerEvents, {
+							{
+								amount = p6 or 1,
+								target = infected_bulwark,
+								is_friendly = false,
+								part = Head
+							}
+						})
+					end
+				end
+			end
+
+			return
+		else
+			return
+		end
+	end
+end
+
+v23:AddToggle("BulwarkHitToggle", {
+	Text = "Auto Bulwark Hit",
+	Default = false,
+	Callback = function(p7)
+		t1.value12 = p7
+
+		if not p7 then
+			return
+		end
+
+		task.spawn(function()
+			while t1.value12 do
+				t1.value13(1)
+				task.wait(0.1)
+			end
+		end)
+	end
+})
+
+local v74 = t2.Main:AddRightGroupbox("Zombies Bring Features", "sword")
+local Players = game:GetService("Players")
+
+t1.value14 = game:GetService("RunService")
+t1.value15 = Players.LocalPlayer
+t1.value16 = nil
+t1.value17 = -15
+t1.value18 = false
+t1.value16 = nil
+
+function t1.value19()
+	local Character = t1.value15.Character
+
+	if Character then
+		local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+
+		if HumanoidRootPart then
+			return Character, HumanoidRootPart
+		else
+			return nil
+		end
+	else
+		return nil
+	end
+end
+function t1.value20()
+	local t8 = {}
+	local Game = workspace:FindFirstChild("Game")
+
+	if Game then
+		Game = Game:FindFirstChild("Current")
+	end
+
+	if not Game then
+		return t8
+	end
+
+	local Spawned = Game:FindFirstChild("Spawned")
+
+	if Spawned then
+		Spawned = Spawned:FindFirstChild("NPCs")
+	end
+
+	if Spawned then
+		Spawned = Spawned:FindFirstChild("enemies")
+	end
+
+	if Spawned then
+		table.insert(t8, Spawned)
+	end
+
+	local Scene = Game:FindFirstChild("Scene")
+
+	if Scene then
+		Scene = Scene:FindFirstChild("Map")
+	end
+
+	if Scene then
+		Scene = Scene:FindFirstChild("Corpses")
+	end
+
+	if not Scene then
+		return t8
+	end
+
+	table.insert(t8, Scene)
+
+	return t8
+end
+function t1.value21(p8, p9)
+	if p8 and p8.Parent then
+		local HumanoidRootPart = p8:FindFirstChild("HumanoidRootPart")
+
+		if HumanoidRootPart and HumanoidRootPart:IsA("BasePart") then
+			HumanoidRootPart.CFrame = p9.CFrame * CFrame.new(0, 0, t1.value17)
+
+			local GetDescendants = p8.GetDescendants
+
+			for _, v in ipairs(GetDescendants(p8)) do
+				if v:IsA("BasePart") then
+					v.CanCollide = false
+				end
+			end
+
+			return
+		else
+			return
+		end
+	end
+end
+function t1.value22()
+	if t1.value18 then
+		local v86, v87 = t1.value19()
+
+		if v86 and v87 then
+			for _, v in ipairs(t1.value20()) do
+				local GetChildren = v.GetChildren
+
+				for _, v2 in ipairs(GetChildren(v)) do
+					t1.value21(v2, v87)
+				end
+			end
+
+			return
+		else
+			return
+		end
+	end
+end
+
+t1.value23 = nil
+
+function t1.value23()
+	if not t1.value16 then
+		return
+	end
+
+	t1.value16:Disconnect()
+	t1.value16 = nil
+end
+function t1.value24()
+	t1.value23()
+
+	if not t1.value18 then
+		return
+	end
+
+	t1.value14.Heartbeat:Connect(function()
+		if t1.value18 then
+			t1.value22()
+		else
+			t1.value23()
+		end
+	end)
+end
+
+v74.AddSlider(v74, "Distance Slider", {
+	Text = "Distance",
+	Default = -15,
+	Min = -200,
+	Max = -15,
+	Rounding = 0,
+	Callback = function(p10)
+		t1.value17 = p10
+	end
+})
+v74.AddToggle(v74, "BringToggle", {
+	Text = "Bring Zombies",
+	Default = false,
+	Callback = function(p11)
+		t1.value18 = p11
+
+		if t1.value18 then
+			t1.value24()
+		else
+			t1.value23()
+		end
+	end
+})
+
+local v93 = t2.Visual:AddRightGroupbox("Aiming Features", "crosshair")
+local Players2 = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local _ = Players2.LocalPlayer
+
+t1.value25 = workspace.CurrentCamera
+
+local NPCs = workspace:WaitForChild("Game"):WaitForChild("Current"):WaitForChild("Spawned"):WaitForChild("NPCs")
+
+t1.value26 = NPCs.WaitForChild(NPCs, "enemies")
+t1.value27 = nil
+t1.value28 = false
+t1.value29 = 16
+t1.value27 = 16
+
+function t1.value30(p12)
+	if p12 then
+		local Head = p12:FindFirstChild("Head") or p12:FindFirstChild("head")
+		local isBasePart
+
+		if Head then
+			isBasePart = Head:IsA("BasePart")
+		else
+			isBasePart = Head
+		end
+
+		if isBasePart then
+			return Head
+		else
+			local HumanoidRootPart = p12:FindFirstChild("HumanoidRootPart")
+			local isBasePart2
+
+			if HumanoidRootPart then
+				isBasePart2 = HumanoidRootPart:IsA("BasePart")
+			else
+				isBasePart2 = HumanoidRootPart
+			end
+
+			if isBasePart2 then
+				return HumanoidRootPart
+			else
+				return nil
+			end
+		end
+	else
+		return nil
+	end
+end
+
+local function v102()
+	local value25 = t1.value25
+	local value29 = t1.value29
+	local Position = value25.CFrame.Position
+	local ipairs_ = ipairs
+	local value26 = t1.value26
+	local v108 = nil
+	local v109 = nil
+
+	for _, child in ipairs_(value26.GetChildren(value26)) do
+		if child:IsA("Model") then
+			local Humanoid = child:FindFirstChildOfClass("Humanoid")
+
+			if Humanoid then
+				Humanoid = Humanoid.Health <= 0
+			end
+
+			if not Humanoid then
+				local v113 = t1.value30(child)
+
+				if v113 then
+					local Magnitude = (v113.Position - Position).Magnitude
+
+					if Magnitude < value29 then
+						v109 = v113
+						v108 = child
+						value29 = Magnitude
+					end
+				end
+			end
+		end
+	end
+
+	return v108, v109
+end
+
+function t1.value31(p13, _)
+	if p13 then
+		local CFrame_ = t1.value25.CFrame
+		local Position = CFrame_.Position
+		local Unit = (p13.Position - Position).Unit
+		local cFrame = CFrame.new(Position, Position + Unit)
+		local v119 = t1.value27 / 100
+		local v120 = math.clamp(v119, 0.01, 0.95)
+
+		t1.value25.CFrame = CFrame_:Lerp(cFrame, 1 - v120)
+	end
+end
+
+RunService.RenderStepped:Connect(function(dt)
+	if not t1.value28 then
+		return
+	end
+
+	local _, v122 = v102()
+
+	if not v122 then
+		return
+	end
+
+	t1.value31(v122, dt)
+end)
+v93.AddToggle(v93, "TargetAimToggle", {
+	Text = "Aimbot",
+	Default = false,
+	Callback = function(p14)
+		t1.value28 = p14
+	end
+})
+v93.AddSlider(v93, "AimDistanceSizeSlider", {
+	Text = "Aimbot Distance Size",
+	Default = 16,
+	Min = 1,
+	Max = 150,
+	Rounding = 0,
+	Callback = function(p15)
+		t1.value29 = p15
+	end
+})
+v93:AddSlider("AimSmothnessSizeSlider", {
+	Text = "Aimbot Smoothness Size",
+	Default = 16,
+	Min = 1,
+	Max = 150,
+	Rounding = 0,
+	Callback = function(p16)
+		t1.value27 = p16
+	end
+})
+
+local v123 = t2.Main:AddLeftGroupbox("Avoid & HipHeight Features", "flame")
+
+t1.value32 = game:GetService("Players")
+
+local game_ = game
+
+game_.GetService(game_, "UserInputService")
+t1.value33 = false
+t1.value34 = 16
+t1.value35 = {}
+t1.value36 = workspace:WaitForChild("Game"):WaitForChild("Current"):WaitForChild("Spawned"):WaitForChild("NPCs"):WaitForChild("enemies")
+t1.value37 = {
+	"Head",
+	"HumanoidRootPart",
+	"UpperTorso",
+	"Torso"
+}
+
+function t1.value38(p17)
+	local value32 = t1.value32
+
+	if value32.GetPlayerFromCharacter(value32, p17) then
+		return false
+	else
+		return p17:FindFirstChildOfClass("Humanoid") and true or (p17:FindFirstChild("AnimationController") and true or false)
+	end
+end
+function t1.value39(p18)
+	if t1.value35[p18] then
+		return
+	end
+
+	t1.value35[p18] = p18.Size
+end
+
+t1.value40 = nil
+
+function t1.value40(p19)
+	t1.value39(p19)
+	p19.Size = Vector3.new(t1.value34, t1.value34, t1.value34)
+	p19.Transparency = 0.35
+	p19.Material = Enum.Material.Neon
+	p19.Color = Color3.fromRGB(255, 70, 70)
+	p19.CanCollide = false
+end
+function t1.value41(p20)
+	local v126, v127, v128 = ipairs(t1.value37)
+	local v129 = false
+
+	while true do
+		local v130
+
+		v128, v130 = v126(v127, v128)
+
+		if not v128 then
+			break
+		end
+
+		local v131 = p20:FindFirstChild(v130)
+		local isBasePart
+
+		if v131 then
+			isBasePart = v131:IsA("BasePart")
+		else
+			isBasePart = v131
+		end
+
+		if isBasePart then
+			t1.value40(v131)
+			v129 = true
+		end
+	end
+
+	if p20.PrimaryPart then
+		t1.value40(p20.PrimaryPart)
+		v129 = true
+	end
+
+	if v129 then
+		return
+	end
+
+	local GetDescendants = p20.GetDescendants
+
+	for _, v in pairs(GetDescendants(p20)) do
+		if v:IsA("BasePart") then
+			t1.value40(v)
+		end
+	end
+end
+function t1.value42(p21)
+	for _, descendant in pairs(p21:GetDescendants()) do
+		local isBasePart = descendant:IsA("BasePart")
+
+		if isBasePart then
+			isBasePart = t1.value35[descendant]
+		end
+
+		if isBasePart then
+			descendant.Size = t1.value35[descendant]
+			descendant.Transparency = 0
+			descendant.Material = Enum.Material.Plastic
+			t1.value35[descendant] = nil
+		end
+	end
+end
+function t1.value43()
+	local pairs_ = pairs
+	local value36 = t1.value36
+
+	for _, child in pairs_(value36.GetChildren(value36)) do
+		local isModel = child:IsA("Model")
+
+		if isModel then
+			isModel = t1.value38(child)
+		end
+
+		if isModel then
+			t1.value41(child)
+		end
+	end
+end
+function t1.value44()
+	local pairs_ = pairs
+	local value36 = t1.value36
+
+	for _, child in pairs_(value36.GetChildren(value36)) do
+		local isModel = child:IsA("Model")
+
+		if isModel then
+			isModel = t1.value38(child)
+		end
+
+		if isModel then
+			t1.value42(child)
+		end
+	end
+end
+
+t1.value36.DescendantAdded:Connect(function(descendant)
+	if not t1.value33 then
+		return
+	end
+
+	local isModel = descendant:IsA("Model")
+
+	if isModel then
+		isModel = t1.value38(descendant)
+	end
+
+	if not isModel then
+		return
+	end
+
+	task.wait(0.2)
+	t1.value41(descendant)
+end)
+
+local t9 = {
+	Text = "HitBox Size",
+	Default = t1.value34,
+	Min = 1,
+	Max = 100,
+	Rounding = 0,
+	Callback = function(p22)
+		t1.value34 = p22
+
+		if not t1.value33 then
+			return
+		end
+
+		t1.value44()
+		t1.value43()
+	end
+}
+
+v123.AddSlider(v123, "HitBoxSizeSlider", t9)
+v123.AddToggle(v123, "HitBoxToggle", {
+	Text = "HitBox Expander",
+	Default = t1.value33,
+	Callback = function(p23)
+		t1.value33 = p23
+
+		if t1.value33 then
+			t1.value43()
+		else
+			t1.value44()
+		end
+	end
+})
+
+local Players3 = game:GetService("Players")
+
+t1.value45 = game:GetService("RunService")
+t1.value46 = Players3.LocalPlayer
+t1.value47 = false
+t1.value48 = 30
+t1.value49 = nil
+
+function t1.value50()
+	local Character = t1.value46.Character
+
+	if Character then
+		return Character.FindFirstChild(Character, "HumanoidRootPart")
+	end
+end
+
+t1.value51 = nil
+
+function t1.value51()
+	local v153 = t1.value50()
+
+	if v153 then
+		local enemies = workspace.Game.Current.Spawned.NPCs.enemies
+		local huge = math.huge
+		local GetChildren = enemies.GetChildren
+		local v157 = nil
+
+		for _, v in pairs(GetChildren(enemies)) do
+			local Humanoid = v:FindFirstChildOfClass("Humanoid")
+			local v161 = v.FindFirstChild(v, "HumanoidRootPart")
+
+			if Humanoid then
+				if v161 then
+					Humanoid = Humanoid.Health > 0
+				else
+					Humanoid = v161
+				end
+			end
+
+			if Humanoid then
+				local Magnitude = (v153.Position - v161.Position).Magnitude
+
+				if Magnitude < huge then
+					v157 = v161
+					huge = Magnitude
+				end
+			end
+		end
+
+		return v157, huge
+	else
+		return nil
+	end
+end
+
+t1.value49 = nil
+
+function t1.value52()
+	if t1.value49 then
+		t1.value49:Disconnect()
+	end
+
+	t1.value49 = t1.value45.Heartbeat:Connect(function()
+		if not t1.value47 then
+			return
+		end
+
+		local v163 = t1.value50()
+
+		if not v163 then
+			return
+		end
+
+		local v164, v165 = t1.value51()
+		local v166
+
+		if v164 then
+			v166 = v165 <= t1.value48
+		else
+			v166 = v164
+		end
+
+		if not v166 then
+			return
+		end
+
+		local Unit = (v163.Position - v164.Position).Unit
+		local v168 = v163.Position + Unit * t1.value48
+
+		v163.CFrame = CFrame.new(v168, v168 + v163.CFrame.LookVector)
+	end)
+end
+
+v123:AddSlider("AvoidDistanceSlider", {
+	Text = "Avoid Distance",
+	Default = 30,
+	Min = 10,
+	Max = 100,
+	Rounding = 0,
+	Callback = function(p24)
+		t1.value48 = p24
+	end
+})
+v123.AddToggle(v123, "AvoidEntitiesToggle", {
+	Text = "Avoid Zombies",
+	Default = false,
+	Callback = function(p25)
+		t1.value47 = p25
+
+		if p25 then
+			t1.value52()
+
+			return
+		end
+
+		if not t1.value49 then
+			return
+		end
+
+		t1.value49:Disconnect()
+	end
+})
+t1.value53 = 0
+t1.value54 = nil
+v123.AddSlider(v123, "HipHeightSizeSlider", {
+	Text = "HipHeight Set",
+	Default = 0,
+	Min = 0,
+	Max = 10,
+	Rounding = 0,
+	Callback = function(p26)
+		t1.value53 = p26
+
+		if not t1.value54 then
+			return
+		end
+
+		local Character = game:GetService("Players").LocalPlayer.Character
+
+		if Character then
+			Character = Character:FindFirstChildOfClass("Humanoid")
+		end
+
+		if not Character then
+			return
+		end
+
+		Character.HipHeight = p26
+	end
+})
+v123.AddToggle(v123, "HipHeightToggle", {
+	Text = "HipHeight",
+	Default = false,
+	Callback = function(p27)
+		local Character = game:GetService("Players").LocalPlayer.Character
+
+		if Character then
+			Character = Character:FindFirstChildOfClass("Humanoid")
+		end
+
+		if not Character then
+			return
+		end
+
+		if p27 then
+			if Character:GetAttribute("NormalHipHeight") ~= nil then
+				Character.HipHeight = t1.value53
+
+				return
+			end
+
+			Character:SetAttribute("NormalHipHeight", Character.HipHeight)
+			Character.HipHeight = t1.value53
+		else
+			local attribute = Character:GetAttribute("NormalHipHeight")
+
+			if attribute == nil then
+				return
+			end
+
+			Character.HipHeight = attribute
+		end
+	end
+})
+
+local v172 = t2.Main:AddRightGroupbox("Objective Teleport Features", "sword")
+
+v172:AddButton({
+	Text = "Objectives Teleport",
+	Func = function()
+		local LocalPlayer = game:GetService("Players").LocalPlayer
+		local mission_item = workspace.Game.Current.Spawned.GameObjects.mission_item
+
+		local function v175(p28)
+			local Character = LocalPlayer.Character
+
+			if not Character then
+				return
+			end
+
+			local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+			local isBasePart = p28:IsA("BasePart") and p28 and p28 or p28:FindFirstChildWhichIsA("BasePart", true)
+
+			if not (HumanoidRootPart and isBasePart) then
+				return
+			end
+
+			HumanoidRootPart.CFrame = isBasePart.CFrame + Vector3.new(0, 5, 0)
+		end
+
+		for _, v in ipairs({
+			"item_bolt_cutters",
+			"item_keycard_perla",
+			"item_fuse",
+			"item_fuel",
+			"item_c4",
+			"item_code_safe",
+			"item_diesel",
+			"item_supplies_food",
+			"item_supplies_water",
+			"item_tire_truck",
+			"item_turret_ammo"
+		}) do
+			local v181 = mission_item:FindFirstChild(v, true)
+
+			if v181 then
+				v175(v181)
+				print("Teleported to:", v)
+
+				return
+			end
+		end
+	end
+})
+v172:AddButton({
+	Text = "Fuse Manually",
+	Func = function()
+		local LocalPlayer = game:GetService("Players").LocalPlayer
+		local item_fuse = workspace.Game.Current.Spawned.GameObjects.mission_item:FindFirstChild("item_fuse", true)
+		local Character
+
+		if item_fuse then
+			Character = LocalPlayer.Character
+		else
+			Character = item_fuse
+		end
+
+		if not Character then
+			return
+		end
+
+		local HumanoidRootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+		if item_fuse:IsA("Model") then
+			item_fuse = item_fuse.PrimaryPart or item_fuse
+		end
+
+		if not (HumanoidRootPart and item_fuse) then
+			return
+		end
+
+		HumanoidRootPart.CFrame = item_fuse.CFrame + Vector3.new(0, 5, 0)
+	end
+})
+v172.AddButton(v172, {
+	Text = "Card Reader",
+	Func = function()
+		local LocalPlayer = game:GetService("Players").LocalPlayer;
+
+		(LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart").CFrame = CFrame.new(-336, 265.69964599609, -46.704803466797)
+	end
+})
+v172:AddButton({
+	Text = "Fuse Box",
+	Func = function()
+		local LocalPlayer = game:GetService("Players").LocalPlayer;
+
+		(LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart").CFrame = CFrame.new(-415.99987792969, 246.27496337891, -14.595000267029)
+	end
+})
+v172:AddLabel("Keycard Reader Feature &")
+v172:AddLabel("FuseBox Feature Carefully Using")
+v172:AddLabel("Dev By InoC3nt8")
+
+local v188 = t2.Visual:AddLeftGroupbox("ESP Features", "eye")
+
+t1.value55 = game:GetService("Workspace")
+t1.value56 = false
+
+local color3 = Color3.fromRGB(0, 255, 0)
+
+t1.value57 = nil
+t1.value58 = color3
+t1.value57 = {}
+
+function t1.value59(p29)
+	local isModel = p29 and p29:IsA("Model")
+
+	if not isModel then
+		return isModel
+	end
+
+	isModel = p29:FindFirstChildOfClass("Humanoid") ~= nil
+
+	return isModel
+end
+function t1.value60(p30)
+	local v191 = t1.value57[p30]
+
+	if not v191 then
+		return
+	end
+
+	if v191.Parent then
+		v191:Destroy()
+	end
+
+	t1.value57[p30] = nil
+end
+
+t1.value61 = nil
+
+function t1.value61(p31)
+	if not t1.value56 then
+		return
+	end
+
+	if not t1.value59(p31) then
+		return
+	end
+
+	local Parent = t1.value57[p31]
+	local Highlight
+
+	if not Parent then
+		if not Parent then
+			Highlight = Instance.new("Highlight")
+			Highlight.Name = "EnemyESP"
+			Highlight.Adornee = p31
+			Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			Highlight.FillTransparency = 1
+			Highlight.OutlineTransparency = 0
+			Highlight.OutlineColor = t1.value58
+			Highlight.Parent = p31
+			t1.value57[p31] = Highlight
+		end
+
+		return
+	end
+
+	Parent = t1.value57[p31].Parent
+
+	if not Parent then
+		Highlight = Instance.new("Highlight")
+		Highlight.Name = "EnemyESP"
+		Highlight.Adornee = p31
+		Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		Highlight.FillTransparency = 1
+		Highlight.OutlineTransparency = 0
+		Highlight.OutlineColor = t1.value58
+		Highlight.Parent = p31
+		t1.value57[p31] = Highlight
+	end
+end
+function t1.value62()
+	local ipairs_ = ipairs
+	local value55 = t1.value55
+
+	for _, child in ipairs_(value55.GetChildren(value55)) do
+		if t1.value59(child) then
+			t1.value61(child)
+		end
+	end
+end
+function t1.value63()
+	for k, v in pairs(t1.value57) do
+		if v then
+			v:Destroy()
+		end
+
+		t1.value57[k] = nil
+	end
+end
+
+t1.value55.ChildAdded:Connect(function(child)
+	if not t1.value56 then
+		return
+	end
+
+	task.defer(function()
+		t1.value61(child)
+	end)
+end)
+t1.value55.ChildRemoved:Connect(function(child)
+	t1.value60(child)
+end)
+
+local v200 = v188.AddToggle(v188, "PlayerESPToggle", {
+	Text = "Player ESP",
+	Default = false,
+	Callback = function(p32)
+		t1.value56 = p32
+
+		if p32 then
+			t1.value62()
+		else
+			t1.value63()
+		end
+	end
+})
+local color32 = Color3.fromRGB
+
+v200.AddColorPicker(v200, "PlayerESPColor", {
+	Default = color32(0, 255, 0),
+	Title = "Player ESP Color",
+	Callback = function(p33)
+		for k, v in pairs(t1.value57) do
+			local Parent
+
+			if v then
+				Parent = v.Parent
+			else
+				Parent = v
+			end
+
+			if Parent then
+				v.OutlineColor = p33
+			else
+				t1.value57[k] = nil
+			end
+		end
+	end
+})
+t1.value64 = workspace.Game.Current.Spawned.NPCs.enemies
+t1.value65 = false
+t1.value66 = {}
+t1.value67 = Color3.fromRGB(255, 0, 0)
+
+function t1.value68(p34)
+	local isModel = p34 and p34:IsA("Model")
+
+	if not isModel then
+		return isModel
+	end
+
+	isModel = p34:FindFirstChildOfClass("Humanoid") ~= nil
+
+	return isModel
+end
+function t1.value69(p35)
+	local v206 = t1.value66[p35]
+
+	if not v206 then
+		return
+	end
+
+	v206:Destroy()
+	t1.value66[p35] = nil
+end
+function t1.value70(p36)
+	if t1.value65 then
+		if t1.value68(p36) then
+			if t1.value66[p36] then
+				return
+			else
+				local Highlight = Instance.new("Highlight")
+
+				Highlight.Name = "EnemyESP"
+				Highlight.Adornee = p36
+				Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				Highlight.FillTransparency = 1
+				Highlight.OutlineTransparency = 0
+				Highlight.OutlineColor = t1.value67
+				Highlight.Parent = p36
+				t1.value66[p36] = Highlight
+
+				return
+			end
+		else
+			return
+		end
+	end
+end
+function t1.value71()
+	for k, v in pairs(t1.value66) do
+		if v then
+			v:Destroy()
+		end
+
+		t1.value66[k] = nil
+	end
+end
+function t1.value72()
+	if t1.value65 then
+		local ipairs_ = ipairs
+		local value64 = t1.value64
+
+		for _, child in ipairs_(value64.GetChildren(value64)) do
+			t1.value70(child)
+		end
+	end
+end
+
+t1.value64.ChildAdded:Connect(function(child)
+	if not t1.value65 then
+		return
+	end
+
+	task.defer(function()
+		t1.value70(child)
+	end)
+end)
+t1.value64.ChildRemoved:Connect(function(child)
+	t1.value69(child)
+end)
+
+local v214 = v188.AddToggle(v188, "EnemyESPToggle", {
+	Text = "Zombies ESP",
+	Default = false,
+	Callback = function(p37)
+		t1.value65 = p37
+
+		if p37 then
+			t1.value72()
+		else
+			t1.value71()
+		end
+	end
+})
+local t10 = {
+	Default = Color3.fromRGB(255, 0, 0),
+	Title = "Zombies ESP Color",
+	Callback = function(p38)
+		for _, v in pairs(t1.value66) do
+			if v then
+				v.OutlineColor = p38
+			end
+		end
+	end
+}
+
+v214.AddColorPicker(v214, "EnemyESPColor", t10)
+
+local RunService2 = game:GetService("RunService")
+
+t1.value73 = workspace.CurrentCamera
+t1.value74 = workspace.Game.Current.Spawned.GameObjects
+t1.value75 = {
+	objective_radio = true,
+	mission_item = true,
+	objective_c4 = true
+}
+t1.value76 = false
+t1.value77 = {}
+
+local function v219(p39)
+	if not t1.value76 then
+		return
+	end
+
+	if not p39:IsA("Model") then
+		return
+	end
+
+	if not t1.value75[p39.Name] then
+		return
+	end
+
+	local item_c4
+
+	if p39.Name == "objective_c4" then
+		item_c4 = p39:FindFirstChild("item_c4", true)
+	else
+		item_c4 = false
+	end
+
+	if item_c4 then
+	elseif t1.value77[p39] then
+		return
+	else
+		local Highlight = Instance.new("Highlight")
+
+		Highlight.Name = "ObjectiveESP"
+		Highlight.Adornee = p39
+		Highlight.FillColor = Color3.fromRGB(255, 255, 255)
+		Highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+		Highlight.FillTransparency = 1
+		Highlight.OutlineTransparency = 0
+		Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		Highlight.Parent = p39
+
+		local Line = Drawing.new("Line")
+
+		Line.Color = Color3.fromRGB(255, 255, 255)
+		Line.Thickness = 1.5
+		Line.Transparency = 1
+		Line.Visible = false
+		t1.value77[p39] = {
+			Highlight = Highlight,
+			Line = Line
+		}
+
+		return
+	end
+
+	local v223 = t1.value77[p39]
+
+	if not v223 then
+		return
+	end
+
+	if v223.Highlight then
+		v223.Highlight:Destroy()
+	end
+
+	if v223.Line then
+		v223.Line:Remove()
+	end
+
+	t1.value77[p39] = nil
+end
+
+RunService2.RenderStepped:Connect(function()
+	for k, v in pairs(t1.value77) do
+		if k.Parent then
+			local item_c4
+
+			if k.Name == "objective_c4" then
+				item_c4 = k:FindFirstChild("item_c4", true)
+			else
+				item_c4 = false
+			end
+
+			if item_c4 then
+				local v227 = t1.value77[k]
+
+				if v227 then
+					if v227.Highlight then
+						v227.Highlight:Destroy()
+					end
+
+					if v227.Line then
+						v227.Line:Remove()
+					end
+
+					t1.value77[k] = nil
+				end
+			else
+				local PrimaryPart = k.PrimaryPart or (k:FindFirstChild("HumanoidRootPart") or k:FindFirstChildWhichIsA("BasePart", true))
+
+				if PrimaryPart then
+					local v229, v230 = t1.value73:WorldToViewportPoint(PrimaryPart.Position)
+
+					if v230 then
+						v230 = v229.Z > 0
+					end
+
+					if v230 then
+						v.Line.From = Vector2.new(t1.value73.ViewportSize.X / 2, 0)
+						v.Line.To = Vector2.new(v229.X, v229.Y)
+						v.Line.Visible = true
+					else
+						v.Line.Visible = false
+					end
+				else
+					v.Line.Visible = false
+				end
+			end
+		else
+			local v231 = t1.value77[k]
+
+			if v231 then
+				if v231.Highlight then
+					v231.Highlight:Destroy()
+				end
+
+				if v231.Line then
+					v231.Line:Remove()
+				end
+
+				t1.value77[k] = nil
+			end
+		end
+	end
+end)
+
+function t1.value78()
+	local ipairs_ = ipairs
+	local value74 = t1.value74
+
+	for _, child in ipairs_(value74.GetChildren(value74)) do
+		v219(child)
+	end
+end
+
+t1.value74.ChildAdded:Connect(function(child)
+	if not t1.value76 then
+		return
+	end
+
+	task.defer(function()
+		v219(child)
+	end)
+end)
+t1.value74.ChildRemoved:Connect(function(child)
+	local v236 = t1.value77[child]
+
+	if not v236 then
+		return
+	end
+
+	if v236.Highlight then
+		v236.Highlight:Destroy()
+	end
+
+	if v236.Line then
+		v236.Line:Remove()
+	end
+
+	t1.value77[child] = nil
+end)
+
+local v237 = v188.AddToggle(v188, "ObjectiveESP", {
+	Text = "Objective ESP",
+	Default = false,
+	Callback = function(p40)
+		t1.value76 = p40
+
+		if p40 then
+			t1.value78()
+		else
+			for k in pairs(t1.value77) do
+				local v239 = t1.value77[k]
+
+				if v239 then
+					if v239.Highlight then
+						v239.Highlight:Destroy()
+					end
+
+					if v239.Line then
+						v239.Line:Remove()
+					end
+
+					t1.value77[k] = nil
+				end
+			end
+		end
+	end
+})
+local t11 = {
+	Default = Color3.fromRGB(255, 255, 255),
+	Title = "Objective ESP Color",
+	Callback = function(p41)
+		for _, v in pairs(t1.value77) do
+			if v.Highlight then
+				v.Highlight.OutlineColor = p41
+			end
+
+			if v.Line then
+				v.Line.Color = p41
+			end
+		end
+	end
+}
+
+v237.AddColorPicker(v237, "ObjectiveESPColor", t11)
+t1.value79 = workspace.Game.Current.Spawned.GameObjects
+t1.value80 = false
+
+local color33 = Color3.fromRGB(255, 255, 0)
+
+t1.value81 = nil
+t1.value82 = color33
+t1.value81 = {}
+
+function t1.value83(p42)
+	local v244 = t1.value81[p42]
+
+	if not v244 then
+		return
+	end
+
+	v244:Destroy()
+	t1.value81[p42] = nil
+end
+function t1.value84(p43)
+	if not t1.value80 then
+		return
+	end
+
+	if not p43:IsA("Model") or p43.Name ~= "pickup_ammo" then
+		return
+	end
+
+	local Parent = t1.value81[p43]
+	local Highlight
+
+	if not Parent then
+		if Parent then
+			t1.value81[p43].OutlineColor = t1.value82
+		else
+			t1.value81[p43] = nil
+			Highlight = Instance.new("Highlight")
+			Highlight.Name = "AmmoESP"
+			Highlight.Adornee = p43
+			Highlight.FillTransparency = 1
+			Highlight.OutlineTransparency = 0
+			Highlight.OutlineColor = t1.value82
+			Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			Highlight.Parent = p43
+			t1.value81[p43] = Highlight
+		end
+
+		return
+	end
+
+	Parent = t1.value81[p43].Parent
+
+	if Parent then
+		t1.value81[p43].OutlineColor = t1.value82
+	else
+		t1.value81[p43] = nil
+		Highlight = Instance.new("Highlight")
+		Highlight.Name = "AmmoESP"
+		Highlight.Adornee = p43
+		Highlight.FillTransparency = 1
+		Highlight.OutlineTransparency = 0
+		Highlight.OutlineColor = t1.value82
+		Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		Highlight.Parent = p43
+		t1.value81[p43] = Highlight
+	end
+end
+
+local function v247()
+	if t1.value80 then
+		local ipairs_ = ipairs
+		local value79 = t1.value79
+
+		for _, child in ipairs_(value79.GetChildren(value79)) do
+			local isModel = child:IsA("Model")
+
+			if isModel then
+				isModel = child.Name == "pickup_ammo"
+			end
+
+			if isModel then
+				t1.value84(child)
+			end
+		end
+	end
+end
+
+function t1.value85()
+	for k, v in pairs(t1.value81) do
+		if v then
+			v:Destroy()
+		end
+
+		t1.value81[k] = nil
+	end
+end
+
+t1.value79.ChildAdded:Connect(function(child)
+	if not t1.value80 then
+		return
+	end
+
+	task.defer(function()
+		t1.value84(child)
+	end)
+end)
+t1.value79.ChildRemoved:Connect(function(child)
+	t1.value83(child)
+end)
+
+local v255 = v188.AddToggle(v188, "AmmoESPToggle", {
+	Text = "Ammo ESP",
+	Default = false,
+	Callback = function(p44)
+		t1.value80 = p44
+
+		if p44 then
+			v247()
+		else
+			t1.value85()
+		end
+	end
+})
+local t12 = {
+	Default = Color3.fromRGB(255, 255, 0),
+	Title = "Ammo ESP Color",
+	Callback = function(p45)
+		t1.value82 = p45
+
+		for k, v in pairs(t1.value81) do
+			local Parent
+
+			if v then
+				Parent = v.Parent
+			else
+				Parent = v
+			end
+
+			if Parent then
+				v.OutlineColor = t1.value82
+			else
+				t1.value81[k] = nil
+			end
+		end
+	end
+}
+
+v255.AddColorPicker(v255, "AmmoESPColor", t12)
+t1.value86 = workspace.Game.Current.Spawned.GameObjects
+t1.value87 = false
+
+local color34 = Color3.fromRGB(255, 255, 0)
+
+t1.value88 = nil
+t1.value89 = nil
+t1.value89 = color34
+t1.value88 = {}
+t1.value90 = nil
+
+function t1.value90(p46)
+	if t1.value87 then
+		if not p46:IsA("Model") or p46.Name ~= "pickup_armor" then
+			return
+		elseif t1.value88[p46] then
+			return
+		else
+			local Highlight = Instance.new("Highlight")
+
+			Highlight.Name = "ArmorESP"
+			Highlight.Adornee = p46
+			Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			Highlight.FillTransparency = 1
+			Highlight.OutlineTransparency = 0
+			Highlight.OutlineColor = t1.value89
+			Highlight.Parent = p46
+			t1.value88[p46] = Highlight
+
+			return
+		end
+	end
+end
+function t1.value91()
+	if t1.value87 then
+		local ipairs_ = ipairs
+		local value86 = t1.value86
+
+		for _, child in ipairs_(value86.GetChildren(value86)) do
+			t1.value90(child)
+		end
+	end
+end
+function t1.value92()
+	for k, v in pairs(t1.value88) do
+		if v then
+			v:Destroy()
+		end
+
+		t1.value88[k] = nil
+	end
+end
+
+t1.value86.ChildAdded:Connect(function(child)
+	task.defer(function()
+		t1.value90(child)
+	end)
+end)
+t1.value86.ChildRemoved:Connect(function(child)
+	local v268 = t1.value88[child]
+
+	if not v268 then
+		return
+	end
+
+	if v268.Parent then
+		v268:Destroy()
+	end
+
+	t1.value88[child] = nil
+end)
+
+local v269 = v188.AddToggle(v188, "ArmorESPToggle", {
+	Text = "Armor ESP",
+	Default = false,
+	Callback = function(p47)
+		t1.value87 = p47
+
+		if p47 then
+			t1.value91()
+		else
+			t1.value92()
+		end
+	end
+})
+
+v269.AddColorPicker(v269, "ArmorESPColor", {
+	Default = Color3.fromRGB(255, 255, 0),
+	Title = "Armor ESP Color",
+	Callback = function(p48)
+		for k, v in pairs(t1.value88) do
+			local Parent
+
+			if v then
+				Parent = v.Parent
+			else
+				Parent = v
+			end
+
+			if Parent then
+				v.OutlineColor = p48
+			else
+				t1.value88[k] = nil
+			end
+		end
+	end
+})
+t1.value93 = workspace.Game.Current.Spawned.GameObjects
+t1.value94 = false
+t1.value95 = Color3.fromRGB(255, 255, 0)
+t1.value96 = nil
+t1.value96 = {}
+
+function t1.value97(p49)
+	local v273 = t1.value96[p49]
+
+	if not v273 then
+		return
+	end
+
+	if v273.Parent then
+		v273:Destroy()
+	end
+
+	t1.value96[p49] = nil
+end
+function t1.value98(p50)
+	if t1.value94 then
+		if p50:IsA("Model") then
+			if p50.Name == "pickup_medkit" then
+				if t1.value96[p50] then
+					return
+				else
+					local Highlight = Instance.new("Highlight")
+
+					Highlight.Name = "MedkitESP"
+					Highlight.Adornee = p50
+					Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+					Highlight.FillTransparency = 1
+					Highlight.OutlineTransparency = 0
+					Highlight.OutlineColor = t1.value95
+					Highlight.Parent = p50
+					t1.value96[p50] = Highlight
+
+					return
+				end
+			else
+				return
+			end
+		else
+			return
+		end
+	end
+end
+function t1.value99()
+	local ipairs_ = ipairs
+	local value93 = t1.value93
+
+	for _, child in ipairs_(value93.GetChildren(value93)) do
+		local isModel = child:IsA("Model")
+
+		if isModel then
+			isModel = child.Name == "pickup_medkit"
+		end
+
+		if isModel then
+			t1.value98(child)
+		end
+	end
+end
+function t1.value100()
+	for k, v in pairs(t1.value96) do
+		local Parent
+
+		if v then
+			Parent = v.Parent
+		else
+			Parent = v
+		end
+
+		if Parent then
+			v:Destroy()
+		end
+
+		t1.value96[k] = nil
+	end
+end
+
+t1.value93.ChildAdded:Connect(function(child)
+	if not t1.value94 then
+		return
+	end
+
+	task.defer(function()
+		t1.value98(child)
+	end)
+end)
+t1.value93.ChildRemoved:Connect(function(child)
+	t1.value97(child)
+end)
+v188.AddToggle(v188, "MedkitESPToggle", {
+	Text = "Medkit ESP",
+	Default = false,
+	Callback = function(p51)
+		t1.value94 = p51
+
+		if p51 then
+			t1.value99()
+		else
+			t1.value100()
+		end
+	end
+}):AddColorPicker("MedkitESPColor", {
+	Default = Color3.fromRGB(255, 255, 0),
+	Title = "Medkit ESP Color",
+	Callback = function(p52)
+		t1.value95 = p52
+
+		for k, v in pairs(t1.value96) do
+			local Parent
+
+			if v then
+				Parent = v.Parent
+			else
+				Parent = v
+			end
+
+			if Parent then
+				v.OutlineColor = t1.value95
+			else
+				t1.value96[k] = nil
+			end
+		end
+	end
+})
+t1.value101 = workspace.Game.Current.Spawned.GameObjects
+t1.value102 = false
+t1.value103 = Color3.fromRGB(255, 255, 0)
+t1.value104 = {}
+t1.value105 = {}
+
+function t1.value106(p53)
+	local v286 = t1.value104[p53]
+
+	if not v286 then
+		return
+	end
+
+	v286:Destroy()
+	t1.value104[p53] = nil
+end
+function t1.value107(p54)
+	if t1.value102 then
+		if p54:IsA("Model") then
+			if p54.Name == "pickup_money" then
+				if t1.value104[p54] then
+					return
+				else
+					local Highlight = Instance.new("Highlight")
+
+					Highlight.Name = "MoneyESP"
+					Highlight.Adornee = p54
+					Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+					Highlight.FillTransparency = 1
+					Highlight.OutlineTransparency = 0
+					Highlight.OutlineColor = t1.value103
+					Highlight.Parent = p54
+					t1.value104[p54] = Highlight
+
+					return
+				end
+			else
+				return
+			end
+		else
+			return
+		end
+	end
+end
+function t1.value108()
+	for k, v in pairs(t1.value104) do
+		if v then
+			v:Destroy()
+		end
+
+		t1.value104[k] = nil
+	end
+end
+function t1.value109()
+	for _, v in pairs(t1.value104) do
+		if v then
+			v.OutlineColor = t1.value103
+		end
+	end
+end
+function t1.value110()
+	if t1.value105.ChildAdded then
+		return
+	end
+
+	local ipairs_ = ipairs
+	local value101 = t1.value101
+
+	for _, child in ipairs_(value101.GetChildren(value101)) do
+		t1.value107(child)
+	end
+
+	t1.value105.ChildAdded = t1.value101.ChildAdded:Connect(function(child)
+		if not t1.value102 then
+			return
+		end
+
+		t1.value107(child)
+	end)
+	t1.value105.ChildRemoved = t1.value101.ChildRemoved:Connect(function(child)
+		t1.value106(child)
+	end)
+end
+function t1.value111()
+	for _, v in pairs(t1.value105) do
+		if v then
+			v:Disconnect()
+		end
+	end
+
+	table.clear(t1.value105)
+	t1.value108()
+end
+
+local MoneyESPToggle = v188:AddToggle("MoneyESPToggle", {
+	Text = "Money ESP",
+	Default = false,
+	Callback = function(p55)
+		t1.value102 = p55
+
+		if p55 then
+			t1.value110()
+		else
+			t1.value111()
+		end
+	end
+})
+local t13 = {
+	Default = Color3.fromRGB(255, 255, 0),
+	Title = "Money ESP Color",
+	Callback = function(p56)
+		t1.value103 = p56
+		t1.value109()
+	end
+}
+
+MoneyESPToggle.AddColorPicker(MoneyESPToggle, "MoneyESPColor", t13)
+
+local v300 = t2.Visual:AddRightGroupbox("WeaponSkin Features", "gamepad-2")
+
+t1.value112 = {
+	primary = false,
+	secondary = false,
+	melee = false
+}
+t1.value113 = "abyss"
+v300:AddDropdown("WeaponDropdown", {
+	Values = { "primary", "secondary", "melee" },
+	Default = {},
+	Multi = true,
+	Text = "Weapon Choose",
+	Callback = function(p57)
+		t1.value112 = p57
+	end
+})
+v300.AddDropdown(v300, "WeaponSkinDropdown", {
+	Values = {
+		"abyss",
+		"alpha",
+		"batscare",
+		"benjamins",
+		"binded",
+		"black_ties",
+		"blank_slate",
+		"bronze_lining",
+		"camo_arctic",
+		"camo_desert",
+		"camo_woodland",
+		"clawmarks",
+		"cloaked",
+		"competitor",
+		"corrosion",
+		"cut_amber",
+		"cut_amethyst",
+		"cut_diamond",
+		"cut_emerald",
+		"cut_heliodor",
+		"cut_ruby",
+		"cut_sapphire",
+		"cut_topaz",
+		"deceazed",
+		"desert_pixels",
+		"digital_red",
+		"disease",
+		"dominator",
+		"dust storm",
+		"equinox",
+		"fighter_stripes",
+		"foggy_blue",
+		"funder_gold",
+		"gemmy",
+		"glassy_skies",
+		"gold",
+		"green_zone",
+		"greenland",
+		"grotesque",
+		"hand",
+		"heat",
+		"hellstorm",
+		"impact",
+		"infection",
+		"killer_princess",
+		"kintsugi_ash",
+		"kintsugi_charred",
+		"kovrovkan_green",
+		"legacy",
+		"limbo",
+		"loam",
+		"markdown",
+		"molded",
+		"molten",
+		"morbius",
+		"nebula",
+		"nitro",
+		"nostalic",
+		"old_brown",
+		"plague",
+		"platinum",
+		"plazma",
+		"plum",
+		"post_world",
+		"power_drill",
+		"predator",
+		"primal",
+		"redwood",
+		"retro",
+		"retrowaves",
+		"rusted",
+		"scarlet",
+		"shade",
+		"shadows",
+		"shards",
+		"shelled",
+		"shore",
+		"skin_sections",
+		"spectral",
+		"spray_mudskip",
+		"spray_savanna",
+		"stalker",
+		"storm",
+		"swapper",
+		"teutonic",
+		"trivasty",
+		"urgent",
+		"vemius",
+		"war_marks",
+		"warmup",
+		"winterstorm",
+		"woody",
+		"xmas_1",
+		"zebra"
+	},
+	Default = 1,
+	Text = "Weapon Skin Custom",
+	Callback = function(p58)
+		t1.value113 = p58
+	end
+})
+v300.AddButton(v300, {
+	Text = "Change Skin",
+	Func = function()
+		local Character = game.Players.LocalPlayer.Character
+
+		if not Character then
+			return
+		end
+
+		local v302, v303, v304 = pairs(t1.value112)
+		local v305 = false
+
+		while true do
+			local v306
+
+			v304, v306 = v302(v303, v304)
+
+			if not v304 then
+				break
+			end
+
+			if v306 then
+				v305 = true
+
+				break
+			end
+		end
+
+		if v305 then
+			for _, child in ipairs(Character.GetChildren(Character)) do
+				local isTool = child:IsA("Tool")
+
+				if isTool then
+					isTool = t1.value112[child.Name]
+				end
+
+				if isTool then
+					local WeaponData = child:FindFirstChild("WeaponData")
+
+					if WeaponData then
+						local SkinName = WeaponData:FindFirstChild("SkinName")
+						local isStringValue
+
+						if SkinName then
+							isStringValue = SkinName:IsA("StringValue")
+						else
+							isStringValue = SkinName
+						end
+
+						if isStringValue then
+							SkinName.Value = t1.value113
+							print("Changed " .. child.Name .. " skin to " .. t1.value113)
+						end
+					end
+				end
+			end
+		else
+			warn("No weapon types selected!")
+		end
+	end
+})
+
+local v313 = t2.Maps:AddRightGroupbox("Player Features", "users")
+
+t1.value114 = nil
+
+function t1.value115()
+	local ipairs_ = ipairs
+	local workspace_ = workspace
+	local t14 = {}
+
+	for _, child in ipairs_(workspace_.GetChildren(workspace_)) do
+		local isModel = child:IsA("Model")
+
+		if isModel then
+			isModel = child:FindFirstChildOfClass("Humanoid")
+		end
+
+		if isModel then
+			local Name = child.Name
+
+			table.insert(t14, Name)
+		end
+	end
+
+	table.sort(t14)
+
+	return t14
+end
+
+t1.value116 = v313:AddDropdown("PlayerDropdown", {
+	Values = t1.value115(),
+	Default = {},
+	Multi = false,
+	Text = "Select Player",
+	Callback = function(p59)
+		t1.value114 = p59
+	end
+})
+
+function t1.value117()
+	t1.value116:SetValues(unpack_({ t1.value115() }))
+end
+
+workspace.ChildAdded:Connect(function(child)
+	if not child:IsA("Model") then
+		return
+	end
+
+	task.wait(0.1)
+
+	if not child:FindFirstChildOfClass("Humanoid") then
+		return
+	end
+
+	t1.value117()
+end)
+workspace.ChildRemoved:Connect(function(child)
+	if not child:IsA("Model") then
+		return
+	end
+
+	t1.value117()
+end)
+v313.AddButton(v313, {
+	Text = "Teleport To Player",
+	Func = function()
+		if not t1.value114 or t1.value114 == "" then
+			return
+		end
+
+		local v321 = workspace:FindFirstChild(t1.value114)
+
+		if not v321 then
+			return
+		end
+
+		local HumanoidRootPart = v321:FindFirstChild("HumanoidRootPart") or (v321.PrimaryPart or v321:FindFirstChildWhichIsA("BasePart", true))
+		local Character = game.Players.LocalPlayer.Character
+
+		if not Character then
+			return
+		end
+
+		local HumanoidRootPart2 = Character:FindFirstChild("HumanoidRootPart")
+
+		if not (HumanoidRootPart2 and HumanoidRootPart) then
+			return
+		end
+
+		HumanoidRootPart2.CFrame = HumanoidRootPart.CFrame * CFrame.new(0, 3, 0)
+	end
+})
+t1.value117()
+
+local v325 = t2.Visual:AddLeftGroupbox("FPS Features", "wrench")
+
+t1.value118 = game:GetService("Lighting")
+t1.value119 = {
+	Brightness = t1.value118.Brightness,
+	ClockTime = t1.value118.ClockTime,
+	FogEnd = t1.value118.FogEnd,
+	GlobalShadows = t1.value118.GlobalShadows,
+	Ambient = t1.value118.Ambient,
+	OutdoorAmbient = t1.value118.OutdoorAmbient
+}
+t1.value120 = false
+v325:AddButton({
+	Text = "Full Bright",
+	Func = function()
+		t1.value120 = not t1.value120
+
+		if t1.value120 then
+			t1.value118.Brightness = 5
+			t1.value118.ClockTime = 12
+			t1.value118.FogEnd = 100000
+			t1.value118.GlobalShadows = false
+			t1.value118.Ambient = Color3.new(1, 1, 1)
+			t1.value118.OutdoorAmbient = Color3.new(1, 1, 1)
+		else
+			t1.value118.Brightness = t1.value119.Brightness
+			t1.value118.ClockTime = t1.value119.ClockTime
+			t1.value118.FogEnd = t1.value119.FogEnd
+			t1.value118.GlobalShadows = t1.value119.GlobalShadows
+			t1.value118.Ambient = t1.value119.Ambient
+			t1.value118.OutdoorAmbient = t1.value119.OutdoorAmbient
+		end
+	end
+})
+t1.value121 = false
+t1.value122 = {}
+v325.AddToggle(v325, "FPSBoosterToggle", {
+	Text = "FPS Booster (Potato Mode)",
+	Default = false,
+	Callback = function(p60)
+		t1.value121 = p60
+
+		local Lighting = game:GetService("Lighting")
+		local Workspace = game:GetService("Workspace")
+		local Terrain = Workspace:FindFirstChildOfClass("Terrain")
+
+		if p60 then
+			t1.value122.Quality = settings().Rendering.QualityLevel
+			t1.value122.Shadows = Lighting.GlobalShadows
+			t1.value122.Brightness = Lighting.Brightness
+			pcall(function()
+				Lighting.GlobalShadows = false
+				Lighting.Brightness = 1
+				Lighting.FogEnd = 100000
+
+				local v329 = Lighting
+
+				for _, child in ipairs(v329.GetChildren(v329)) do
+					if child:IsA("PostEffect") then
+						child.Enabled = false
+					end
+				end
+			end)
+			pcall(function()
+				if not Terrain then
+					return
+				end
+
+				Terrain.WaterWaveSize = 0
+				Terrain.WaterWaveSpeed = 0
+				Terrain.WaterReflectance = 0
+				Terrain.WaterTransparency = 1
+			end)
+			pcall(function()
+				local v332 = Workspace
+
+				for _, descendant in ipairs(v332.GetDescendants(v332)) do
+					if descendant:IsA("BasePart") then
+						descendant.CastShadow = false
+					elseif descendant:IsA("ParticleEmitter") then
+						descendant.Enabled = false
+						descendant.Rate = 0
+					elseif descendant:IsA("Trail") or (descendant:IsA("Beam") or descendant:IsA("Smoke") or (descendant:IsA("Fire") or descendant:IsA("Sparkles"))) then
+						descendant.Enabled = false
+					elseif descendant:IsA("Decal") or descendant:IsA("Texture") then
+						descendant.Transparency = 1
+					end
+				end
+			end)
+			pcall(function()
+				settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+			end)
+			pcall(function()
+				collectgarbage("collect")
+			end)
+			t1.value1:Notify({
+				Title = "FPS Booster",
+				Description = "Potato Device Optimization Enabled",
+				Time = 3
+			})
+		else
+			local function v335()
+				if t1.value122.Quality then
+					settings().Rendering.QualityLevel = t1.value122.Quality
+				end
+
+				if t1.value122.Shadows ~= nil then
+					Lighting.GlobalShadows = t1.value122.Shadows
+				end
+
+				if not t1.value122.Brightness then
+					return
+				end
+
+				Lighting.Brightness = t1.value122.Brightness
+			end
+
+			pcall(v335)
+			t1.value1:Notify({
+				Title = "FPS Booster",
+				Description = "Optimization Disabled",
+				Time = 3
+			})
+		end
+	end
+})
+t1.value123 = game:GetService("Lighting")
+t1.value124 = game:GetService("Workspace")
+t1.value125 = false
+t1.value126 = {}
+t1.value127 = nil
+
+function t1.value127(p61, p62)
+	if not t1.value126[p61] then
+		t1.value126[p61] = {}
+	end
+
+	if t1.value126[p61][p62] ~= nil then
+		return
+	end
+
+	local function v336()
+		t1.value126[p61][p62] = p61[p62]
+	end
+
+	pcall(v336)
+end
+function t1.value128(p63, p64, p65)
+	t1.value127(p63, p64)
+	pcall(function()
+		p63[p64] = p65
+	end)
+end
+function t1.value129(p66)
+	if not t1.value125 then
+		return
+	end
+
+	if p66:IsA("BasePart") then
+		t1.value128(p66, "CastShadow", false)
+		t1.value128(p66, "Reflectance", 0)
+		pcall(function()
+			t1.value128(p66, "Material", Enum.Material.SmoothPlastic)
+		end)
+	end
+
+	if p66:IsA("Decal") or p66:IsA("Texture") then
+		t1.value128(p66, "Transparency", 1)
+	end
+
+	if p66:IsA("ParticleEmitter") or (p66:IsA("Trail") or (p66:IsA("Beam") or (p66:IsA("Smoke") or (p66:IsA("Fire") or p66:IsA("Sparkles"))))) then
+		t1.value128(p66, "Enabled", false)
+	end
+
+	if not (p66:IsA("PointLight") or (p66:IsA("SpotLight") or p66:IsA("SurfaceLight"))) then
+		return
+	end
+
+	t1.value128(p66, "Enabled", false)
+end
+function t1.value130()
+	if t1.value125 then
+		t1.value128(t1.value123, "GlobalShadows", false)
+		t1.value128(t1.value123, "FogEnd", 100000)
+		t1.value128(t1.value123, "Brightness", 1)
+
+		for _, child in ipairs(t1.value123:GetChildren()) do
+			if child:IsA("BloomEffect") or (child:IsA("BlurEffect") or (child:IsA("ColorCorrectionEffect") or (child:IsA("DepthOfFieldEffect") or child:IsA("SunRaysEffect")))) then
+				t1.value128(child, "Enabled", false)
+			end
+		end
+
+		local Terrain = t1.value124:FindFirstChildOfClass("Terrain")
+
+		if not Terrain then
+			return
+		end
+
+		t1.value128(Terrain, "Decoration", false)
+		t1.value128(Terrain, "WaterWaveSize", 0)
+		t1.value128(Terrain, "WaterWaveSpeed", 0)
+		t1.value128(Terrain, "WaterReflectance", 0)
+		t1.value128(Terrain, "WaterTransparency", 1)
+	end
+end
+function t1.value131()
+	t1.value125 = true
+	t1.value130()
+
+	for _, descendant in ipairs(t1.value124:GetDescendants()) do
+		t1.value129(descendant)
+	end
+
+	t1.value124.DescendantAdded:Connect(function(descendant)
+		if not t1.value125 then
+			return
+		end
+
+		task.defer(function()
+			t1.value129(descendant)
+		end)
+	end)
+end
+function t1.value132()
+	t1.value125 = false
+
+	for k, v in pairs(t1.value126) do
+		local Parent
+
+		if k then
+			Parent = k.Parent
+		else
+			Parent = k
+		end
+
+		if Parent then
+			for k2, v2 in pairs(v) do
+				pcall(function()
+					k[k2] = v2
+				end)
+			end
+		end
+	end
+
+	table.clear(t1.value126)
+end
+
+v325.AddToggle(v325, "FPSBoosterToggle", {
+	Text = "FPS Booster V2",
+	Default = false,
+	Callback = function(p67)
+		if p67 then
+			t1.value131()
+		else
+			t1.value132()
+		end
+	end
+})
+t1.value133 = 60
+v325:AddButton({
+	Text = "FPS Cap",
+	Func = function()
+		if setfpscap then
+			setfpscap(t1.value133)
+		elseif set_fps_cap then
+			set_fps_cap(t1.value133)
+
+			return
+		else
+			warn("FPS Cap is not supported by your executor.")
+
+			return
+		end
+	end
+})
+v325:AddSlider("FPSCapLimitSlider", {
+	Text = "FPS Cap Limit",
+	Default = 60,
+	Min = 1,
+	Max = 240,
+	Rounding = 0,
+	Callback = function(p68)
+		t1.value133 = p68
+
+		if setfpscap then
+			setfpscap(t1.value133)
+
+			return
+		end
+
+		if not set_fps_cap then
+			return
+		end
+
+		set_fps_cap(t1.value133)
+	end
+})
+
+local v347 = t2.Maps:AddLeftGroupbox("Church Map Farm", "anchor")
+
+t1.value134 = game:GetService("Players").LocalPlayer
+t1.value135 = false
+t1.value136 = nil
+t1.value137 = Vector3.new(79, 258, -59)
+t1.value138 = false
+t1.value139 = false
+
+function t1.value140()
+	return (t1.value134.Character or t1.value134.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
+end
+function t1.value141()
+	task.spawn(function()
+		while true do
+			local value135 = t1.value135
+
+			if value135 then
+				value135 = t1.value138
+			end
+
+			if not value135 then
+				return
+			end
+
+			local Character = t1.value134.Character
+
+			if Character then
+				local t15 = { workspace.Game.Spawned.Ragdolls, workspace.Game.Current.Spawned.NPCs.enemies, workspace.Game.Current.Scene.Map.Corpses }
+
+				for _, v in ipairs(t15) do
+					pcall(function()
+						local v353 = v
+
+						for _, child in ipairs(v353.GetChildren(v353)) do
+							local Humanoid = child:FindFirstChild("Humanoid")
+							local Head = child:FindFirstChild("Head")
+
+							if Humanoid then
+								if Head then
+									Humanoid = Humanoid.Health > 0
+								else
+									Humanoid = Head
+								end
+							end
+
+							if Humanoid then
+								for _, v2 in ipairs({ "primary", "secondary", "melee" }) do
+									local v360 = Character:FindFirstChild(v2)
+									local ServerEvents
+
+									if v360 then
+										ServerEvents = v360:FindFirstChild("ServerEvents")
+									else
+										ServerEvents = v360
+									end
+
+									if ServerEvents then
+										v360.ServerEvents.RegisterHit:FireServer({
+											{
+												amount = 1,
+												target = child,
+												is_friendly = false,
+												part = Head
+											}
+										}, {})
+									end
+								end
+							end
+						end
+					end)
+				end
+			end
+
+			task.wait(0.1)
+		end
+	end)
+end
+
+v347:AddToggle("AllFeaturesToggle", {
+	Text = "AutoHit + Church Farm",
+	Default = false,
+	Callback = function(p69)
+		if p69 then
+			t1.value141()
+
+			local v362 = t1.value140()
+
+			t1.value136 = v362.CFrame
+			task.spawn(function()
+				while true do
+					local value135 = t1.value135
+
+					if value135 then
+						value135 = t1.value139
+					end
+
+					if not value135 then
+						return
+					end
+
+					v362.CFrame = CFrame.new(t1.value137)
+					task.wait(0.5)
+				end
+			end)
+
+			return
+		end
+
+		local v364 = t1.value140()
+
+		if not t1.value136 then
+			return
+		end
+
+		v364.CFrame = t1.value136
+	end
+})
+
+local Players4 = game:GetService("Players")
+
+t1.value142 = game:GetService("RunService")
+
+local LocalPlayer = Players4.LocalPlayer
+
+t1.value143 = nil
+t1.value144 = LocalPlayer
+t1.value145 = 80
+t1.value143 = nil
+t1.value146 = nil
+t1.value147 = nil
+t1.value148 = false
+
+function t1.value149()
+	local Game = workspace:FindFirstChild("Game")
+
+	if Game then
+		Game = Game:FindFirstChild("Current")
+	end
+
+	local isModel
+
+	if Game then
+	elseif Game then
+		for _, child in ipairs(Game:GetChildren()) do
+			isModel = child:IsA("Model")
+
+			if isModel then
+				isModel = child.Name == "Map"
+			end
+
+			if isModel then
+				return child
+			end
+		end
+
+		return nil
+	else
+		return nil
+	end
+
+	Game = Game:FindFirstChild("Scene")
+
+	if Game then
+		for _, child in ipairs(Game:GetChildren()) do
+			isModel = child:IsA("Model")
+
+			if isModel then
+				isModel = child.Name == "Map"
+			end
+
+			if isModel then
+				return child
+			end
+		end
+
+		return nil
+	else
+		return nil
+	end
+end
+function t1.value150()
+	local v373 = t1.value149()
+
+	if v373 then
+		local boundingBox, v375 = v373:GetBoundingBox()
+		local v376 = boundingBox.Position.Y + v375.Y / 2
+
+		return Vector3.new(boundingBox.Position.X, v376 + t1.value145, boundingBox.Position.Z)
+	else
+		return nil
+	end
+end
+function t1.value151()
+	local value143 = t1.value143
+
+	if value143 then
+	elseif value143 then
+		return t1.value143
+	else
+		t1.value143 = Instance.new("Part")
+		t1.value143.Name = "SkyHeightBlock"
+		t1.value143.Size = Vector3.new(12, 1, 12)
+		t1.value143.Anchored = true
+		t1.value143.CanCollide = true
+		t1.value143.CanTouch = false
+		t1.value143.CanQuery = false
+		t1.value143.Transparency = 1
+		t1.value143.Parent = workspace
+
+		return t1.value143
+	end
+
+	value143 = t1.value143.Parent
+
+	if value143 then
+		return t1.value143
+	else
+		t1.value143 = Instance.new("Part")
+		t1.value143.Name = "SkyHeightBlock"
+		t1.value143.Size = Vector3.new(12, 1, 12)
+		t1.value143.Anchored = true
+		t1.value143.CanCollide = true
+		t1.value143.CanTouch = false
+		t1.value143.CanQuery = false
+		t1.value143.Transparency = 1
+		t1.value143.Parent = workspace
+
+		return t1.value143
+	end
+end
+function t1.value152()
+	if t1.value148 then
+		return
+	end
+
+	local HumanoidRootPart = (t1.value144.Character or t1.value144.CharacterAdded:Wait()):FindFirstChild("HumanoidRootPart")
+
+	if not HumanoidRootPart then
+		return
+	end
+
+	t1.value147 = HumanoidRootPart.CFrame
+
+	local v379 = t1.value150()
+
+	if not v379 then
+		t1.value147 = nil
+
+		return
+	end
+
+	t1.value148 = true
+
+	local v380 = t1.value151()
+
+	v380.Position = v379
+	HumanoidRootPart.CFrame = CFrame.new(v379 + Vector3.new(0, v380.Size.Y / 2 + 3, 0))
+	t1.value146 = t1.value142.Heartbeat:Connect(function()
+		if not t1.value148 then
+			return
+		end
+
+		local Character = t1.value144.Character
+
+		if Character then
+			Character = Character:FindFirstChild("HumanoidRootPart")
+		end
+
+		if not Character then
+			return
+		end
+
+		local v382 = t1.value150()
+
+		if not v382 then
+			return
+		end
+
+		v380.Position = v382
+
+		local v383 = v382 + Vector3.new(0, v380.Size.Y / 2 + 3, 0)
+
+		if not ((Character.Position - v383).Magnitude > 5) then
+			return
+		end
+
+		Character.CFrame = CFrame.new(v383)
+	end)
+end
+function t1.value153()
+	if t1.value146 then
+		t1.value146:Disconnect()
+	end
+
+	if t1.value143 then
+		t1.value143:Destroy()
+	end
+
+	if not t1.value147 then
+		return
+	end
+
+	local Character = t1.value144.Character
+
+	if Character then
+		Character = Character:FindFirstChild("HumanoidRootPart")
+	end
+
+	if not Character then
+		return
+	end
+
+	Character.CFrame = t1.value147
+end
+
+v347.AddToggle(v347, "SkyHeightToggle", {
+	Text = "All Maps SafeZone",
+	Default = false,
+	Callback = function(p70)
+		if p70 then
+			t1.value152()
+		else
+			t1.value153()
+		end
+	end
+})
+
+local v385 = t2.Settings:AddLeftGroupbox("UI Settings")
+
+v385:AddToggle("CustomCursor", {
+	Text = "Custom Cursor",
+	Default = t1.value1.ShowCustomCursor,
+	Callback = function(p71)
+		t1.value1.ShowCustomCursor = p71
+	end
+})
+v385.AddDropdown(v385, "NotifySide", {
+	Values = { "Left", "Right" },
+	Default = "Right",
+	Text = "Notification Side",
+	Callback = function(p72)
+		t1.value1:SetNotifySide(p72)
+	end
+})
+v385.AddButton(v385, {
+	Text = "Unload Menu",
+	Func = function()
+		t1.value1:Unload()
+	end
+})
+v385:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", {
+	Default = "RightShift",
+	NoUI = true,
+	Text = "Menu Keybind"
+})
+lib:SetLibrary(t1.value1)
+lib2:SetLibrary(t1.value1)
+lib2:IgnoreThemeSettings()
+lib2:SetIgnoreIndexes({ "MenuKeybind" })
+lib:SetFolder("InoC3nt8Hub")
+lib2:SetFolder("InoC3nt8Hub")
+lib2:BuildConfigSection(t2.Settings)
+lib:ApplyToTab(t2.Settings)
+t1.value1.ToggleKeybind = Options.MenuKeybind
