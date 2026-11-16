@@ -1,0 +1,564 @@
+-- MTC hub. client only, executor.
+-- ui + esp: HawkTokaiLib. drive: hooks CarInput.setOverride, the slot CarInput.Read takes throttle/brake/steer from.
+-- road: RoadPath.build(Config.World), the same table CarController builds its road from.
+
+local HawkTokaiLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/Source.luau"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local RS = game:GetService("ReplicatedStorage")
+local LP = Players.LocalPlayer
+
+local Shared = RS:WaitForChild("Shared")
+local RoadPath = require(Shared.Rules.RoadPath)
+local WorldCfg = require(Shared.Config.World)
+local Road = RoadPath.build(WorldCfg)
+local FINISH_S = WorldCfg.FinishS or Road.length
+local ROAD_END = Road.length - 1
+
+local CFG = {
+    TopSpeed = 100,  -- studs/s, compared with chassis velocity (not the hud mph)
+    LookAhead = 25,  -- studs ahead on the road, plus 0.4 x forward speed
+    SteerGain = 3,   -- error in rad -> steer. 3 is full lock at about 19 degrees
+    LaneOffset = 0,  -- studs, + is right of the driving direction
+    CornerK = 6,     -- how hard a bend ahead cuts target speed
+    ArriveDist = 10, -- studs, point mode stops here
+}
+
+-- BEGIN LOGIC
+local function clamp(x, a, b)
+    if x < a then
+        return a
+    end
+    if x > b then
+        return b
+    end
+    return x
+end
+
+local function flat(v)
+    return Vector3.new(v.X, 0, v.Z)
+end
+
+local function orient(fwd, ref)
+    if ref.Magnitude > 0.01 and fwd:Dot(ref) < 0 then
+        return -fwd
+    end
+    return fwd
+end
+
+-- pure: returns throttle, brake, steer, reason
+local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd)
+    local pos = root.Position
+    local look = flat(root.CFrame.LookVector)
+    if look.Magnitude < 0.01 then
+        return 0, 0, 0, "no heading"
+    end
+    local fwd = look.Unit
+    local v = flat(root.AssemblyLinearVelocity)
+    local target, vT
+
+    if dest then
+        local toD = flat(dest - pos)
+        if toD.Magnitude < cfg.ArriveDist then
+            return 0, 1, 0, "arrived"
+        end
+        if v.Magnitude > 3 then
+            fwd = orient(fwd, v.Unit)
+        end
+        target = dest
+        vT = cfg.TopSpeed
+    else
+        local s = rp.project(road, pos.X, pos.Z)
+        if s >= finishS - 2 then
+            return 0, 1, 0, "finish"
+        end
+        local _, _, _, rdx, rdz = rp.pointAt(road, s, 0)
+        fwd = orient(fwd, Vector3.new(rdx, 0, rdz))
+        local alongV = math.max(0, v:Dot(fwd))
+        local ahead = cfg.LookAhead + alongV * 0.4
+        local tx, ty, tz = rp.pointAt(road, clamp(s + ahead, 0, roadEnd), cfg.LaneOffset)
+        target = Vector3.new(tx, ty, tz)
+        local horizon = math.max(20, alongV * 2)
+        local _, _, _, bdx, bdz = rp.pointAt(road, clamp(s + horizon, 0, roadEnd), 0)
+        local bend = 1 - (rdx * bdx + rdz * bdz)
+        vT = cfg.TopSpeed * clamp(1 - bend * cfg.CornerK, 0.35, 1)
+    end
+
+    local toT = flat(target - pos)
+    local dist = toT.Magnitude
+    local dir = dist > 0.01 and toT / dist or fwd
+    local right = fwd:Cross(Vector3.yAxis)
+    local front = dir:Dot(fwd)
+    local side = dir:Dot(right)
+    local steer = clamp(math.atan2(side, front) * cfg.SteerGain, -1, 1)
+
+    if front < 0 then
+        vT = math.min(vT, 6)
+    end
+    if dest then
+        vT = math.min(vT, math.max(3, dist * 0.6))
+    end
+    vT = vT * clamp(1 - math.abs(steer) * 0.35, 0.5, 1)
+
+    local speed = v:Dot(fwd)
+    local throttle, brake = 0, 0
+    if speed < vT - 2 then
+        throttle = clamp((vT - speed) / 12, 0.2, 1)
+    elseif speed > vT + 2 then
+        brake = clamp((speed - vT) / 15, 0, 1)
+    end
+    return throttle, brake, steer, "drive"
+end
+-- END LOGIC
+
+-- state
+local Window
+local DriveToggle
+local CarInputMod
+local driving = false
+local dest = nil
+local stopReason = nil
+local carRoot, carModel, carSeat
+local lastCarScan = 0
+
+local function humanoid()
+    local char = LP.Character
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function findDrivenCar()
+    local hum = humanoid()
+    if not hum then
+        return nil
+    end
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if (d:IsA("VehicleSeat") or d:IsA("Seat")) and d.Occupant == hum then
+            local model = d:FindFirstAncestorOfClass("Model")
+            local chassis = model and model:FindFirstChild("Chassis")
+            if chassis and chassis:IsA("BasePart") then
+                return chassis, model, d
+            end
+        end
+    end
+    return nil
+end
+
+local function refreshCar(force)
+    local hum = humanoid()
+    if not force and carSeat and carSeat.Parent and hum and carSeat.Occupant == hum then
+        return
+    end
+    local now = os.clock()
+    if not force and now - lastCarScan < 1 then
+        return
+    end
+    lastCarScan = now
+    carRoot, carModel, carSeat = findDrivenCar()
+end
+
+local function loadCarInput()
+    local function try(mod)
+        if not mod then
+            return nil
+        end
+        local ok, t = pcall(require, mod)
+        if ok and type(t) == "table" and type(t.setOverride) == "function" then
+            return t
+        end
+        return nil
+    end
+    local ps = LP:FindFirstChildOfClass("PlayerScripts")
+    local client = ps and ps:FindFirstChild("Client")
+    local found = try(client and client:FindFirstChild("CarInput"))
+    if found then
+        return found
+    end
+    if type(getloadedmodules) == "function" then
+        for _, m in ipairs(getloadedmodules()) do
+            if m.Name == "CarInput" then
+                found = try(m)
+                if found then
+                    return found
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function driveOverride()
+    if not driving or not carRoot or not carRoot.Parent then
+        return 0, 0, 0, false
+    end
+    local ok, t, b, st, why = pcall(planDrive, carRoot, dest, Road, RoadPath, CFG, FINISH_S, ROAD_END)
+    if not ok then
+        warn("[mtc] drive: " .. tostring(t))
+        stopReason = "error"
+        return 0, 0, 0, false
+    end
+    if why ~= "drive" then
+        stopReason = why
+    end
+    return t, b, st, false
+end
+
+local function setDrive(on)
+    if not on then
+        driving = false
+        if CarInputMod then
+            CarInputMod.setOverride(nil)
+        end
+        return true
+    end
+    refreshCar(true)
+    if not carRoot then
+        Window:Notify({ Title = "Auto drive", Content = "Ngồi vào ghế lái trước.", Type = "Warning", Duration = 3 })
+        return false
+    end
+    if not CarInputMod then
+        CarInputMod = loadCarInput()
+    end
+    if not CarInputMod then
+        Window:Notify({ Title = "Auto drive", Content = "Không lấy được CarInput. executor không share module cache.", Type = "Error", Duration = 5 })
+        return false
+    end
+    stopReason = nil
+    driving = true
+    CarInputMod.setOverride(driveOverride)
+    return true
+end
+
+-- route markers: lib ESP objects on invisible anchored parts
+local MARK = { cp = {}, fin = {}, haz = {} }
+local markersBuilt = false
+local markerFolder
+
+local function buildMarkers()
+    if markersBuilt then
+        return
+    end
+    markersBuilt = true
+    markerFolder = Instance.new("Folder")
+    markerFolder.Name = "MTCMarkers"
+    markerFolder.Parent = workspace
+
+    local function mark(group, s, lat, label, color)
+        local x, y, z = RoadPath.pointAt(Road, clamp(s, 0, ROAD_END), lat or 0)
+        local part = Instance.new("Part")
+        part.Name = label
+        part.Size = Vector3.new(1, 1, 1)
+        part.Transparency = 1
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.CFrame = CFrame.new(x, y + 5, z)
+        part.Parent = markerFolder
+        local obj = HawkTokaiLib.ESP:Add({
+            Model = part,
+            Name = label,
+            ESPType = "Text",
+            Color = color,
+            MaxDistance = 4000,
+        })
+        obj:Hide()
+        table.insert(MARK[group], obj)
+    end
+
+    for i, s in ipairs(WorldCfg.Checkpoints or {}) do
+        mark("cp", s, 0, "CP" .. i .. "  s " .. math.floor(s), Color3.fromRGB(90, 200, 255))
+    end
+    mark("fin", FINISH_S, 0, "FINISH  s " .. math.floor(FINISH_S), Color3.fromRGB(120, 255, 120))
+    for _, w in ipairs(WorldCfg.Wrecks or {}) do
+        mark("haz", w[1], w[2], "wreck  s " .. math.floor(w[1]), Color3.fromRGB(255, 90, 90))
+    end
+    for _, b in ipairs(WorldCfg.Barricades or {}) do
+        mark("haz", b[1], b[2], "barricade  s " .. math.floor(b[1]), Color3.fromRGB(255, 140, 60))
+    end
+    for _, r in ipairs(WorldCfg.Roadblocks or {}) do
+        mark("haz", r[1], 0, tostring(r[2]) .. "  s " .. math.floor(r[1]), Color3.fromRGB(255, 90, 90))
+    end
+end
+
+local function showGroup(group, on)
+    buildMarkers()
+    for _, obj in ipairs(MARK[group]) do
+        if on then
+            obj:Show()
+        else
+            obj:Hide()
+        end
+    end
+end
+
+-- other cars: lib ESP highlight on every model that has a Chassis and a DriverSeat
+local carEsp = {}
+local carEspOn = false
+local lastCarEspScan = 0
+
+local function clearCarEsp()
+    for m, obj in pairs(carEsp) do
+        obj:Destroy()
+        carEsp[m] = nil
+    end
+end
+
+local function updateCarEsp()
+    if not carEspOn then
+        return
+    end
+    local now = os.clock()
+    if now - lastCarEspScan < 1 then
+        return
+    end
+    lastCarEspScan = now
+    local seen = {}
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("Model") and d ~= carModel then
+            local chassis = d:FindFirstChild("Chassis")
+            if chassis and chassis:IsA("BasePart") and d:FindFirstChild("DriverSeat", true) then
+                seen[d] = true
+                if not carEsp[d] then
+                    carEsp[d] = HawkTokaiLib.ESP:Add({
+                        Model = d,
+                        Name = "car " .. tostring(d:GetAttribute("CarId") or d.Name),
+                        ESPType = "Highlight",
+                        Color = Color3.fromRGB(255, 170, 60),
+                        MaxDistance = 3000,
+                    })
+                end
+            end
+        end
+    end
+    for m, obj in pairs(carEsp) do
+        if not seen[m] or not m.Parent then
+            obj:Destroy()
+            carEsp[m] = nil
+        end
+    end
+end
+
+local function setCarEsp(on)
+    carEspOn = on
+    if not on then
+        clearCarEsp()
+    end
+end
+
+local STOP_TEXT = {
+    finish = "Tới vạch đích.",
+    arrived = "Tới điểm đã chọn.",
+    ["no heading"] = "Không đọc được hướng xe.",
+    ["no car"] = "Mất xe.",
+    error = "Lỗi drive, xem console.",
+}
+
+RunService.Heartbeat:Connect(function()
+    refreshCar(false)
+    if driving and not carRoot and not stopReason then
+        stopReason = "no car"
+    end
+    if driving and stopReason then
+        local why = stopReason
+        stopReason = nil
+        dest = nil
+        if DriveToggle then
+            DriveToggle:Set(false, true)
+        end
+        setDrive(false)
+        Window:Notify({ Title = "Auto drive", Content = STOP_TEXT[why] or why, Type = "Success", Duration = 3 })
+    end
+    updateCarEsp()
+end)
+
+-- ui
+Window = HawkTokaiLib:CreateWindow({
+    Name = "MTC Hub",
+    LoadingSubtitle = "longtokai",
+    ToggleUIKeybind = "RightControl",
+    Home = false,
+    ConfigurationSaving = { Enabled = true, FolderName = "MTCHub" },
+})
+
+local EspTab = Window:CreateTab({ Name = "ESP", Desc = "players, names, boxes", Icon = "users" })
+HawkTokaiLib.ESP:Build(EspTab, Window)
+
+local DriveTab = Window:CreateTab({ Name = "Drive", Icon = "route" })
+local Route = DriveTab:CreateGroupbox({ Name = "Auto drive", Side = "Left" })
+
+DriveToggle = Route:CreateToggle({
+    Name = "Auto drive",
+    Desc = "follows the road. with a point set, goes there",
+    Flag = "AutoDrive",
+    CurrentValue = false,
+    Callback = function(On)
+        if On then
+            if not setDrive(true) and DriveToggle then
+                DriveToggle:Set(false, true)
+            end
+        else
+            setDrive(false)
+        end
+    end,
+})
+Window:BindToggle(DriveToggle, Enum.KeyCode.G, "Toggle")
+
+Route:CreateButton({
+    Name = "Drive to mouse",
+    Desc = "sets the point under the cursor and drives there",
+    Callback = function()
+        dest = LP:GetMouse().Hit.Position
+        if DriveToggle then
+            DriveToggle:Set(true)
+        end
+    end,
+})
+Route:CreateButton({
+    Name = "Clear point",
+    Desc = "back to road following",
+    Callback = function()
+        dest = nil
+    end,
+})
+Route:CreateSlider({
+    Name = "Top speed",
+    Range = { 20, 250 },
+    Increment = 5,
+    CurrentValue = CFG.TopSpeed,
+    Suffix = " st/s",
+    Flag = "TopSpeed",
+    Callback = function(v)
+        CFG.TopSpeed = v
+    end,
+})
+Route:CreateSlider({
+    Name = "Look ahead",
+    Range = { 10, 120 },
+    Increment = 1,
+    CurrentValue = CFG.LookAhead,
+    Suffix = " st",
+    Flag = "LookAhead",
+    Callback = function(v)
+        CFG.LookAhead = v
+    end,
+})
+Route:CreateSlider({
+    Name = "Steer gain",
+    Range = { 1, 8 },
+    Increment = 0.5,
+    CurrentValue = CFG.SteerGain,
+    Flag = "SteerGain",
+    Callback = function(v)
+        CFG.SteerGain = v
+    end,
+})
+Route:CreateSlider({
+    Name = "Lane offset",
+    Range = { -10, 10 },
+    Increment = 0.5,
+    CurrentValue = CFG.LaneOffset,
+    Suffix = " st",
+    Flag = "LaneOffset",
+    Callback = function(v)
+        CFG.LaneOffset = v
+    end,
+})
+Route:CreateSlider({
+    Name = "Corner caution",
+    Range = { 0, 12 },
+    Increment = 0.5,
+    CurrentValue = CFG.CornerK,
+    Flag = "CornerK",
+    Callback = function(v)
+        CFG.CornerK = v
+    end,
+})
+
+local Live = DriveTab:CreateGroupbox({ Name = "Live", Side = "Right" })
+Live:CreateStatus({
+    Name = "Mode",
+    Style = "Row",
+    Pin = true,
+    UpdateRate = 0.25,
+    Update = function()
+        if not driving then
+            return "<Muted>off</Muted>"
+        end
+        return dest and "<Accent>point</Accent>" or "<Accent>road</Accent>"
+    end,
+})
+Live:CreateStatus({
+    Name = "Progress",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if not carRoot then
+            return "<Muted>no car</Muted>"
+        end
+        local p = carRoot.Position
+        local s = RoadPath.project(Road, p.X, p.Z)
+        local spd = flat(carRoot.AssemblyLinearVelocity).Magnitude
+        return string.format("%d / %d  |  %d st/s", math.floor(s), math.floor(FINISH_S), math.floor(spd))
+    end,
+})
+Live:CreateButton({
+    Name = "Stop",
+    Callback = function()
+        if DriveToggle then
+            DriveToggle:Set(false, true)
+        end
+        setDrive(false)
+    end,
+})
+
+local ObjTab = Window:CreateTab({ Name = "Objects", Icon = "map" })
+local MarkBox = ObjTab:CreateGroupbox({ Name = "Route markers", Side = "Left" })
+MarkBox:CreateToggle({
+    Name = "Checkpoints",
+    Flag = "ESP_Checkpoints",
+    CurrentValue = false,
+    Callback = function(On)
+        showGroup("cp", On)
+    end,
+})
+MarkBox:CreateToggle({
+    Name = "Finish line",
+    Flag = "ESP_Finish",
+    CurrentValue = false,
+    Callback = function(On)
+        showGroup("fin", On)
+    end,
+})
+MarkBox:CreateToggle({
+    Name = "Hazards",
+    Desc = "wrecks, barricades, roadblocks",
+    Flag = "ESP_Hazards",
+    CurrentValue = false,
+    Callback = function(On)
+        showGroup("haz", On)
+    end,
+})
+local CarBox = ObjTab:CreateGroupbox({ Name = "Vehicles", Side = "Right" })
+CarBox:CreateToggle({
+    Name = "Other cars",
+    Flag = "ESP_Cars",
+    CurrentValue = false,
+    Callback = function(On)
+        setCarEsp(On)
+    end,
+})
+
+local SetTab = Window:CreateTab({ Name = "Settings", Icon = "settings" })
+SetTab:CreateConfigManager({ Side = "Left" })
+SetTab:CreateThemeManager({ Side = "Right" })
+
+Window:OnUnload(function()
+    setDrive(false)
+    clearCarEsp()
+    if markerFolder then
+        markerFolder:Destroy()
+    end
+end)
+
+Window:LoadAutoload()
