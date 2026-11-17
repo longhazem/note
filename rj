@@ -1,9 +1,10 @@
--- Tokaihub v2. MTC client helper, executor only.
+-- Tokaihub v3. MTC client helper, executor only.
 -- ui: HawkTokaiLib. esp: ESP.luau, loaded after the lib, the way Example.luau does.
--- drive: CarInput.Read is wrapped (CarController calls it every physics step). while auto driving,
---        RoadKeep.steer is switched off: it pulls the car back to the centre line and scrubs speed on slides.
--- obstacles: Config.World Wrecks / Barricades / Roadblocks, Chasms with a radius (pits, Tournament),
---            knock models in workspace.Map (attribute Knock, not Knocked), every model in ClientMonsters.
+-- drive: CarInput.Read is wrapped (CarController calls it every physics step). while auto driving, RoadKeep.steer is
+--        switched off: it pulls the car back to the centre line and scrubs speed on slides.
+-- obstacles: real geometry of the set pieces in workspace.Map (bounding boxes, height filtered), knock cones
+--            (attribute Knock, not Knocked), chasms with a radius from Config.World (Tournament), monsters in
+--            ClientMonsters, and watchers planned by Scatter.watchers before they spawn.
 -- not in the dump: a crawler monster and a door QTE. 'Crawl' is the water speed cap (Config.Water.Crawl).
 
 local HawkTokaiLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/Source.luau"))()
@@ -18,6 +19,8 @@ local LP = Players.LocalPlayer
 
 local Shared = RS:WaitForChild("Shared")
 local RoadPath = require(Shared.Rules.RoadPath)
+local Scatter = require(Shared.Rules.Scatter)
+local Frost = require(Shared.Rules.Frost)
 local WorldCfg = require(Shared.Config.World)
 local MapCfg = require(Shared.Config.Map)
 local CarCfg = require(Shared.Config.Car)
@@ -32,22 +35,23 @@ local ROAD_HALF = (WorldCfg.RoadWidth or 25) / 2
 
 local CFG = {
     AutoDrive = false,
-    TopSpeed = CarCfg.TopSpeed,   -- 140, the game's cap. 1 stud/s is about 1.008 km/h, so this reads as km/h
-    LatAccel = 30,                -- studs/s^2 of sideways grip for corner speed, about 0.85 g. tune it
-    BrakeDecel = 42,              -- studs/s^2, planning value for braking
+    TopSpeed = CarCfg.TopSpeed,   -- 140, the game's cap. 1 stud/s is about 1.008 km/h
+    LatAccel = 30,                -- studs/s^2 of sideways grip for corner speed, about 0.85 g
+    BrakeDecel = 42,              -- studs/s^2, braking planning
     LookAhead = 28,               -- studs ahead on the road, plus 0.45 x forward speed
     SteerGain = 2.6,
     LaneOffset = 0,               -- + is right of the driving direction
-    ArriveDist = 10,              -- point mode stops inside this
-    StopGap = 8,                  -- studs kept from a braking obstacle
-    CarHalf = 3.2,                -- half the chassis width (ChassisSize x = 6)
-    Clearance = 1.5,
+    ArriveDist = 10,
+    StopGap = 8,                  -- studs kept from a blocking obstacle
+    CrawlSpeed = 20,              -- st/s floor when every lane is blocked, so the car never stops dead in a jam
+    CarHalf = CarCfg.ChassisSize[1] / 2,
+    CarHalfLen = CarCfg.ChassisSize[3] / 2,
+    Clearance = 1.5,              -- extra studs between car edge and obstacle edge
     EdgeMargin = 1.5,
-    CenterW = 2.5,                -- cost per stud away from LaneOffset
-    HysteresisW = 1.5,            -- cost per stud of lane change
-    PassBack = 6,
+    CenterW = 2.5,
+    HysteresisW = 1.5,
     KeepOff = true,               -- RoadKeep.steer off while auto driving
-    SteerAssist = false,          -- lane keep on manual driving
+    SteerAssist = false,
     AssistGain = 0.9,
     ReturnGain = 1.4,
     AntiTumble = true,
@@ -60,11 +64,13 @@ local CFG = {
     PaceTarget = 135,
     PaceBoost = 45,
     Grip = 0.2,
-    YawClamp = false,             -- off by default: a hard cap stops the car turning in corners
+    YawClamp = false,
     MaxYawRate = 2.6,
     SnapAuto = true,
     SnapLat = 16,
     MonsterESP = false,
+    WatcherESP = false,
+    WatcherAhead = 600,
     CarESP = false,
     AmbushAlert = true,
     AmbushDist = ChaseCfg.AmbushRevealDistance or 170,
@@ -96,9 +102,10 @@ local MONSTER_HW = {
     Scarecrow = 3.5,
 }
 local KNOCK_HW = 1.6
+local MAP_AHEAD = 330
 
 -- BEGIN LOGIC
-local W_HIT, W_KNOCK, W_CHASM = 80, 40, 400
+local W_KNOCK, W_CHASM, W_WATCH, W_MON, W_BOX = 40, 400, 60, 120, 80
 local PROFILE_D = { 12, 25, 40, 60, 85, 115, 150, 200, 260 }
 
 local function clamp(x, a, b)
@@ -123,17 +130,6 @@ local function orient(fwd, ref)
     return fwd
 end
 
--- config row {s, lat, width?} -> obstacle. roadblock rows have no lateral, so they are taken as a small centred block
-local function rowObstacle(row, kind)
-    local lat = row[2]
-    local hw = math.max(2.5, math.abs(row[3] or 6) / 2)
-    if kind == "roadblock" then
-        lat = 0
-        hw = 2.5
-    end
-    return { s = row[1], lat = lat, hw = hw, w = W_HIT, brake = true, kind = kind }
-end
-
 -- the highest speed the road allows from here: corner speed sqrt(LatAccel / curvature), braked into from each sample
 local function speedAllowed(sCar, road, rp, cfg, roadEnd)
     local best = math.huge
@@ -151,7 +147,9 @@ local function speedAllowed(sCar, road, rp, cfg, roadEnd)
     return best
 end
 
--- auto drive on the road. returns throttle, brake, steer, reason, lane, nearest braking hit, target speed
+-- obstacle: { s = front edge, sEnd = back edge, lat, hw (half width), w (cost), stop (brakes to 0 if blocked) }
+-- the car is a rectangle of CarHalf x CarHalfLen. a lane collides with an obstacle when the car's box overlaps it
+-- in the road frame, the same as Knockdown.hit does with the car's half sizes.
 local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, obst, prevLane)
     local pos = root.Position
     local look = flat(root.CFrame.LookVector)
@@ -160,7 +158,7 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
     end
     local fwd = look.Unit
     local v = flat(root.AssemblyLinearVelocity)
-    local target, vT, lane, hitBrake
+    local target, vT, lane, gapBest
 
     if dest then
         local toD = flat(dest - pos)
@@ -185,31 +183,48 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
         local maxLat = math.max(0, roadHalf - cfg.CarHalf - cfg.EdgeMargin)
         local base = prevLane or cfg.LaneOffset
 
+        -- only the obstacles that can meet the car within the horizon
+        local near = {}
+        for i = 1, #obst do
+            local o = obst[i]
+            local ds0 = o.s - sCar
+            local ds1 = (o.sEnd or o.s) - sCar
+            if ds1 > -cfg.CarHalfLen and ds0 < horizon then
+                table.insert(near, o)
+            end
+        end
+
         local function evalLane(l)
             local cost = math.abs(l - cfg.LaneOffset) * cfg.CenterW + math.abs(l - base) * cfg.HysteresisW
-            local near = nil
-            for i = 1, #obst do
-                local o = obst[i]
-                local ds = o.s - sCar
-                if ds > -cfg.PassBack and ds < horizon and math.abs(l - o.lat) < o.hw + cfg.CarHalf + cfg.Clearance then
-                    cost = cost + o.w * (0.4 + (1 - clamp(ds / horizon, 0, 1)))
-                    if o.brake and ds > 0 and (near == nil or ds < near) then
-                        near = ds
+            local gap, stopGap = nil, nil
+            for i = 1, #near do
+                local o = near[i]
+                local ds0 = o.s - sCar
+                if math.abs(l - o.lat) < o.hw + cfg.CarHalf + cfg.Clearance then
+                    cost = cost + o.w * (0.4 + (1 - clamp(ds0 / horizon, 0, 1)))
+                    local g = math.max(0, ds0 - cfg.CarHalfLen)
+                    if gap == nil or g < gap then
+                        gap = g
+                    end
+                    if o.stop and (stopGap == nil or g < stopGap) then
+                        stopGap = g
                     end
                 end
             end
-            return cost, near
+            return cost, gap, stopGap
         end
 
-        local bestCost, hb = evalLane(cfg.LaneOffset)
+        local bestCost, gapA, stopA = evalLane(cfg.LaneOffset)
         lane = cfg.LaneOffset
-        hitBrake = hb
+        gapBest = gapA
+        local stopBest = stopA
         for k = -maxLat, maxLat, 0.5 do
-            local c, h = evalLane(k)
+            local c, g, sg = evalLane(k)
             if c < bestCost then
                 bestCost = c
                 lane = k
-                hitBrake = h
+                gapBest = g
+                stopBest = sg
             end
         end
 
@@ -218,8 +233,11 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
         target = Vector3.new(tx, ty, tz)
 
         vT = math.min(cfg.TopSpeed, speedAllowed(sCar, road, rp, cfg, roadEnd))
-        if hitBrake then
-            vT = math.min(vT, math.sqrt(math.max(0, 2 * cfg.BrakeDecel * (hitBrake - cfg.StopGap))))
+        -- the chosen lane is still blocked: pits stop the car, anything else is taken at crawl speed
+        if stopBest then
+            vT = math.min(vT, math.sqrt(math.max(0, 2 * cfg.BrakeDecel * (stopBest - cfg.StopGap))))
+        elseif gapBest then
+            vT = math.min(vT, math.max(cfg.CrawlSpeed, math.sqrt(math.max(0, 2 * cfg.BrakeDecel * (gapBest - cfg.StopGap)))))
         end
     end
 
@@ -245,7 +263,7 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
     elseif speed > vT + 1.5 then
         brake = clamp((speed - vT) / 10, 0, 1)
     end
-    return throttle, brake, steer, "drive", lane, hitBrake, vT
+    return throttle, brake, steer, "drive", lane, gapBest, vT
 end
 
 -- RoadKeep.steer replacement: the same zeroing the game does when RoadKeep is not in use
@@ -302,11 +320,15 @@ local stopReason = nil
 local carRoot, carModel, carSeat
 local carS, carLat = nil, nil
 local lastCarScan = 0
-local obstStatic = {}
+local chasmObst = {}
 local knockCache = {}
+local mapBoxes = {}
+local watchPlan = nil
+local watchObst = {}
+local watchMarkers = {}
 local obstNow = {}
 local prevLane = nil
-local lastHit, lastVT, knocksAhead = nil, 0, 0
+local lastHit, lastVT, knocksAhead, boxesAhead = nil, 0, 0, 0
 local lastThrottle, lastBrake, lastSteer = 0, 0, 0
 local prevSpeed = nil
 local tumbleT = 0
@@ -329,18 +351,10 @@ local markersBuilt = false
 local CONN = {}
 local nextAt = {}
 
-for _, row in ipairs(WorldCfg.Wrecks or {}) do
-    table.insert(obstStatic, rowObstacle(row, "wreck"))
-end
-for _, row in ipairs(WorldCfg.Barricades or {}) do
-    table.insert(obstStatic, rowObstacle(row, "barricade"))
-end
-for _, row in ipairs(WorldCfg.Roadblocks or {}) do
-    table.insert(obstStatic, rowObstacle(row, "roadblock"))
-end
+-- chasms with a radius are circular holes on the road (Tournament). the others sit off the road
 for _, c in ipairs(WorldCfg.Chasms or {}) do
     if c.radius then
-        table.insert(obstStatic, { s = c.s, lat = c.lateral or 0, hw = c.radius, w = W_CHASM, brake = true, kind = "pit" })
+        table.insert(chasmObst, { s = c.s, sEnd = c.s, lat = c.lateral or 0, hw = c.radius, w = W_CHASM, stop = true, kind = "pit" })
     end
 end
 
@@ -468,18 +482,149 @@ local function scanKnocks()
                 p = m:GetPivot().Position
             end
             local s, lat = RoadPath.project(Road, p.X, p.Z)
-            table.insert(knockCache, { s = s, lat = lat, hw = KNOCK_HW, w = W_KNOCK, brake = false, kind = "knock" })
+            table.insert(knockCache, { s = s, sEnd = s, lat = lat, hw = KNOCK_HW, w = W_KNOCK, stop = false, kind = "knock" })
         end
     end
 end
 
--- static obstacles, knock cones and every monster in ClientMonsters, as (s, lat, half width, cost, braking)
+-- the box of a set piece in the road frame: front and back along the road, left and right across it.
+-- only solid things count: a box that stays above the car, or a flat road slab, is not an obstacle
+local function boxFor(inst)
+    local cf, size
+    if inst:IsA("Model") then
+        cf, size = inst:GetBoundingBox()
+    elseif inst:IsA("BasePart") then
+        cf, size = inst.CFrame, inst.Size
+    else
+        return nil
+    end
+    local sMin, sMax = math.huge, -math.huge
+    local latMin, latMax = math.huge, -math.huge
+    local yMin, yMax = math.huge, -math.huge
+    for i = 0, 7 do
+        local ox = ((i % 2 == 0) and -0.5 or 0.5) * size.X
+        local oy = ((math.floor(i / 2) % 2 == 0) and -0.5 or 0.5) * size.Y
+        local oz = ((math.floor(i / 4) % 2 == 0) and -0.5 or 0.5) * size.Z
+        local p = (cf * CFrame.new(ox, oy, oz)).Position
+        local s, lat = RoadPath.project(Road, p.X, p.Z)
+        if s < sMin then
+            sMin = s
+        end
+        if s > sMax then
+            sMax = s
+        end
+        if lat < latMin then
+            latMin = lat
+        end
+        if lat > latMax then
+            latMax = lat
+        end
+        if p.Y < yMin then
+            yMin = p.Y
+        end
+        if p.Y > yMax then
+            yMax = p.Y
+        end
+    end
+    if sMax - sMin > 40 or latMax - latMin > 30 then
+        return nil
+    end
+    if latMax < -(ROAD_HALF + 4) or latMin > ROAD_HALF + 4 then
+        return nil
+    end
+    local sMid = clamp((sMin + sMax) / 2, 0, ROAD_END)
+    local latMid = clamp((latMin + latMax) / 2, -ROAD_HALF, ROAD_HALF)
+    local _, roadY = RoadPath.pointAt(Road, sMid, latMid)
+    if yMin - roadY > 3.4 or yMax - roadY < 1.0 or yMax - yMin < 0.8 then
+        return nil
+    end
+    -- a wide piece that is low (ramp, bridge deck, road slab) is not a wall across the road
+    if latMax - latMin > 20 and yMax - roadY < 3.0 then
+        return nil
+    end
+    return { s = sMin, sEnd = sMax, lat = (latMin + latMax) / 2, hw = (latMax - latMin) / 2, w = W_BOX, stop = false, kind = inst.Name }
+end
+
+local function scanMapBoxes()
+    mapBoxes = {}
+    boxesAhead = 0
+    local map = workspace:FindFirstChild("Map")
+    if not map or not carS then
+        return
+    end
+    local function consider(inst)
+        if inst:GetAttribute("Knock") then
+            return
+        end
+        local pos
+        if inst:IsA("Model") then
+            pos = inst:GetPivot().Position
+        elseif inst:IsA("BasePart") then
+            pos = inst.Position
+        else
+            return
+        end
+        local s = RoadPath.project(Road, pos.X, pos.Z)
+        if s < carS - 40 or s > carS + MAP_AHEAD then
+            return
+        end
+        local b = boxFor(inst)
+        if b then
+            table.insert(mapBoxes, b)
+            if b.s > carS and b.s < carS + 200 then
+                boxesAhead = boxesAhead + 1
+            end
+        end
+    end
+    for _, child in ipairs(map:GetChildren()) do
+        if child:IsA("Folder") then
+            for _, sub in ipairs(child:GetChildren()) do
+                consider(sub)
+            end
+        else
+            consider(child)
+        end
+    end
+end
+
+-- every watcher the map will spawn, from the same rule Monsters.lua uses (Scatter.watchers)
+local function getWatchPlan()
+    if watchPlan then
+        return watchPlan
+    end
+    local ok, list = pcall(Scatter.watchers, WorldCfg, Road)
+    watchPlan = (ok and type(list) == "table") and list or {}
+    return watchPlan
+end
+
+local function refreshWatchObst()
+    watchObst = {}
+    if not carS then
+        return
+    end
+    for _, w in ipairs(getWatchPlan()) do
+        local lateral = w.lateral or 0
+        if w.s > carS - 10 and w.s < carS + 300 and math.abs(lateral) < ROAD_HALF + 3 then
+            if not (Frost.inTunnel(WorldCfg, w.s, 100) or Frost.inPass(WorldCfg, w.s, 100)) then
+                table.insert(watchObst, { s = w.s, sEnd = w.s, lat = lateral, hw = 2.2, w = W_WATCH, stop = false, kind = w.kind or "Watcher" })
+            end
+        end
+    end
+end
+
+-- static chasms, knock cones, set piece boxes, planned watchers and live monsters
 local function buildObstacles()
     local out = {}
-    for _, o in ipairs(obstStatic) do
+    for _, o in ipairs(chasmObst) do
         table.insert(out, o)
     end
     for _, o in ipairs(knockCache) do
+        table.insert(out, o)
+    end
+    for _, o in ipairs(mapBoxes) do
+        table.insert(out, o)
+    end
+    for _, o in ipairs(watchObst) do
         table.insert(out, o)
     end
     local folder = monstersFolder()
@@ -488,7 +633,7 @@ local function buildObstacles()
             if m:IsA("Model") then
                 local p = m:GetPivot().Position
                 local s, lat = RoadPath.project(Road, p.X, p.Z)
-                table.insert(out, { s = s, lat = lat, hw = MONSTER_HW[m.Name] or 3.5, w = W_HIT, brake = true, kind = m.Name })
+                table.insert(out, { s = s, sEnd = s, lat = lat, hw = MONSTER_HW[m.Name] or 3.5, w = W_MON, stop = false, kind = m.Name })
             end
         end
     end
@@ -612,11 +757,11 @@ local function computeAssist(st)
         return nil
     end
     if driving then
-        local t, b, steer, reason, lane, hit, vt = planDrive(carRoot, dest, Road, RoadPath, CFG, FINISH_S, ROAD_END, ROAD_HALF, obstNow, prevLane)
+        local t, b, steer, reason, lane, gap, vt = planDrive(carRoot, dest, Road, RoadPath, CFG, FINISH_S, ROAD_END, ROAD_HALF, obstNow, prevLane)
         if lane ~= nil then
             prevLane = lane
         end
-        lastHit = hit
+        lastHit = gap
         lastVT = vt
         if reason ~= "drive" then
             stopReason = reason
@@ -709,8 +854,8 @@ local function setDrive(on)
 end
 
 -- ESP object for a model: highlight plus box, tracer and arrow (the arrow carries the name).
--- the highlight only draws while ESP.GlobalConfig.Highlighters is on; the box, tracer and arrow are off per object by default.
-local function espFor(model, name, color)
+-- the highlight draws only while ESP.GlobalConfig.Highlighters is on; box, tracer and arrow are off per object by default
+local function espFor(model, name, color, range)
     return ESP:Add({
         Model = model,
         Name = name,
@@ -720,7 +865,7 @@ local function espFor(model, name, color)
         OutlineColor = color,
         FillTransparency = 0.6,
         OutlineTransparency = 0,
-        MaxDistance = 6000,
+        MaxDistance = range or 6000,
         Box2D = { Enabled = true, Color = color, Thickness = 1, Transparency = 0, Filled = false, Style = "Full" },
         Tracer = { Enabled = true, Color = color, Thickness = 1, Transparency = 0, From = "Bottom", To = "Feet" },
         Arrow = { Enabled = true, Color = color, CenterOffset = 300, Size = 12 },
@@ -787,6 +932,60 @@ local function showGroup(group, on)
     end
 end
 
+-- watchers planned on the road ahead: a marker per watcher that is still to spawn, placed where it will stand
+local function clearWatchMarkers()
+    for i, entry in pairs(watchMarkers) do
+        entry.obj:Destroy()
+        entry.part:Destroy()
+        watchMarkers[i] = nil
+    end
+end
+
+local function updateWatchMarkers()
+    if not CFG.WatcherESP or not carS then
+        clearWatchMarkers()
+        return
+    end
+    local plan = getWatchPlan()
+    for i, w in ipairs(plan) do
+        local inRange = w.s > carS - 10 and w.s < carS + CFG.WatcherAhead
+        local entry = watchMarkers[i]
+        if inRange and not entry then
+            local x, y, z = RoadPath.pointAt(Road, clamp(w.s, 0, ROAD_END), w.lateral or 0)
+            local part = Instance.new("Part")
+            part.Name = "planned " .. tostring(w.kind)
+            part.Size = Vector3.new(1, 1, 1)
+            part.Transparency = 1
+            part.Anchored = true
+            part.CanCollide = false
+            part.CanTouch = false
+            part.CanQuery = false
+            part.CFrame = CFrame.new(x, y + 3, z)
+            part.Parent = markerFolder or workspace
+            local obj = ESP:Add({
+                Model = part,
+                Name = tostring(w.kind or "Watcher") .. "  " .. math.floor(w.s) .. " s",
+                ESPType = "Text",
+                Color = Color3.fromRGB(255, 220, 90),
+                MaxDistance = CFG.WatcherAhead + 200,
+                Arrow = { Enabled = true, Color = Color3.fromRGB(255, 220, 90), CenterOffset = 300, Size = 12 },
+            })
+            watchMarkers[i] = { part = part, obj = obj }
+        elseif entry and not inRange then
+            entry.obj:Destroy()
+            entry.part:Destroy()
+            watchMarkers[i] = nil
+        end
+    end
+end
+
+local function setWatcherEsp(on)
+    CFG.WatcherESP = on
+    if not on then
+        clearWatchMarkers()
+    end
+end
+
 local function clearCarEsp()
     for m, obj in pairs(carEsp) do
         obj:Destroy()
@@ -825,6 +1024,7 @@ local function clearMonsterEsp()
     end
 end
 
+-- every live monster: any model in ClientMonsters, named by its kind (Runner, Watcher, Hooded, Ambusher, Steeple, ...)
 local function updateMonsterEsp()
     if not CFG.MonsterESP then
         return
@@ -1157,6 +1357,7 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
         carS, carLat = nil, nil
     end
 
+    every("mapscan", 0.25, scanMapBoxes)
     every("knocks", 0.5, function()
         scanKnocks()
         knocksAhead = 0
@@ -1169,6 +1370,8 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
             end
         end
     end)
+    every("watchplan", 0.5, refreshWatchObst)
+    every("watchmarks", 0.5, updateWatchMarkers)
     every("cars", 1, updateCarEsp)
     every("monsters", 1, updateMonsterEsp)
     every("ambush", 0.5, ambushCheck)
@@ -1201,15 +1404,14 @@ task.spawn(function()
     end
 end)
 
--- ESP: the library's highlight is off by default, and our ESP objects need it on
+-- ESP: the library's highlight is off by default, and the monster and car objects need it on
 ESP.GlobalConfig.Highlighters = true
 
--- ui
+-- ui. the Home tab is the library's default (no Home = false)
 Window = HawkTokaiLib:CreateWindow({
     Name = "Tokaihub",
     LoadingSubtitle = "Tokaihub",
     ToggleUIKeybind = "RightControl",
-    Home = false,
     ConfigurationSaving = { Enabled = true, FolderName = "Tokaihub" },
 })
 
@@ -1249,7 +1451,7 @@ local DriveTab = Window:CreateTab({ Name = "Drive", Icon = "route" })
 local Route = DriveTab:CreateGroupbox({ Name = "Auto drive", Side = "Left" })
 DriveToggle = Route:CreateToggle({
     Name = "Auto drive",
-    Desc = "follows the road, steps around cones, monsters and pits. with a point set, goes there",
+    Desc = "follows the road and goes around set pieces, cones, monsters and pits. with a point set, goes there",
     Flag = "TK_AutoDrive",
     CurrentValue = false,
     Callback = function(On)
@@ -1297,6 +1499,7 @@ Route:CreateButton({
 sliderOf(Route, "Top speed", { 20, 250 }, 5, "TopSpeed", " st/s")
 sliderOf(Route, "Corner grip", { 10, 60 }, 1, "LatAccel", " st/s2")
 sliderOf(Route, "Brake decel", { 20, 80 }, 1, "BrakeDecel", " st/s2")
+sliderOf(Route, "Crawl speed", { 5, 60 }, 1, "CrawlSpeed", " st/s")
 sliderOf(Route, "Look ahead", { 10, 120 }, 1, "LookAhead", " st")
 sliderOf(Route, "Steer gain", { 1, 8 }, 0.1, "SteerGain")
 sliderOf(Route, "Lane offset", { -8, 8 }, 0.5, "LaneOffset", " st")
@@ -1340,14 +1543,22 @@ Live:CreateStatus({
     end,
 })
 Live:CreateStatus({
-    Name = "Braking for",
+    Name = "Blocked ahead",
     Style = "Row",
     UpdateRate = 0.25,
     Update = function()
         if not lastHit then
-            return "<Success>clear</Success>"
+            return "<Success>clear lane</Success>"
         end
-        return string.format("<Warning>%d st ahead</Warning>", math.floor(lastHit))
+        return string.format("<Warning>%d st to the lane's block</Warning>", math.floor(lastHit))
+    end,
+})
+Live:CreateStatus({
+    Name = "Set pieces ahead",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        return string.format("%d in 200 st", boxesAhead)
     end,
 })
 Live:CreateStatus({
@@ -1389,14 +1600,39 @@ sliderOf(SteerG, "Assist gain", { 0, 2 }, 0.05, "AssistGain")
 sliderOf(SteerG, "Return tuning", { 0, 4 }, 0.1, "ReturnGain")
 
 local MonTab = Window:CreateTab({ Name = "Monsters", Icon = "ghost" })
-local MonBox = MonTab:CreateGroupbox({ Name = "Monsters", Side = "Left" })
+local MonBox = MonTab:CreateGroupbox({ Name = "Live monsters", Side = "Left" })
 toggleOf(MonBox, "Monster ESP", "MonsterESP", function(On)
     if not On then
         clearMonsterEsp()
     end
-end, "highlight, box, tracer and name for every model in ClientMonsters")
+end, "highlight, box, tracer and name for every live model in ClientMonsters")
+local PlanBox = MonTab:CreateGroupbox({ Name = "Planned watchers", Side = "Right" })
+toggleOf(PlanBox, "Watchers ahead", "WatcherESP", function(On)
+    setWatcherEsp(On)
+end, "a marker for each watcher that will stand on the road ahead, before it spawns")
+sliderOf(PlanBox, "Watcher range", { 150, 1200 }, 25, "WatcherAhead", " st")
+PlanBox:CreateStatus({
+    Name = "Planned in the whole map",
+    Style = "Row",
+    UpdateRate = 1,
+    Update = function()
+        return string.format("%d", #getWatchPlan())
+    end,
+})
 toggleOf(MonBox, "Ambush ahead alert", "AmbushAlert", nil, "warns when an Ambusher is inside the reveal distance")
 sliderOf(MonBox, "Alert distance", { 40, 300 }, 5, "AmbushDist", " st")
+MonBox:CreateStatus({
+    Name = "Live in ClientMonsters",
+    Style = "Row",
+    UpdateRate = 0.5,
+    Update = function()
+        local f = monstersFolder()
+        if not f then
+            return "<Muted>no folder</Muted>"
+        end
+        return string.format("%d", #f:GetChildren())
+    end,
+})
 local Auto = MonTab:CreateGroupbox({ Name = "Intruder and knocker", Side = "Right" })
 toggleOf(Auto, "Auto burn intruder", "AutoBurn", nil, "keeps the flashlight on the intruder's stand")
 toggleOf(Auto, "Auto crank shutter", "AutoCrank", nil, "holds the crank while you are the cranker in Warn or Bang")
@@ -1409,18 +1645,6 @@ Auto:CreateStatus({
             return "<Muted>none</Muted>"
         end
         return string.format("<Warning>%d st</Warning>", math.floor(ambushDist))
-    end,
-})
-Auto:CreateStatus({
-    Name = "Monsters in folder",
-    Style = "Row",
-    UpdateRate = 0.5,
-    Update = function()
-        local f = monstersFolder()
-        if not f then
-            return "<Muted>no ClientMonsters folder</Muted>"
-        end
-        return string.format("%d", #f:GetChildren())
     end,
 })
 
@@ -1494,6 +1718,11 @@ VoteBox:CreateButton({
     Callback = queueNextMap,
 })
 
+local GasBox = LobTab:CreateGroupbox({ Name = "Driving aids", Side = "Left" })
+toggleOf(GasBox, "Auto gas (game setting)", "AutoGas", function(On)
+    setAutoGas(On)
+end, "the game's own auto gas, saved on the server")
+
 local ObjTab = Window:CreateTab({ Name = "Objects", Icon = "map-pin" })
 local MarkBox = ObjTab:CreateGroupbox({ Name = "Route markers", Side = "Left" })
 MarkBox:CreateToggle({
@@ -1514,7 +1743,7 @@ MarkBox:CreateToggle({
 })
 MarkBox:CreateToggle({
     Name = "Hazards",
-    Desc = "wrecks, barricades, roadblocks",
+    Desc = "wrecks, barricades, roadblocks from the config",
     Flag = "TK_ESP_Hazards",
     CurrentValue = false,
     Callback = function(On)
@@ -1544,6 +1773,7 @@ Window:OnUnload(function()
     clearRibbon()
     clearCarEsp()
     clearMonsterEsp()
+    clearWatchMarkers()
     if markerFolder then
         markerFolder:Destroy()
     end
