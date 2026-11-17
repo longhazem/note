@@ -1,28 +1,96 @@
--- MTC hub. client only, executor.
--- ui + esp: HawkTokaiLib. drive: hooks CarInput.setOverride, the slot CarInput.Read takes throttle/brake/steer from.
--- road: RoadPath.build(Config.World), the same table CarController builds its road from.
+-- Tokaihub. MTC client helper, executor only.
+-- ui: HawkTokaiLib (Source.luau). esp: ESP.luau, loaded after the lib the way Example.luau does.
+-- drive: wraps CarInput.Read, the call CarController makes every physics step. one hook covers auto and manual.
+-- road: RoadPath.build(Config.World), the table CarController builds its road from. each map is its own place,
+--       so a teleport runs this file again and the road is the new map's.
+-- not in the dump: a crawler monster and a door QTE. 'Pit' is only the 'Pit Road' zone name in Tournament.
 
 local HawkTokaiLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/Source.luau"))()
+local ESP = loadstring(game:HttpGet("https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/ESP.luau"))()(HawkTokaiLib)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RS = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local VirtualUser = game:GetService("VirtualUser")
 local LP = Players.LocalPlayer
 
 local Shared = RS:WaitForChild("Shared")
 local RoadPath = require(Shared.Rules.RoadPath)
 local WorldCfg = require(Shared.Config.World)
+local MapCfg = require(Shared.Config.Map)
+local CarCfg = require(Shared.Config.Car)
+local ChaseCfg = require(Shared.Config.Chase)
+local IntruderCfg = require(Shared.Config.Intruder)
+local Remotes = require(Shared.Remotes)
+
 local Road = RoadPath.build(WorldCfg)
-local FINISH_S = WorldCfg.FinishS or Road.length
 local ROAD_END = Road.length - 1
+local FINISH_S = WorldCfg.FinishS or Road.length
+local ROAD_HALF = (WorldCfg.RoadWidth or 25) / 2
 
 local CFG = {
-    TopSpeed = 100,  -- studs/s, compared with chassis velocity (not the hud mph)
-    LookAhead = 25,  -- studs ahead on the road, plus 0.4 x forward speed
-    SteerGain = 3,   -- error in rad -> steer. 3 is full lock at about 19 degrees
-    LaneOffset = 0,  -- studs, + is right of the driving direction
-    CornerK = 6,     -- how hard a bend ahead cuts target speed
-    ArriveDist = 10, -- studs, point mode stops here
+    AutoDrive = false,
+    TopSpeed = CarCfg.TopSpeed,   -- 140, the game's own cap
+    LookAhead = 28,               -- studs ahead on the road, plus 0.45 x forward speed
+    SteerGain = 2.6,
+    LaneOffset = 0,               -- + is right of the driving direction
+    CornerK = 5,                  -- how hard a bend ahead cuts target speed
+    ArriveDist = 10,              -- point mode stops inside this
+    BrakeDecel = 42,              -- studs/s^2, planning value for braking for an obstacle
+    StopGap = 8,                  -- studs kept from an obstacle when braking for it
+    CarHalf = 3.2,                -- half the chassis width (ChassisSize x = 6)
+    Clearance = 1.5,              -- extra studs between car edge and obstacle edge
+    EdgeMargin = 1.5,             -- keep this far from the road edge
+    CenterW = 2.5,                -- cost per stud away from LaneOffset
+    HitW = 80,                    -- cost of a lane that runs into an obstacle
+    HysteresisW = 1.5,            -- cost per stud of lane change, stops lane flicker
+    PassBack = 6,                 -- obstacles this far behind are ignored
+    SteerAssist = false,          -- lane keep on manual driving
+    AssistGain = 0.9,
+    ReturnGain = 1.4,             -- extra correction when the wheel is centred
+    AntiTumble = true,
+    TumbleUpY = 0.2,              -- chassis up-vector Y below this = on its side
+    TumbleTime = 0.35,
+    ImpactGuard = true,
+    ImpactDrop = 14,              -- studs/s lost in one frame without braking = impact
+    ImpactKeep = 0.55,            -- share of the lost speed put back
+    PaceAssist = true,
+    PaceTarget = 135,             -- studs/s, pace is held up to here
+    PaceBoost = 45,               -- studs/s^2 of forward push
+    Grip = 0.35,                  -- lateral velocity damping when not steering
+    YawClamp = true,
+    MaxYawRate = 2.6,             -- rad/s, stops the snap-spin
+    SnapAuto = true,
+    SnapLat = 16,                 -- snap back to the road centre past this lateral offset
+    MonsterESP = false,
+    AmbushAlert = true,
+    AmbushDist = ChaseCfg.AmbushRevealDistance or 170,
+    AutoCrank = false,
+    AutoBurn = false,
+    FullBright = false,
+    NoFog = false,
+    NoJumpscare = false,
+    NoGloom = false,
+    PerfMode = false,
+    Ribbon = false,
+    RibbonCount = 60,
+    RibbonSpan = 240,
+    LobbyWalkOn = false,
+    LobbyWalk = 24,
+    AntiAFK = false,
+    AutoPick = false,
+    AutoVote = false,
+    MapChoice = "Map02",
+    ScriptUrl = "",
+}
+
+local MONSTER_HW = {
+    Ambusher = ChaseCfg.AmbushHitRadius or 6.5,
+    Steeple = 9,
+    Runner = 3.5,
+    Watcher = 3.5,
+    Scarecrow = 3.5,
 }
 
 -- BEGIN LOGIC
@@ -40,6 +108,7 @@ local function flat(v)
     return Vector3.new(v.X, 0, v.Z)
 end
 
+-- pick the travel direction: the car's own forward, flipped if it points against the road
 local function orient(fwd, ref)
     if ref.Magnitude > 0.01 and fwd:Dot(ref) < 0 then
         return -fwd
@@ -47,42 +116,94 @@ local function orient(fwd, ref)
     return fwd
 end
 
--- pure: returns throttle, brake, steer, reason
-local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd)
+-- config row {s, lat, width?} -> obstacle. roadblock rows have no lateral, so they take the middle
+local function rowObstacle(row, kind)
+    local lat = row[2]
+    local hw = math.max(2.5, math.abs(row[3] or 6) / 2)
+    if kind == "roadblock" then
+        lat = 0
+        hw = 2.5
+    end
+    return { s = row[1], lat = lat, hw = hw, kind = kind }
+end
+
+-- auto drive on the road. returns throttle, brake, steer, reason, lane, nearest hit ahead in the chosen lane
+local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, obst, prevLane)
     local pos = root.Position
     local look = flat(root.CFrame.LookVector)
     if look.Magnitude < 0.01 then
-        return 0, 0, 0, "no heading"
+        return 0, 0, 0, "no heading", prevLane, nil
     end
     local fwd = look.Unit
     local v = flat(root.AssemblyLinearVelocity)
-    local target, vT
+    local target, vT, lane, hit
+    local sCar = nil
+    local rdx, rdz = 0, 0
 
     if dest then
         local toD = flat(dest - pos)
         if toD.Magnitude < cfg.ArriveDist then
-            return 0, 1, 0, "arrived"
+            return 0, 1, 0, "arrived", prevLane, nil
         end
         if v.Magnitude > 3 then
             fwd = orient(fwd, v.Unit)
         end
         target = dest
         vT = cfg.TopSpeed
+        lane = prevLane
     else
-        local s = rp.project(road, pos.X, pos.Z)
-        if s >= finishS - 2 then
-            return 0, 1, 0, "finish"
+        sCar = rp.project(road, pos.X, pos.Z)
+        if sCar >= finishS - 2 then
+            return 0, 1, 0, "finish", prevLane, nil
         end
-        local _, _, _, rdx, rdz = rp.pointAt(road, s, 0)
+        local _, _, _, dx, dz = rp.pointAt(road, sCar, 0)
+        rdx, rdz = dx, dz
         fwd = orient(fwd, Vector3.new(rdx, 0, rdz))
-        local alongV = math.max(0, v:Dot(fwd))
-        local ahead = cfg.LookAhead + alongV * 0.4
-        local tx, ty, tz = rp.pointAt(road, clamp(s + ahead, 0, roadEnd), cfg.LaneOffset)
+        local vf = math.max(0, v:Dot(fwd))
+        local horizon = clamp(40 + vf * 1.2, 45, 240)
+        local maxLat = math.max(0, roadHalf - cfg.CarHalf - cfg.EdgeMargin)
+        local base = prevLane or cfg.LaneOffset
+
+        local function evalLane(l)
+            local cost = math.abs(l - cfg.LaneOffset) * cfg.CenterW + math.abs(l - base) * cfg.HysteresisW
+            local near = nil
+            for i = 1, #obst do
+                local o = obst[i]
+                local ds = o.s - sCar
+                if ds > -cfg.PassBack and ds < horizon then
+                    if math.abs(l - o.lat) < o.hw + cfg.CarHalf + cfg.Clearance then
+                        cost = cost + cfg.HitW * (0.4 + (1 - clamp(ds / horizon, 0, 1)))
+                        if ds > 0 and (near == nil or ds < near) then
+                            near = ds
+                        end
+                    end
+                end
+            end
+            return cost, near
+        end
+
+        local bestCost, hitBest = evalLane(cfg.LaneOffset)
+        lane = cfg.LaneOffset
+        hit = hitBest
+        for k = -maxLat, maxLat, 1 do
+            local c, h = evalLane(k)
+            if c < bestCost then
+                bestCost = c
+                lane = k
+                hit = h
+            end
+        end
+
+        local aheadS = clamp(sCar + cfg.LookAhead + vf * 0.45, 0, roadEnd)
+        local tx, ty, tz = rp.pointAt(road, aheadS, lane)
         target = Vector3.new(tx, ty, tz)
-        local horizon = math.max(20, alongV * 2)
-        local _, _, _, bdx, bdz = rp.pointAt(road, clamp(s + horizon, 0, roadEnd), 0)
+
+        local _, _, _, bdx, bdz = rp.pointAt(road, clamp(sCar + math.max(20, vf * 2), 0, roadEnd), 0)
         local bend = 1 - (rdx * bdx + rdz * bdz)
-        vT = cfg.TopSpeed * clamp(1 - bend * cfg.CornerK, 0.35, 1)
+        vT = cfg.TopSpeed * clamp(1 - bend * cfg.CornerK, 0.3, 1)
+        if hit then
+            vT = math.min(vT, math.sqrt(math.max(0, 2 * cfg.BrakeDecel * (hit - cfg.StopGap))))
+        end
     end
 
     local toT = flat(target - pos)
@@ -104,27 +225,171 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd)
     local speed = v:Dot(fwd)
     local throttle, brake = 0, 0
     if speed < vT - 2 then
-        throttle = clamp((vT - speed) / 12, 0.2, 1)
+        throttle = clamp((vT - speed) / 12, 0.25, 1)
     elseif speed > vT + 2 then
         brake = clamp((speed - vT) / 15, 0, 1)
     end
-    return throttle, brake, steer, "drive"
+    return throttle, brake, steer, "drive", lane, hit
+end
+
+-- lane keep on manual driving. user = the player's steer, returns the blended steer
+local function assistSteerPure(user, lat, headingErr, cfg, gain)
+    local latErr = lat - cfg.LaneOffset
+    local corr = (-latErr * 0.1 + headingErr) * cfg.AssistGain
+    return clamp(user + corr * gain, -1, 1)
+end
+
+-- the same yaw / pitch the game sends to FlashAim, from a chassis-local direction
+local function aimYawPitch(dir)
+    local yaw = math.deg(math.atan2(-dir.X, -dir.Z))
+    local pitch = math.deg(math.asin(clamp(dir.Y, -1, 1)))
+    return math.floor(yaw + 0.5), math.floor(pitch + 0.5)
+end
+
+-- velocity to put back after a sudden loss without braking
+local function impactRestore(prevSpeed, speed, brake, cfg)
+    if prevSpeed == nil or brake > 0.2 then
+        return 0
+    end
+    local drop = prevSpeed - speed
+    if drop > cfg.ImpactDrop then
+        return drop * cfg.ImpactKeep
+    end
+    return 0
+end
+
+-- forward push for pace assist this frame
+local function paceAdd(speed, throttle, brake, cfg, dt)
+    if throttle < 0.3 or brake > 0.05 or speed >= cfg.PaceTarget then
+        return 0
+    end
+    return math.min(cfg.PaceBoost * dt, cfg.PaceTarget - speed)
 end
 -- END LOGIC
 
 -- state
-local Window
-local DriveToggle
-local CarInputMod
+local Window, DriveToggle
+local CarInputMod, RunClientMod
 local driving = false
 local dest = nil
 local stopReason = nil
 local carRoot, carModel, carSeat
+local carS, carLat = nil, nil
 local lastCarScan = 0
+local obstStatic = {}
+local obstNow = {}
+local prevLane = nil
+local lastHit = nil
+local lastThrottle, lastBrake, lastSteer = 0, 0, 0
+local prevSpeed = nil
+local tumbleT = 0
+local origRead = nil
+local readHooked = false
+local monsterEsp = {}
+local carEsp = {}
+local carEspOn = false
+local ambushDist = nil
+local ambushWarned = 0
+local crankHeld = false
+local voteDone = false
+local pickAt = 0
+local lightSaved = nil
+local ribbonParts = {}
+local ribbonFolder = nil
+local markerFolder = nil
+local MARK = { cp = {}, fin = {}, haz = {} }
+local markersBuilt = false
+local CONN = {}
+local nextAt = {}
+
+for _, row in ipairs(WorldCfg.Wrecks or {}) do
+    table.insert(obstStatic, rowObstacle(row, "wreck"))
+end
+for _, row in ipairs(WorldCfg.Barricades or {}) do
+    table.insert(obstStatic, rowObstacle(row, "barricade"))
+end
+for _, row in ipairs(WorldCfg.Roadblocks or {}) do
+    table.insert(obstStatic, rowObstacle(row, "roadblock"))
+end
+
+local STOP_TEXT = {
+    finish = "Tới vạch đích.",
+    arrived = "Tới điểm đã chọn.",
+    ["no heading"] = "Không đọc được hướng xe.",
+    ["no car"] = "Mất xe.",
+    error = "Lỗi drive, xem console.",
+}
+
+local function notify(msg, kind, dur)
+    if Window then
+        Window:Notify({ Title = "Tokaihub", Content = msg, Type = kind or "Success", Duration = dur or 3 })
+    end
+end
+
+local function every(key, period, fn)
+    local now = os.clock()
+    if (nextAt[key] or 0) <= now then
+        nextAt[key] = now + period
+        local ok, err = pcall(fn)
+        if not ok then
+            warn("[tokaihub] " .. key .. ": " .. tostring(err))
+        end
+    end
+end
 
 local function humanoid()
     local char = LP.Character
     return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function monstersFolder()
+    return workspace:FindFirstChild("ClientMonsters")
+end
+
+local function getRunClient()
+    if RunClientMod then
+        return RunClientMod
+    end
+    local ps = LP:FindFirstChildOfClass("PlayerScripts")
+    local client = ps and ps:FindFirstChild("Client")
+    local mod = client and client:FindFirstChild("RunClient")
+    if mod then
+        local ok, t = pcall(require, mod)
+        if ok and type(t) == "table" and type(t.get) == "function" then
+            RunClientMod = t
+        end
+    end
+    return RunClientMod
+end
+
+local function loadCarInput()
+    local function try(mod)
+        if not mod then
+            return nil
+        end
+        local ok, t = pcall(require, mod)
+        if ok and type(t) == "table" and type(t.Read) == "function" then
+            return t
+        end
+        return nil
+    end
+    local ps = LP:FindFirstChildOfClass("PlayerScripts")
+    local client = ps and ps:FindFirstChild("Client")
+    local found = try(client and client:FindFirstChild("CarInput"))
+    if found then
+        return found
+    end
+    if type(getloadedmodules) == "function" then
+        for _, m in ipairs(getloadedmodules()) do
+            if m.Name == "CarInput" then
+                found = try(m)
+                if found then
+                    return found
+                end
+            end
+        end
+    end
+    return nil
 end
 
 local function findDrivenCar()
@@ -157,90 +422,221 @@ local function refreshCar(force)
     carRoot, carModel, carSeat = findDrivenCar()
 end
 
-local function loadCarInput()
-    local function try(mod)
-        if not mod then
-            return nil
-        end
-        local ok, t = pcall(require, mod)
-        if ok and type(t) == "table" and type(t.setOverride) == "function" then
-            return t
-        end
-        return nil
+-- static obstacles plus every monster in ClientMonsters, as (s, lat, half width)
+local function buildObstacles()
+    local out = {}
+    for _, o in ipairs(obstStatic) do
+        table.insert(out, o)
     end
-    local ps = LP:FindFirstChildOfClass("PlayerScripts")
-    local client = ps and ps:FindFirstChild("Client")
-    local found = try(client and client:FindFirstChild("CarInput"))
-    if found then
-        return found
-    end
-    if type(getloadedmodules) == "function" then
-        for _, m in ipairs(getloadedmodules()) do
-            if m.Name == "CarInput" then
-                found = try(m)
-                if found then
-                    return found
-                end
+    local folder = monstersFolder()
+    if folder then
+        for _, m in ipairs(folder:GetChildren()) do
+            if m:IsA("Model") then
+                local p = m:GetPivot().Position
+                local s, lat = RoadPath.project(Road, p.X, p.Z)
+                table.insert(out, { s = s, lat = lat, hw = MONSTER_HW[m.Name] or 3.5, kind = m.Name })
             end
         end
+    end
+    return out
+end
+
+local function uprightCar(model, root)
+    local base = root.Position + Vector3.new(0, 4, 0)
+    local look = flat(root.CFrame.LookVector)
+    if look.Magnitude < 0.01 then
+        look = Vector3.new(0, 0, -1)
+    end
+    model:PivotTo(CFrame.lookAt(base, base + look.Unit))
+    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+end
+
+-- move the whole car onto the road centre, facing along the road, keeping its current speed along the road
+local function snapToRoad(model, root)
+    local pos = root.Position
+    local s = RoadPath.project(Road, pos.X, pos.Z)
+    local cx, cy, cz, dx, dz = RoadPath.pointAt(Road, s, 0)
+    local rd = Vector3.new(dx, 0, dz)
+    local look = flat(root.CFrame.LookVector)
+    local sign = 1
+    if look.Magnitude > 0.01 and look.Unit:Dot(rd) < 0 then
+        sign = -1
+    end
+    local h = CarCfg.RideHeight or 2
+    local at = Vector3.new(cx, cy + h, cz)
+    local newChassis = CFrame.lookAt(at, at + rd * sign)
+    local rel = root.CFrame:ToObjectSpace(model:GetPivot())
+    model:PivotTo(newChassis * rel)
+    local along = math.max(0, root.AssemblyLinearVelocity:Dot(rd * sign))
+    root.AssemblyLinearVelocity = rd * sign * along
+    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+end
+
+-- anti tumble, impact guard, pace, grip, yaw clamp. runs every heartbeat on the chassis
+local function guards(dt, model, root)
+    if CFG.AntiTumble then
+        if root.CFrame.UpVector.Y < CFG.TumbleUpY then
+            tumbleT = tumbleT + dt
+            if tumbleT > CFG.TumbleTime then
+                tumbleT = 0
+                uprightCar(model, root)
+                return
+            end
+        else
+            tumbleT = 0
+        end
+    end
+
+    local look = flat(root.CFrame.LookVector)
+    if look.Magnitude < 0.01 then
+        return
+    end
+    local pos = root.Position
+    local s = RoadPath.project(Road, pos.X, pos.Z)
+    local _, _, _, dx, dz = RoadPath.pointAt(Road, s, 0)
+    local fwd = orient(look.Unit, Vector3.new(dx, 0, dz))
+
+    local vel = root.AssemblyLinearVelocity
+    local speed = flat(vel):Dot(fwd)
+
+    if CFG.ImpactGuard then
+        local back = impactRestore(prevSpeed, speed, lastBrake, CFG)
+        if back > 0 then
+            root.AssemblyLinearVelocity = vel + fwd * back
+            speed = speed + back
+        end
+    end
+    prevSpeed = speed
+
+    if CFG.PaceAssist then
+        local add = paceAdd(speed, lastThrottle, lastBrake, CFG, dt)
+        if add > 0 then
+            root.AssemblyLinearVelocity = root.AssemblyLinearVelocity + fwd * add
+        end
+    end
+
+    if CFG.Grip > 0 and math.abs(lastSteer) < 0.25 then
+        local v2 = root.AssemblyLinearVelocity
+        local right = fwd:Cross(Vector3.yAxis)
+        local latV = right * v2:Dot(right)
+        local damp = clamp(CFG.Grip * dt * 4, 0, 0.5)
+        root.AssemblyLinearVelocity = v2 - latV * damp
+    end
+
+    if CFG.YawClamp then
+        local w = root.AssemblyAngularVelocity
+        if math.abs(w.Y) > CFG.MaxYawRate then
+            root.AssemblyAngularVelocity = Vector3.new(w.X, clamp(w.Y, -CFG.MaxYawRate, CFG.MaxYawRate), w.Z)
+        end
+    end
+end
+
+-- the value CarController reads this physics step
+local function computeAssist(st)
+    if carRoot == nil or carRoot.Parent == nil then
+        return nil
+    end
+    if driving then
+        local t, b, steer, reason, lane, hit = planDrive(carRoot, dest, Road, RoadPath, CFG, FINISH_S, ROAD_END, ROAD_HALF, obstNow, prevLane)
+        if lane ~= nil then
+            prevLane = lane
+        end
+        lastHit = hit
+        if reason ~= "drive" then
+            stopReason = reason
+        end
+        return t, b, steer
+    end
+    if CFG.SteerAssist then
+        local pos = carRoot.Position
+        local s, lat = RoadPath.project(Road, pos.X, pos.Z)
+        local _, _, _, dx, dz = RoadPath.pointAt(Road, s, 0)
+        local rd = Vector3.new(dx, 0, dz)
+        local look = flat(carRoot.CFrame.LookVector)
+        if look.Magnitude < 0.01 then
+            return nil
+        end
+        local fwd = orient(look.Unit, rd)
+        local right = fwd:Cross(Vector3.yAxis)
+        local headingErr = math.atan2(rd:Dot(right), rd:Dot(fwd))
+        local gain = math.abs(st.Steer) < 0.05 and CFG.ReturnGain or 0.35
+        return st.Throttle, st.Brake, assistSteerPure(st.Steer, lat, headingErr, CFG, gain)
     end
     return nil
 end
 
-local function driveOverride()
-    if not driving or not carRoot or not carRoot.Parent then
-        return 0, 0, 0, false
+local function hookRead(ci)
+    if readHooked then
+        return
     end
-    local ok, t, b, st, why = pcall(planDrive, carRoot, dest, Road, RoadPath, CFG, FINISH_S, ROAD_END)
-    if not ok then
-        warn("[mtc] drive: " .. tostring(t))
-        stopReason = "error"
-        return 0, 0, 0, false
+    readHooked = true
+    CarInputMod = ci
+    origRead = ci.Read
+    ci.Read = function(p86)
+        local st = origRead(p86)
+        if type(st) ~= "table" then
+            return st
+        end
+        if not p86 then
+            local ok, t, b, steer = pcall(computeAssist, st)
+            if ok then
+                if t ~= nil then
+                    st.Throttle = t
+                    st.Brake = b
+                    st.Steer = steer
+                    if driving then
+                        st.Handbrake = false
+                    end
+                end
+            else
+                warn("[tokaihub] assist: " .. tostring(t))
+            end
+        end
+        lastThrottle, lastBrake, lastSteer = st.Throttle, st.Brake, st.Steer
+        return st
     end
-    if why ~= "drive" then
-        stopReason = why
+end
+
+local function unhookRead()
+    if readHooked and CarInputMod and origRead then
+        CarInputMod.Read = origRead
     end
-    return t, b, st, false
+    readHooked = false
 end
 
 local function setDrive(on)
     if not on then
         driving = false
-        if CarInputMod then
-            CarInputMod.setOverride(nil)
-        end
         return true
     end
     refreshCar(true)
     if not carRoot then
-        Window:Notify({ Title = "Auto drive", Content = "Ngồi vào ghế lái trước.", Type = "Warning", Duration = 3 })
+        notify("Ngồi vào ghế lái trước.", "Warning", 3)
         return false
     end
     if not CarInputMod then
         CarInputMod = loadCarInput()
     end
     if not CarInputMod then
-        Window:Notify({ Title = "Auto drive", Content = "Không lấy được CarInput. executor không share module cache.", Type = "Error", Duration = 5 })
+        notify("Không lấy được CarInput. executor không share module cache.", "Error", 5)
         return false
     end
+    hookRead(CarInputMod)
     stopReason = nil
+    prevSpeed = nil
     driving = true
-    CarInputMod.setOverride(driveOverride)
     return true
 end
 
--- route markers: lib ESP objects on invisible anchored parts
-local MARK = { cp = {}, fin = {}, haz = {} }
-local markersBuilt = false
-local markerFolder
-
+-- route markers: ESP objects on invisible anchored parts, placed by the same road the car follows
 local function buildMarkers()
     if markersBuilt then
         return
     end
     markersBuilt = true
     markerFolder = Instance.new("Folder")
-    markerFolder.Name = "MTCMarkers"
+    markerFolder.Name = "TokaiMarkers"
     markerFolder.Parent = workspace
 
     local function mark(group, s, lat, label, color)
@@ -255,7 +651,7 @@ local function buildMarkers()
         part.CanQuery = false
         part.CFrame = CFrame.new(x, y + 5, z)
         part.Parent = markerFolder
-        local obj = HawkTokaiLib.ESP:Add({
+        local obj = ESP:Add({
             Model = part,
             Name = label,
             ESPType = "Text",
@@ -292,11 +688,6 @@ local function showGroup(group, on)
     end
 end
 
--- other cars: lib ESP highlight on every model that has a Chassis and a DriverSeat
-local carEsp = {}
-local carEspOn = false
-local lastCarEspScan = 0
-
 local function clearCarEsp()
     for m, obj in pairs(carEsp) do
         obj:Destroy()
@@ -308,11 +699,6 @@ local function updateCarEsp()
     if not carEspOn then
         return
     end
-    local now = os.clock()
-    if now - lastCarEspScan < 1 then
-        return
-    end
-    lastCarEspScan = now
     local seen = {}
     for _, d in ipairs(workspace:GetDescendants()) do
         if d:IsA("Model") and d ~= carModel then
@@ -320,7 +706,7 @@ local function updateCarEsp()
             if chassis and chassis:IsA("BasePart") and d:FindFirstChild("DriverSeat", true) then
                 seen[d] = true
                 if not carEsp[d] then
-                    carEsp[d] = HawkTokaiLib.ESP:Add({
+                    carEsp[d] = ESP:Add({
                         Model = d,
                         Name = "car " .. tostring(d:GetAttribute("CarId") or d.Name),
                         ESPType = "Highlight",
@@ -346,15 +732,300 @@ local function setCarEsp(on)
     end
 end
 
-local STOP_TEXT = {
-    finish = "Tới vạch đích.",
-    arrived = "Tới điểm đã chọn.",
-    ["no heading"] = "Không đọc được hướng xe.",
-    ["no car"] = "Mất xe.",
-    error = "Lỗi drive, xem console.",
-}
+local function clearMonsterEsp()
+    for m, obj in pairs(monsterEsp) do
+        obj:Destroy()
+        monsterEsp[m] = nil
+    end
+end
 
-RunService.Heartbeat:Connect(function()
+local function updateMonsterEsp()
+    if not CFG.MonsterESP then
+        return
+    end
+    local seen = {}
+    local folder = monstersFolder()
+    if folder then
+        for _, m in ipairs(folder:GetChildren()) do
+            if m:IsA("Model") then
+                seen[m] = true
+                if not monsterEsp[m] then
+                    monsterEsp[m] = ESP:Add({
+                        Model = m,
+                        Name = m.Name,
+                        ESPType = "Highlight",
+                        Color = Color3.fromRGB(255, 80, 200),
+                        MaxDistance = 6000,
+                    })
+                end
+            end
+        end
+    end
+    for m, obj in pairs(monsterEsp) do
+        if not seen[m] or not m.Parent then
+            obj:Destroy()
+            monsterEsp[m] = nil
+        end
+    end
+end
+
+local function ambushCheck()
+    ambushDist = nil
+    if not (CFG.AmbushAlert and carS) then
+        return
+    end
+    local folder = monstersFolder()
+    if not folder then
+        return
+    end
+    local nearest = nil
+    for _, m in ipairs(folder:GetChildren()) do
+        if m.Name == "Ambusher" and m:IsA("Model") then
+            local p = m:GetPivot().Position
+            local s = RoadPath.project(Road, p.X, p.Z)
+            local ahead = s - carS
+            if ahead > -5 and ahead < CFG.AmbushDist and (nearest == nil or ahead < nearest) then
+                nearest = ahead
+            end
+        end
+    end
+    ambushDist = nearest
+    if nearest and os.clock() - ambushWarned > 6 then
+        ambushWarned = os.clock()
+        notify("Ambusher cách " .. math.floor(nearest) .. " st phía trước.", "Warning", 3)
+    end
+end
+
+-- flashlight lock: aim at the intruder's stand in chassis space, the same yaw / pitch the game sends
+local function burnStep()
+    local rc = getRunClient()
+    if not (CFG.AutoBurn and rc and carRoot) then
+        return
+    end
+    local idx = rc.get("IntruderSpot")
+    if type(idx) ~= "number" then
+        return
+    end
+    local spots = IntruderCfg.Spots
+    local k = math.floor(idx)
+    if k < 1 then
+        k = k + 1
+    end
+    k = clamp(k, 1, #spots)
+    local stand = IntruderCfg.Stand
+    local target = Vector3.new(stand[1] + spots[k], stand[2], stand[3])
+    local e = CarCfg.DriverEye
+    local eye = Vector3.new(e[1], e[2], e[3])
+    local d = (target - eye).Unit
+    local yaw, pitch = aimYawPitch(d)
+    if rc.get("FlashlightOn") ~= true then
+        Remotes.event("Flashlight"):FireServer(true)
+    end
+    Remotes.unreliable("FlashAim"):FireServer(yaw, pitch, true)
+end
+
+-- hold the crank while the knocker is in Warn or Bang and this player is the cranker
+local function crankStep()
+    local rc = getRunClient()
+    if not (CFG.AutoCrank and rc) then
+        if crankHeld then
+            crankHeld = false
+            Remotes.event("Crank"):FireServer(false)
+        end
+        return
+    end
+    local phase = rc.get("KnockerPhase")
+    local want = (phase == "Warn" or phase == "Bang") and rc.get("KnockerCranker") == LP.UserId
+    if want ~= crankHeld then
+        crankHeld = want
+        Remotes.event("Crank"):FireServer(want)
+    end
+end
+
+local function voteStep()
+    local rc = getRunClient()
+    if not rc then
+        return
+    end
+    local st = rc.state()
+    if CFG.AutoVote then
+        if st == "Finished" or st == "Caught" then
+            if not voteDone then
+                voteDone = true
+                task.delay(2.5, function()
+                    rc.requestVote("map")
+                end)
+            end
+        else
+            voteDone = false
+        end
+    end
+    if CFG.AutoPick and rc.get("MapPick") ~= nil and not rc.riding() and os.clock() - pickAt > 2 then
+        pickAt = os.clock()
+        rc.pickMap(CFG.MapChoice)
+    end
+end
+
+local function lobbyStep()
+    if not (CFG.LobbyWalkOn and MapCfg.IsLobby) or carRoot then
+        return
+    end
+    local hum = humanoid()
+    if hum and hum.WalkSpeed > 0 and hum.WalkSpeed ~= CFG.LobbyWalk then
+        hum.WalkSpeed = CFG.LobbyWalk
+    end
+end
+
+-- jumpscare and gloom screens. cleared on a short timer so the game can't bring them back for long
+local function clearScares()
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    if pg then
+        if CFG.NoJumpscare then
+            local js = pg:FindFirstChild("Jumpscare", true)
+            if js and js:IsA("ScreenGui") then
+                js.Enabled = false
+            end
+        end
+        if CFG.NoGloom then
+            local gl = pg:FindFirstChild("IntruderGloom", true)
+            if gl and gl:IsA("ScreenGui") then
+                gl.Enabled = false
+            end
+        end
+    end
+    if CFG.NoJumpscare then
+        local sg = Lighting:FindFirstChild("ScareGrade")
+        if sg and sg:IsA("PostEffect") then
+            sg.Enabled = false
+        end
+    end
+end
+
+local function snapshotLighting()
+    if lightSaved then
+        return
+    end
+    lightSaved = {
+        Brightness = Lighting.Brightness,
+        Ambient = Lighting.Ambient,
+        OutdoorAmbient = Lighting.OutdoorAmbient,
+        FogEnd = Lighting.FogEnd,
+        FogStart = Lighting.FogStart,
+    }
+    local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+    if atm then
+        lightSaved.atm = { Density = atm.Density, Haze = atm.Haze, Glare = atm.Glare }
+    end
+end
+
+local function restoreLighting()
+    if not lightSaved then
+        return
+    end
+    for k, v in pairs(lightSaved) do
+        if k ~= "atm" then
+            pcall(function()
+                Lighting[k] = v
+            end)
+        end
+    end
+    local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+    if atm and lightSaved.atm then
+        atm.Density = lightSaved.atm.Density
+        atm.Haze = lightSaved.atm.Haze
+        atm.Glare = lightSaved.atm.Glare
+    end
+    lightSaved = nil
+end
+
+local function applyVisuals()
+    if CFG.FullBright or CFG.NoFog then
+        snapshotLighting()
+    end
+    if CFG.FullBright then
+        Lighting.Brightness = 3
+        Lighting.Ambient = Color3.fromRGB(170, 170, 170)
+        Lighting.OutdoorAmbient = Color3.fromRGB(170, 170, 170)
+    end
+    if CFG.NoFog then
+        Lighting.FogEnd = 100000
+        Lighting.FogStart = 99999
+        local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+        if atm then
+            atm.Density = 0
+            atm.Haze = 0
+            atm.Glare = 0
+        end
+    end
+end
+
+local function setPerf(on)
+    pcall(function()
+        RunService:Set3dRenderingEnabled(not on)
+    end)
+end
+
+-- centreline ribbon: a pool of thin parts laid along the road around the car
+local function ribbonStep(sCar)
+    if not ribbonFolder then
+        ribbonFolder = Instance.new("Folder")
+        ribbonFolder.Name = "TokaiRibbon"
+        ribbonFolder.Parent = workspace
+    end
+    local n = CFG.RibbonCount
+    for i = 1, n do
+        local part = ribbonParts[i]
+        if not part then
+            part = Instance.new("Part")
+            part.Anchored = true
+            part.CanCollide = false
+            part.CanTouch = false
+            part.CanQuery = false
+            part.CastShadow = false
+            part.Material = Enum.Material.Neon
+            part.Color = Color3.fromRGB(80, 220, 255)
+            part.Size = Vector3.new(0.6, 0.12, 2.2)
+            part.Parent = ribbonFolder
+            ribbonParts[i] = part
+        end
+        local ss = clamp(sCar - CFG.RibbonSpan / 2 + (i - 1) * (CFG.RibbonSpan / math.max(1, n - 1)), 0, ROAD_END)
+        local x, y, z, dx, dz = RoadPath.pointAt(Road, ss, 0)
+        local p = Vector3.new(x, y + 0.15, z)
+        part.CFrame = CFrame.lookAt(p, p + Vector3.new(dx, 0, dz))
+    end
+end
+
+local function clearRibbon()
+    if ribbonFolder then
+        ribbonFolder:Destroy()
+    end
+    ribbonFolder = nil
+    ribbonParts = {}
+end
+
+local function queueNextMap()
+    if CFG.ScriptUrl == "" then
+        notify("Dán link raw của file này vào ô Script URL trước.", "Warning", 4)
+        return
+    end
+    if type(queue_on_teleport) ~= "function" then
+        notify("executor này không có queue_on_teleport.", "Error", 4)
+        return
+    end
+    queue_on_teleport(string.format('loadstring(game:HttpGet("%s"))()', CFG.ScriptUrl))
+    notify("đã xếp hàng chạy lại sau teleport.", "Success", 3)
+end
+
+-- anti afk: the idle kick is answered with a click
+LP.Idled:Connect(function()
+    if CFG.AntiAFK then
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end
+end)
+
+-- heartbeat: stop handling, guards, timers
+table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
     refreshCar(false)
     if driving and not carRoot and not stopReason then
         stopReason = "no car"
@@ -362,35 +1033,114 @@ RunService.Heartbeat:Connect(function()
     if driving and stopReason then
         local why = stopReason
         stopReason = nil
-        dest = nil
+        driving = false
+        if why == "arrived" or why == "finish" or why == "no car" then
+            dest = nil
+        end
         if DriveToggle then
             DriveToggle:Set(false, true)
         end
-        setDrive(false)
-        Window:Notify({ Title = "Auto drive", Content = STOP_TEXT[why] or why, Type = "Success", Duration = 3 })
+        notify(STOP_TEXT[why] or why, why == "finish" and "Success" or "Warning", 3)
     end
-    updateCarEsp()
+
+    if carRoot and carRoot.Parent and carModel and carModel.Parent then
+        local pos = carRoot.Position
+        carS, carLat = RoadPath.project(Road, pos.X, pos.Z)
+        if driving or CFG.SteerAssist then
+            obstNow = buildObstacles()
+        end
+        local ok, err = pcall(guards, dt, carModel, carRoot)
+        if not ok then
+            warn("[tokaihub] guards: " .. tostring(err))
+        end
+        if CFG.SnapAuto and driving and math.abs(carLat) > CFG.SnapLat then
+            every("snap", 1.5, function()
+                snapToRoad(carModel, carRoot)
+            end)
+        end
+    else
+        carS, carLat = nil, nil
+    end
+
+    every("cars", 1, updateCarEsp)
+    every("monsters", 1, updateMonsterEsp)
+    every("ambush", 0.5, ambushCheck)
+    every("crank", 0.1, crankStep)
+    every("burn", 0.1, burnStep)
+    every("vote", 0.5, voteStep)
+    every("lobby", 0.5, lobbyStep)
+    every("scares", 0.1, clearScares)
+    every("ribbon", 0.25, function()
+        if CFG.Ribbon and carS then
+            ribbonStep(carS)
+        end
+    end)
+end))
+
+-- lighting is written after the game's own atmosphere update, so it wins
+table.insert(CONN, RunService.RenderStepped:Connect(function()
+    applyVisuals()
+end))
+
+-- hook CarInput as soon as it exists, so manual lane keep works before a drive starts
+task.spawn(function()
+    for _ = 1, 60 do
+        CarInputMod = CarInputMod or loadCarInput()
+        if CarInputMod then
+            hookRead(CarInputMod)
+            return
+        end
+        task.wait(1)
+    end
 end)
 
 -- ui
 Window = HawkTokaiLib:CreateWindow({
-    Name = "MTC Hub",
-    LoadingSubtitle = "longtokai",
+    Name = "Tokaihub",
+    LoadingSubtitle = "Tokaihub",
     ToggleUIKeybind = "RightControl",
     Home = false,
-    ConfigurationSaving = { Enabled = true, FolderName = "MTCHub" },
+    ConfigurationSaving = { Enabled = true, FolderName = "Tokaihub" },
 })
 
+local function sliderOf(group, name, range, inc, key, suffix)
+    group:CreateSlider({
+        Name = name,
+        Range = range,
+        Increment = inc,
+        CurrentValue = CFG[key],
+        Suffix = suffix or "",
+        Flag = "TK_" .. key,
+        Callback = function(v)
+            CFG[key] = v
+        end,
+    })
+end
+
+local function toggleOf(group, name, key, onChange, desc)
+    group:CreateToggle({
+        Name = name,
+        Desc = desc,
+        Flag = "TK_" .. key,
+        CurrentValue = CFG[key] == true,
+        Callback = function(On)
+            CFG[key] = On
+            if onChange then
+                onChange(On)
+            end
+        end,
+    })
+end
+
 local EspTab = Window:CreateTab({ Name = "ESP", Desc = "players, names, boxes", Icon = "users" })
-HawkTokaiLib.ESP:Build(EspTab, Window)
+ESP:Build(EspTab, Window)
 
 local DriveTab = Window:CreateTab({ Name = "Drive", Icon = "route" })
 local Route = DriveTab:CreateGroupbox({ Name = "Auto drive", Side = "Left" })
-
 DriveToggle = Route:CreateToggle({
     Name = "Auto drive",
-    Desc = "follows the road. with a point set, goes there",
-    Flag = "AutoDrive",
+    Desc = "follows the road and steps around obstacles. with a point set, goes there",
+    Flag = "TK_AutoDrive",
     CurrentValue = false,
     Callback = function(On)
         if On then
@@ -421,59 +1171,23 @@ Route:CreateButton({
         dest = nil
     end,
 })
-Route:CreateSlider({
-    Name = "Top speed",
-    Range = { 20, 250 },
-    Increment = 5,
-    CurrentValue = CFG.TopSpeed,
-    Suffix = " st/s",
-    Flag = "TopSpeed",
-    Callback = function(v)
-        CFG.TopSpeed = v
+Route:CreateButton({
+    Name = "Snap to road centre",
+    Desc = "moves the car onto the centre line now",
+    Callback = function()
+        if carRoot and carModel then
+            snapToRoad(carModel, carRoot)
+        end
     end,
 })
-Route:CreateSlider({
-    Name = "Look ahead",
-    Range = { 10, 120 },
-    Increment = 1,
-    CurrentValue = CFG.LookAhead,
-    Suffix = " st",
-    Flag = "LookAhead",
-    Callback = function(v)
-        CFG.LookAhead = v
-    end,
-})
-Route:CreateSlider({
-    Name = "Steer gain",
-    Range = { 1, 8 },
-    Increment = 0.5,
-    CurrentValue = CFG.SteerGain,
-    Flag = "SteerGain",
-    Callback = function(v)
-        CFG.SteerGain = v
-    end,
-})
-Route:CreateSlider({
-    Name = "Lane offset",
-    Range = { -10, 10 },
-    Increment = 0.5,
-    CurrentValue = CFG.LaneOffset,
-    Suffix = " st",
-    Flag = "LaneOffset",
-    Callback = function(v)
-        CFG.LaneOffset = v
-    end,
-})
-Route:CreateSlider({
-    Name = "Corner caution",
-    Range = { 0, 12 },
-    Increment = 0.5,
-    CurrentValue = CFG.CornerK,
-    Flag = "CornerK",
-    Callback = function(v)
-        CFG.CornerK = v
-    end,
-})
+sliderOf(Route, "Top speed", { 20, 250 }, 5, "TopSpeed", " st/s")
+sliderOf(Route, "Look ahead", { 10, 120 }, 1, "LookAhead", " st")
+sliderOf(Route, "Steer gain", { 1, 8 }, 0.1, "SteerGain")
+sliderOf(Route, "Lane offset", { -8, 8 }, 0.5, "LaneOffset", " st")
+sliderOf(Route, "Corner caution", { 0, 12 }, 0.5, "CornerK")
+sliderOf(Route, "Brake decel", { 20, 80 }, 1, "BrakeDecel", " st/s2")
+sliderOf(Route, "Stop gap", { 2, 20 }, 1, "StopGap", " st")
+sliderOf(Route, "Clearance", { 0, 5 }, 0.25, "Clearance", " st")
 
 local Live = DriveTab:CreateGroupbox({ Name = "Live", Side = "Right" })
 Live:CreateStatus({
@@ -493,30 +1207,148 @@ Live:CreateStatus({
     Style = "Row",
     UpdateRate = 0.25,
     Update = function()
-        if not carRoot then
+        if not carS then
             return "<Muted>no car</Muted>"
         end
-        local p = carRoot.Position
-        local s = RoadPath.project(Road, p.X, p.Z)
         local spd = flat(carRoot.AssemblyLinearVelocity).Magnitude
-        return string.format("%d / %d  |  %d st/s", math.floor(s), math.floor(FINISH_S), math.floor(spd))
+        return string.format("%d / %d  |  %d st/s", math.floor(carS), math.floor(FINISH_S), math.floor(spd))
     end,
 })
-Live:CreateButton({
-    Name = "Stop",
-    Callback = function()
-        if DriveToggle then
-            DriveToggle:Set(false, true)
+Live:CreateStatus({
+    Name = "Obstacle",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if not lastHit then
+            return "<Success>clear</Success>"
         end
-        setDrive(false)
+        return string.format("<Warning>%d st ahead</Warning>", math.floor(lastHit))
+    end,
+})
+Live:CreateStatus({
+    Name = "Lateral",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if not carLat then
+            return "<Muted>-</Muted>"
+        end
+        return string.format("%.1f st", carLat)
     end,
 })
 
-local ObjTab = Window:CreateTab({ Name = "Objects", Icon = "map" })
+local AssistTab = Window:CreateTab({ Name = "Assist", Icon = "shield" })
+local Phys = AssistTab:CreateGroupbox({ Name = "Physics", Side = "Left" })
+toggleOf(Phys, "Anti tumble", "AntiTumble", nil, "upright the car when it lies on its side")
+toggleOf(Phys, "Impact guard", "ImpactGuard", nil, "puts back most of the speed a crash takes")
+toggleOf(Phys, "Pace assist", "PaceAssist", nil, "adds forward push while throttling below the pace target")
+toggleOf(Phys, "Yaw clamp", "YawClamp", nil, "caps the yaw rate so the car can't snap-spin")
+toggleOf(Phys, "Snap back on fall off", "SnapAuto", nil, "snaps to the centre line while auto driving and far off it")
+sliderOf(Phys, "Pace target", { 40, 220 }, 5, "PaceTarget", " st/s")
+sliderOf(Phys, "Pace boost", { 0, 120 }, 1, "PaceBoost", " st/s2")
+sliderOf(Phys, "Grip", { 0, 1 }, 0.05, "Grip")
+sliderOf(Phys, "Max yaw rate", { 0.5, 6 }, 0.1, "MaxYawRate", " rad/s")
+sliderOf(Phys, "Snap distance", { 6, 40 }, 1, "SnapLat", " st")
+
+local SteerG = AssistTab:CreateGroupbox({ Name = "Steering", Side = "Right" })
+toggleOf(SteerG, "Lane keep assist", "SteerAssist", nil, "helps the wheel on manual driving too")
+sliderOf(SteerG, "Assist gain", { 0, 2 }, 0.05, "AssistGain")
+sliderOf(SteerG, "Return tuning", { 0, 4 }, 0.1, "ReturnGain")
+
+local MonTab = Window:CreateTab({ Name = "Monsters", Icon = "ghost" })
+local MonBox = MonTab:CreateGroupbox({ Name = "Monsters", Side = "Left" })
+toggleOf(MonBox, "Monster ESP", "MonsterESP", function(On)
+    if not On then
+        clearMonsterEsp()
+    end
+end, "highlights every model in ClientMonsters")
+toggleOf(MonBox, "Ambush ahead alert", "AmbushAlert", nil, "warns when an Ambusher is inside the reveal distance")
+sliderOf(MonBox, "Alert distance", { 40, 300 }, 5, "AmbushDist", " st")
+local Auto = MonTab:CreateGroupbox({ Name = "Intruder and knocker", Side = "Right" })
+toggleOf(Auto, "Auto burn intruder", "AutoBurn", nil, "keeps the flashlight on the intruder's stand")
+toggleOf(Auto, "Auto crank shutter", "AutoCrank", nil, "holds the crank while you are the cranker in Warn or Bang")
+Auto:CreateStatus({
+    Name = "Ambush",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if not ambushDist then
+            return "<Muted>none</Muted>"
+        end
+        return string.format("<Warning>%d st</Warning>", math.floor(ambushDist))
+    end,
+})
+
+local VisTab = Window:CreateTab({ Name = "Visuals", Icon = "sun" })
+local VisBox = VisTab:CreateGroupbox({ Name = "Screen", Side = "Left" })
+toggleOf(VisBox, "Full bright", "FullBright", function(On)
+    if not On and not CFG.NoFog then
+        restoreLighting()
+    end
+end)
+toggleOf(VisBox, "Clear fog and atmosphere", "NoFog", function(On)
+    if not On and not CFG.FullBright then
+        restoreLighting()
+    end
+end)
+toggleOf(VisBox, "No jumpscare", "NoJumpscare", nil, "hides the jumpscare overlay")
+toggleOf(VisBox, "No gloom", "NoGloom", nil, "hides the intruder gloom screen")
+local VisBox2 = VisTab:CreateGroupbox({ Name = "Performance and road", Side = "Right" })
+toggleOf(VisBox2, "Performance mode", "PerfMode", function(On)
+    setPerf(On)
+end, "turns 3D rendering off, the window still works")
+toggleOf(VisBox2, "Centreline ribbon", "Ribbon", function(On)
+    if not On then
+        clearRibbon()
+    end
+end, "draws the road centre line around the car")
+sliderOf(VisBox2, "Ribbon span", { 60, 600 }, 10, "RibbonSpan", " st")
+
+local LobTab = Window:CreateTab({ Name = "Lobby", Icon = "map" })
+local LobBox = LobTab:CreateGroupbox({ Name = "Lobby", Side = "Left" })
+toggleOf(LobBox, "Walk speed", "LobbyWalkOn", nil, "walk speed while in the lobby, off the pads")
+sliderOf(LobBox, "Walk speed value", { 16, 60 }, 1, "LobbyWalk")
+toggleOf(LobBox, "Anti AFK", "AntiAFK", nil, "answers the idle kick")
+local mapNames = {}
+for k in pairs(MapCfg.PlaceIds or {}) do
+    if k ~= "Lobby" then
+        table.insert(mapNames, k)
+    end
+end
+table.sort(mapNames)
+local VoteBox = LobTab:CreateGroupbox({ Name = "Vote and map", Side = "Right" })
+toggleOf(VoteBox, "Auto vote", "AutoVote", nil, "votes for the map screen after a run ends")
+toggleOf(VoteBox, "Auto pick map", "AutoPick", nil, "picks the map below when the map screen is open")
+VoteBox:CreateDropdown({
+    Name = "Map",
+    Options = mapNames,
+    Flag = "TK_MapChoice",
+    Callback = function(v)
+        if type(v) == "string" then
+            CFG.MapChoice = v
+        end
+    end,
+})
+VoteBox:CreateInput({
+    Name = "Script URL",
+    PlaceholderText = "raw link of this file",
+    Flag = "TK_ScriptUrl",
+    CurrentValue = "",
+    Callback = function(text)
+        CFG.ScriptUrl = tostring(text or "")
+    end,
+})
+VoteBox:CreateButton({
+    Name = "Queue for next teleport",
+    Desc = "runs this script again after the next teleport, needs queue_on_teleport",
+    Callback = queueNextMap,
+})
+
+local ObjTab = Window:CreateTab({ Name = "Objects", Icon = "map-pin" })
 local MarkBox = ObjTab:CreateGroupbox({ Name = "Route markers", Side = "Left" })
 MarkBox:CreateToggle({
     Name = "Checkpoints",
-    Flag = "ESP_Checkpoints",
+    Flag = "TK_ESP_Checkpoints",
     CurrentValue = false,
     Callback = function(On)
         showGroup("cp", On)
@@ -524,7 +1356,7 @@ MarkBox:CreateToggle({
 })
 MarkBox:CreateToggle({
     Name = "Finish line",
-    Flag = "ESP_Finish",
+    Flag = "TK_ESP_Finish",
     CurrentValue = false,
     Callback = function(On)
         showGroup("fin", On)
@@ -533,7 +1365,7 @@ MarkBox:CreateToggle({
 MarkBox:CreateToggle({
     Name = "Hazards",
     Desc = "wrecks, barricades, roadblocks",
-    Flag = "ESP_Hazards",
+    Flag = "TK_ESP_Hazards",
     CurrentValue = false,
     Callback = function(On)
         showGroup("haz", On)
@@ -542,7 +1374,7 @@ MarkBox:CreateToggle({
 local CarBox = ObjTab:CreateGroupbox({ Name = "Vehicles", Side = "Right" })
 CarBox:CreateToggle({
     Name = "Other cars",
-    Flag = "ESP_Cars",
+    Flag = "TK_ESP_Cars",
     CurrentValue = false,
     Callback = function(On)
         setCarEsp(On)
@@ -554,11 +1386,26 @@ SetTab:CreateConfigManager({ Side = "Left" })
 SetTab:CreateThemeManager({ Side = "Right" })
 
 Window:OnUnload(function()
+    for _, c in ipairs(CONN) do
+        c:Disconnect()
+    end
     setDrive(false)
+    unhookRead()
+    setPerf(false)
+    restoreLighting()
+    clearRibbon()
     clearCarEsp()
+    clearMonsterEsp()
     if markerFolder then
         markerFolder:Destroy()
     end
+    if crankHeld then
+        Remotes.event("Crank"):FireServer(false)
+    end
 end)
+
+if CFG.ScriptUrl ~= "" then
+    queueNextMap()
+end
 
 Window:LoadAutoload()
