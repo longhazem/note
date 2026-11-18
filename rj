@@ -1,4 +1,9 @@
--- Tokaihub v3. MTC client helper, executor only.
+-- Tokaihub v7. MTC client helper, executor only.
+-- v7: a hook health check (stops with a message if CarInput is not called), braking measured from the car, the steering
+-- command rate-limited, a stall wiggle, and a guard against moving backwards. telemetry in the Drive tab.
+-- v6: the map config's Wrecks, Barricades and Roadblocks are obstacles, jump ramps (Jumps.Lateral and Length) never block
+-- and keep the speed up, and a lane change is timed against the obstacle it leaves.
+-- map: SERPENT RIVER ROAD (Map09, EXTREME in Config/Lobby.lua). crawler pits and bodies, fallen mast, door QTE handled.
 -- ui: HawkTokaiLib. esp: ESP.luau, loaded after the lib, the way Example.luau does.
 -- drive: CarInput.Read is wrapped (CarController calls it every physics step). while auto driving, RoadKeep.steer is
 --        switched off: it pulls the car back to the centre line and scrubs speed on slides.
@@ -26,6 +31,8 @@ local MapCfg = require(Shared.Config.Map)
 local CarCfg = require(Shared.Config.Car)
 local ChaseCfg = require(Shared.Config.Chase)
 local IntruderCfg = require(Shared.Config.Intruder)
+local RallyCfg = require(Shared.Config.Rally)
+local SetPiecesCfg = require(Shared.Config.SetPieces)
 local Remotes = require(Shared.Remotes)
 
 local Road = RoadPath.build(WorldCfg)
@@ -36,8 +43,8 @@ local ROAD_HALF = (WorldCfg.RoadWidth or 25) / 2
 local CFG = {
     AutoDrive = false,
     TopSpeed = CarCfg.TopSpeed,   -- 140, the game's cap. 1 stud/s is about 1.008 km/h
-    LatAccel = 30,                -- studs/s^2 of sideways grip for corner speed, about 0.85 g
-    BrakeDecel = 42,              -- studs/s^2, braking planning
+    LatAccel = 0,                -- studs/s^2 of sideways grip for corner speed, set from the tune below
+    BrakeDecel = 44,              -- studs/s^2, braking planning
     LookAhead = 28,               -- studs ahead on the road, plus 0.45 x forward speed
     SteerGain = 2.6,
     LaneOffset = 0,               -- + is right of the driving direction
@@ -45,6 +52,22 @@ local CFG = {
     StopGap = 8,                  -- studs kept from a blocking obstacle
     CrawlSpeed = 20,              -- st/s floor when every lane is blocked, so the car never stops dead in a jam
     CarHalf = CarCfg.ChassisSize[1] / 2,
+    CornerScale = 1.0,            -- adapted at runtime to the grip the car really has
+    CornerAdapt = true,
+    SlipHi = 6,                   -- degrees of sideslip above which the scale comes down (DriftAssist starts near 9)
+    SlipLo = 2.5,                 -- degrees of sideslip below which the scale creeps up
+    FFGain = 1.0,                 -- steering feedforward from the road's curvature
+    Wheelbase = CarCfg.ChassisSize[3] * 0.65,  -- estimate, not read from the car
+    PaceSteerMax = 0.35,
+    CrawlerDodge = true,
+    LatSpeed = 10,                -- studs/s the car can move sideways when it changes lane
+    RampSpeed = 42,               -- keep at least this speed to take a jump (the chassis needs 35 to launch)
+    CfgObst = true,
+    SteerRate = 4.0,              -- the most the wheel command may change per second
+    BrakeAdapt = true,            -- measure the car's real braking and plan with it
+    StuckFix = true,              -- wiggle the wheel for a moment when the car stays stuck               -- the Wrecks, Barricades and Roadblocks listed in the map config          -- steer away from crawler pit cracks and the crawler body
+    AutoDoor = true,              -- answer the crawler's door prompts and hold the door while it pulls
+    MastAvoid = true,             -- a fallen mast blocks the road          -- no pace push while steering harder than this
     CarHalfLen = CarCfg.ChassisSize[3] / 2,
     Clearance = 1.5,              -- extra studs between car edge and obstacle edge
     EdgeMargin = 1.5,
@@ -94,6 +117,13 @@ local CFG = {
     ScriptUrl = "",
 }
 
+-- corner grip from the game's own tune: LateralGrip x Gravity x Tarmac.Lateral x Plateau (arcade is the default mode)
+local TYRE = RallyCfg.Hatch.Tyres
+local TARMAC_LAT = RallyCfg.Hatch.Surfaces.Tarmac.Lateral
+CFG.LatAccelArcade = TYRE.LateralGrip * RallyCfg.Hatch.Arcade.Gravity * TARMAC_LAT * TYRE.Plateau
+CFG.LatAccelSim = TYRE.LateralGrip * RallyCfg.Hatch.Gravity * TARMAC_LAT * TYRE.Plateau
+CFG.LatAccel = CFG.LatAccelArcade
+
 local MONSTER_HW = {
     Ambusher = ChaseCfg.AmbushHitRadius or 6.5,
     Steeple = 9,
@@ -106,6 +136,7 @@ local MAP_AHEAD = 330
 
 -- BEGIN LOGIC
 local W_KNOCK, W_CHASM, W_WATCH, W_MON, W_BOX = 40, 400, 60, 120, 80
+local W_CRAWL, W_MAST = 150, 200
 local PROFILE_D = { 12, 25, 40, 60, 85, 115, 150, 200, 260 }
 
 local function clamp(x, a, b)
@@ -138,8 +169,8 @@ local function speedAllowed(sCar, road, rp, cfg, roadEnd)
         local _, _, _, bx, bz = rp.pointAt(road, clamp(sCar + d + 10, 0, roadEnd), 0)
         local theta = math.acos(clamp(ax * bx + az * bz, -1, 1))
         local kappa = theta / 20
-        local vc = kappa > 1e-5 and math.sqrt(cfg.LatAccel / kappa) or math.huge
-        local v = math.sqrt(vc * vc + 2 * cfg.BrakeDecel * math.max(0, d - 4))
+        local vc = kappa > 1e-5 and math.sqrt(cfg.LatAccel * (cfg.CornerScale or 1) / kappa) or math.huge
+        local v = math.sqrt(vc * vc + 2 * (cfg.BrakeUse or cfg.BrakeDecel) * math.max(0, d - 4))
         if v < best then
             best = v
         end
@@ -150,6 +181,30 @@ end
 -- obstacle: { s = front edge, sEnd = back edge, lat, hw (half width), w (cost), stop (brakes to 0 if blocked) }
 -- the car is a rectangle of CarHalf x CarHalfLen. a lane collides with an obstacle when the car's box overlaps it
 -- in the road frame, the same as Knockdown.hit does with the car's half sizes.
+-- steering feedforward: the wheel angle that follows the road's curvature here, as a share of full lock.
+-- the road's right-hand vector is (-fz, fx), so a positive turn means the road bends right.
+local function steerFeedforward(road, rp, sCar, cfg)
+    local _, _, _, ax, az = rp.pointAt(road, sCar, 0)
+    local _, _, _, bx, bz = rp.pointAt(road, sCar + 10, 0)
+    local turn = clamp(bx * -az + bz * ax, -1, 1)
+    local kappa = math.asin(turn) / 10
+    local wheel = math.atan(cfg.Wheelbase * kappa)
+    return clamp(wheel / math.rad(34) * cfg.FFGain, -1, 1)
+end
+
+-- corner scale: creeps up while the car holds the line with little slip, backs off fast when it starts to slide
+local function adaptCornerScale(scale, slipDeg, steerAbs, along, dt, cfg)
+    if along < 20 or steerAbs < 0.15 then
+        return scale
+    end
+    if slipDeg > cfg.SlipHi then
+        scale = scale - 0.8 * dt
+    elseif slipDeg < cfg.SlipLo then
+        scale = scale + 0.25 * dt
+    end
+    return clamp(scale, 0.9, 1.6)
+end
+
 local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, obst, prevLane)
     local pos = root.Position
     local look = flat(root.CFrame.LookVector)
@@ -159,6 +214,7 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
     local fwd = look.Unit
     local v = flat(root.AssemblyLinearVelocity)
     local target, vT, lane, gapBest
+    local ff = 0
 
     if dest then
         local toD = flat(dest - pos)
@@ -172,7 +228,7 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
         vT = cfg.TopSpeed
         lane = prevLane
     else
-        local sCar = rp.project(road, pos.X, pos.Z)
+        local sCar, latNow = rp.project(road, pos.X, pos.Z)
         if sCar >= finishS - 2 then
             return 0, 1, 0, "finish", prevLane, nil, 0
         end
@@ -184,12 +240,16 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
         local base = prevLane or cfg.LaneOffset
 
         -- only the obstacles that can meet the car within the horizon
-        local near = {}
+        local near, ramps = {}, {}
         for i = 1, #obst do
             local o = obst[i]
             local ds0 = o.s - sCar
             local ds1 = (o.sEnd or o.s) - sCar
-            if ds1 > -cfg.CarHalfLen and ds0 < horizon then
+            if o.ramp then
+                if ds0 > 0 and ds0 < 80 then
+                    table.insert(ramps, o)
+                end
+            elseif ds1 > -cfg.CarHalfLen and ds0 < horizon then
                 table.insert(near, o)
             end
         end
@@ -232,12 +292,29 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
         local tx, ty, tz = rp.pointAt(road, aheadS, lane)
         target = Vector3.new(tx, ty, tz)
 
+        ff = steerFeedforward(road, rp, sCar, cfg)
         vT = math.min(cfg.TopSpeed, speedAllowed(sCar, road, rp, cfg, roadEnd))
         -- the chosen lane is still blocked: pits stop the car, anything else is taken at crawl speed
         if stopBest then
-            vT = math.min(vT, math.sqrt(math.max(0, 2 * cfg.BrakeDecel * (stopBest - cfg.StopGap))))
+            vT = math.min(vT, math.sqrt(math.max(0, 2 * (cfg.BrakeUse or cfg.BrakeDecel) * (stopBest - cfg.StopGap))))
         elseif gapBest then
-            vT = math.min(vT, math.max(cfg.CrawlSpeed, math.sqrt(math.max(0, 2 * cfg.BrakeDecel * (gapBest - cfg.StopGap)))))
+            vT = math.min(vT, math.max(cfg.CrawlSpeed, math.sqrt(math.max(0, 2 * (cfg.BrakeUse or cfg.BrakeDecel) * (gapBest - cfg.StopGap)))))
+        end
+        -- a lane change takes dl / LatSpeed seconds, so the car must be slow enough to make it before the blocker it leaves
+        local dl = math.abs(lane - latNow)
+        if dl > 0.5 then
+            local _, gapCur = evalLane(latNow)
+            if gapCur then
+                vT = math.min(vT, math.max(cfg.CrawlSpeed, gapCur * cfg.LatSpeed / dl))
+            end
+        end
+        -- a jump on the lane is taken at speed, so the car leaves the ground
+        if not gapBest then
+            for _, r in ipairs(ramps) do
+                if math.abs(lane - r.lat) < r.hw + cfg.CarHalf then
+                    vT = math.max(vT, math.min(cfg.RampSpeed, cfg.TopSpeed))
+                end
+            end
         end
     end
 
@@ -247,9 +324,9 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
     local right = fwd:Cross(Vector3.yAxis)
     local front = dir:Dot(fwd)
     local side = dir:Dot(right)
-    local steer = clamp(math.atan2(side, front) * cfg.SteerGain, -1, 1)
+    local steer = clamp(math.atan2(side, front) * cfg.SteerGain + ff, -1, 1)
 
-    if front < 0 then
+    if front < -0.6 then
         vT = math.min(vT, 6)
     end
     if dest then
@@ -262,6 +339,10 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
         throttle = clamp((vT - speed) / 12, 0.25, 1)
     elseif speed > vT + 1.5 then
         brake = clamp((speed - vT) / 10, 0, 1)
+    end
+    -- moving backwards against the road: stop that first
+    if speed < -1.5 then
+        throttle, brake = 0, 1
     end
     return throttle, brake, steer, "drive", lane, gapBest, vT
 end
@@ -303,11 +384,80 @@ local function impactRestore(prevSpeed, speed, brake, cfg)
 end
 
 -- forward push for pace assist this frame
-local function paceAdd(speed, throttle, brake, cfg, dt)
-    if throttle < 0.3 or brake > 0.05 or speed >= cfg.PaceTarget then
+local function paceAdd(speed, throttle, brake, cfg, dt, steer)
+    if throttle < 0.3 or brake > 0.05 or speed >= cfg.PaceTarget or math.abs(steer or 0) > cfg.PaceSteerMax then
         return 0
     end
     return math.min(cfg.PaceBoost * dt, cfg.PaceTarget - speed)
+end
+-- which set-piece boxes block the car. sSpan along the road, latSpan across it, yTop and yBot above the road, ySpan tall.
+-- a fallen mast is narrow along the road and wide across it, so it counts. ramps, decks and road slabs are long and low, so they don't.
+local function boxAccept(sSpan, latSpan, yTop, yBot, ySpan)
+    if sSpan > 40 or latSpan > 90 then
+        return false
+    end
+    if yBot > 3.4 or yTop < 1.0 or ySpan < 0.8 then
+        return false
+    end
+    if latSpan > 20 and yTop < 3.0 and sSpan > 6 then
+        return false
+    end
+    return true
+end
+
+-- door automation for the crawler: answer each quick-time prompt once, and hold the door while it pulls with no prompt
+local function doorAction(st, phase, mine, qteOn, qteId, now, delay)
+    local out = {}
+    local pull = (phase == "Pull") and mine
+    if pull and qteOn and qteId ~= 0 and qteId ~= st.lastId and st.pending ~= qteId then
+        st.pending = qteId
+        st.pendingAt = now + delay
+    end
+    if st.pending and not pull then
+        st.pending = nil
+    end
+    if st.pending and now >= st.pendingAt then
+        out.key = st.pending
+        st.lastId = st.pending
+        st.pending = nil
+    end
+    local wantHold = pull and not qteOn
+    if wantHold ~= st.held then
+        st.held = wantHold
+        out.hold = wantHold
+    end
+    return out
+end
+-- a jump ramp: as wide as the map's Jumps.Lateral sets it, about as long as Jumps.Length. such a box never blocks
+local function isRampBox(sSpan, latC, lateral, length)
+    return math.abs(math.abs(latC) - lateral) < 0.8 and sSpan >= length * 0.6 and sSpan <= length * 1.6
+end
+-- steering command: it may move at most maxRate per second
+local function rateLimit(prev, target, maxRate, dt)
+    local step = maxRate * dt
+    return prev + clamp(target - prev, -step, step)
+end
+
+-- braking estimate: the largest deceleration seen while braking straight at speed, decaying slowly
+local function brakeSample(estimate, along, alongPrev, brake, throttle, steerAbs, dt)
+    if dt <= 0 or alongPrev == nil or along < 8 or brake < 0.9 or throttle > 0.05 or steerAbs > 0.2 then
+        return estimate
+    end
+    local decel = (alongPrev - along) / dt
+    if decel <= 0 or decel > 150 then
+        return estimate
+    end
+    return math.max((estimate or 0) * 0.995, decel)
+end
+
+-- stall: the car wants to move but has not moved for a while. returns the timer, and whether to wiggle now
+local function stallStep(timer, speed, wanting, dt)
+    if wanting and math.abs(speed) < 1.0 then
+        timer = timer + dt
+    else
+        timer = 0
+    end
+    return timer, timer > 2.5
 end
 -- END LOGIC
 
@@ -352,6 +502,18 @@ local CONN = {}
 local nextAt = {}
 
 -- chasms with a radius are circular holes on the road (Tournament). the others sit off the road
+local cfgObst = {}
+for _, row in ipairs(WorldCfg.Wrecks or {}) do
+    local s0, lat0 = row[1], row[2]
+    table.insert(cfgObst, { s = s0 - 6.5, sEnd = s0 + 6.5, lat = lat0, hw = 3.4, w = W_BOX, stop = false, kind = "wreck" })
+end
+for _, row in ipairs(WorldCfg.Barricades or {}) do
+    local s0, lat0 = row[1], row[2]
+    table.insert(cfgObst, { s = s0 - 4, sEnd = s0 + 4, lat = lat0, hw = 3.2, w = W_BOX, stop = false, kind = "barricade" })
+end
+for _, row in ipairs(WorldCfg.Roadblocks or {}) do
+    table.insert(cfgObst, { s = row[1] - 3, sEnd = row[1] + 3, lat = 0, hw = 4, w = W_BOX, stop = false, kind = "roadblock" })
+end
 for _, c in ipairs(WorldCfg.Chasms or {}) do
     if c.radius then
         table.insert(chasmObst, { s = c.s, sEnd = c.s, lat = c.lateral or 0, hw = c.radius, w = W_CHASM, stop = true, kind = "pit" })
@@ -364,6 +526,7 @@ local STOP_TEXT = {
     ["no heading"] = "Không đọc được hướng xe.",
     ["no car"] = "Mất xe.",
     error = "Lỗi drive, xem console.",
+    hook = "CarInput không được gọi. xem console.",
 }
 
 local function notify(msg, kind, dur)
@@ -526,20 +689,23 @@ local function boxFor(inst)
             yMax = p.Y
         end
     end
-    if sMax - sMin > 40 or latMax - latMin > 30 then
+    if sMax - sMin > 40 or latMax - latMin > 90 then
         return nil
     end
     if latMax < -(ROAD_HALF + 4) or latMin > ROAD_HALF + 4 then
         return nil
     end
+    local jumps = WorldCfg.Jumps
+    if jumps and jumps.Lateral and jumps.Length then
+        local latC = (latMin + latMax) / 2
+        if isRampBox(sMax - sMin, latC, jumps.Lateral, jumps.Length) then
+            return { s = sMin, sEnd = sMax, lat = latC, hw = (latMax - latMin) / 2, w = 0, stop = false, kind = "ramp", ramp = true }
+        end
+    end
     local sMid = clamp((sMin + sMax) / 2, 0, ROAD_END)
     local latMid = clamp((latMin + latMax) / 2, -ROAD_HALF, ROAD_HALF)
     local _, roadY = RoadPath.pointAt(Road, sMid, latMid)
-    if yMin - roadY > 3.4 or yMax - roadY < 1.0 or yMax - yMin < 0.8 then
-        return nil
-    end
-    -- a wide piece that is low (ramp, bridge deck, road slab) is not a wall across the road
-    if latMax - latMin > 20 and yMax - roadY < 3.0 then
+    if not boxAccept(sMax - sMin, latMax - latMin, yMax - roadY, yMin - roadY, yMax - yMin) then
         return nil
     end
     return { s = sMin, sEnd = sMax, lat = (latMin + latMax) / 2, hw = (latMax - latMin) / 2, w = W_BOX, stop = false, kind = inst.Name }
@@ -613,8 +779,16 @@ local function refreshWatchObst()
 end
 
 -- static chasms, knock cones, set piece boxes, planned watchers and live monsters
+local crawlerObst, crawlerNear, mastObst = {}, 0, {}
+local doorState = { lastId = 0, pending = nil, pendingAt = 0, held = false }
+
 local function buildObstacles()
     local out = {}
+    if CFG.CfgObst then
+        for _, o in ipairs(cfgObst) do
+            table.insert(out, o)
+        end
+    end
     for _, o in ipairs(chasmObst) do
         table.insert(out, o)
     end
@@ -622,6 +796,12 @@ local function buildObstacles()
         table.insert(out, o)
     end
     for _, o in ipairs(mapBoxes) do
+        table.insert(out, o)
+    end
+    for _, o in ipairs(crawlerObst) do
+        table.insert(out, o)
+    end
+    for _, o in ipairs(mastObst) do
         table.insert(out, o)
     end
     for _, o in ipairs(watchObst) do
@@ -729,7 +909,7 @@ local function guards(dt, model, root)
     prevSpeed = speed
 
     if CFG.PaceAssist then
-        local add = paceAdd(speed, lastThrottle, lastBrake, CFG, dt)
+        local add = paceAdd(speed, lastThrottle, lastBrake, CFG, dt, lastSteer)
         if add > 0 then
             root.AssemblyLinearVelocity = root.AssemblyLinearVelocity + fwd * add
         end
@@ -752,6 +932,8 @@ local function guards(dt, model, root)
 end
 
 -- the value CarController reads this physics step
+local HK = { calls = 0, lastT = os.clock(), dt = 0.02, steer = 0, unstick = 0, startT = 0, watchT = 0, watchN = 0, brake = nil, along = nil, stall = 0, rateN = 0, rateT = os.clock() }
+
 local function computeAssist(st)
     if carRoot == nil or carRoot.Parent == nil then
         return nil
@@ -765,6 +947,9 @@ local function computeAssist(st)
         lastVT = vt
         if reason ~= "drive" then
             stopReason = reason
+        end
+        if os.clock() < HK.unstick then
+            return 0.6, 0, clamp(-steer, -1, 1)
         end
         return t, b, steer
     end
@@ -794,6 +979,10 @@ local function hookRead(ci)
     CarInputMod = ci
     origRead = ci.Read
     ci.Read = function(p86)
+        HK.calls = HK.calls + 1
+        local tNow = os.clock()
+        HK.dt = clamp(tNow - HK.lastT, 0.002, 0.1)
+        HK.lastT = tNow
         local st = origRead(p86)
         if type(st) ~= "table" then
             return st
@@ -804,7 +993,8 @@ local function hookRead(ci)
                 if t ~= nil then
                     st.Throttle = t
                     st.Brake = b
-                    st.Steer = steer
+                    st.Steer = driving and rateLimit(HK.steer, steer, CFG.SteerRate, HK.dt) or steer
+                    HK.steer = st.Steer
                     if driving then
                         st.Handbrake = false
                     end
@@ -850,6 +1040,9 @@ local function setDrive(on)
     stopReason = nil
     prevSpeed = nil
     driving = true
+    HK.startT = os.clock()
+    HK.watchT = os.clock()
+    HK.watchN = HK.calls
     return true
 end
 
@@ -1318,6 +1511,100 @@ LP.Idled:Connect(function()
     end
 end)
 
+-- sideslip of the car in degrees, and its speed along the road
+local function slipState()
+    local look = flat(carRoot.CFrame.LookVector)
+    if look.Magnitude < 0.01 then
+        return 0, 0
+    end
+    local pos = carRoot.Position
+    local s = RoadPath.project(Road, pos.X, pos.Z)
+    local _, _, _, dx, dz = RoadPath.pointAt(Road, s, 0)
+    local fwd = orient(look.Unit, Vector3.new(dx, 0, dz))
+    local right = fwd:Cross(Vector3.yAxis)
+    local v = flat(carRoot.AssemblyLinearVelocity)
+    local along = v:Dot(fwd)
+    local lateral = math.abs(v:Dot(right))
+    return math.deg(math.atan2(lateral, math.max(math.abs(along), 1))), along
+end
+
+-- crawler pit cracks (CrawlerPit parts) and crawler bodies found in workspace. ahead on the road they are obstacles
+local function crawlerScan()
+    crawlerObst = {}
+    crawlerNear = 0
+    if not (CFG.CrawlerDodge and carS) then
+        return
+    end
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        local pos = nil
+        if inst.Name == "CrawlerPit" and inst:IsA("BasePart") then
+            pos = inst.Position
+        elseif inst.Name == "Crawler" and inst:IsA("Model") then
+            pos = inst:GetPivot().Position
+        end
+        if pos then
+            local s, lat = RoadPath.project(Road, pos.X, pos.Z)
+            if s > carS - 10 and s < carS + MAP_AHEAD and math.abs(lat) < ROAD_HALF + 6 then
+                table.insert(crawlerObst, { s = s, sEnd = s, lat = lat, hw = 4.6, w = W_CRAWL, stop = false, kind = inst.Name })
+                if s > carS and s < carS + 200 then
+                    crawlerNear = crawlerNear + 1
+                end
+            end
+        end
+    end
+end
+
+-- a fallen mast (run attributes MastDown or MastBroken, set piece config of this map) blocks the whole road at its S
+local function mastCheck()
+    mastObst = {}
+    local rc = getRunClient()
+    local m = SetPiecesCfg[MapCfg.Id]
+    if not (CFG.MastAvoid and rc and m and m.Kind == "Mast") then
+        return
+    end
+    local down = rc.get("MastDown")
+    local broken = rc.get("MastBroken")
+    if (type(down) == "number" and down > 0) or (type(broken) == "number" and broken > 0) then
+        table.insert(mastObst, { s = m.S - 4, sEnd = m.S + 4, lat = 0, hw = ROAD_HALF, w = W_MAST, stop = false, kind = "mast" })
+    end
+end
+
+local function releaseDoor()
+    if doorState.held then
+        doorState.held = false
+        pcall(function()
+            Remotes.event("DoorHold"):FireServer(false)
+        end)
+    end
+    doorState.pending = nil
+end
+
+local function doorStep()
+    local rc = getRunClient()
+    if not (CFG.AutoDoor and rc) then
+        releaseDoor()
+        return
+    end
+    local phase = rc.get("CrawlerPhase")
+    local mine = rc.get("CrawlerHolder") == LP.UserId
+    local qteOn = rc.get("CrawlerQteOn") == true
+    local qid = rc.get("CrawlerQte")
+    if type(qid) ~= "number" then
+        qid = 0
+    end
+    local act = doorAction(doorState, type(phase) == "string" and phase or "", mine, qteOn, qid, os.clock(), 0.15 + 0.25 * math.random())
+    if act.key then
+        pcall(function()
+            Remotes.event("DoorKey"):FireServer(act.key, true)
+        end)
+    end
+    if act.hold ~= nil then
+        pcall(function()
+            Remotes.event("DoorHold"):FireServer(act.hold)
+        end)
+    end
+end
+
 -- heartbeat: stop handling, guards, timers
 table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
     refreshCar(false)
@@ -1357,6 +1644,44 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
         carS, carLat = nil, nil
     end
 
+    if carModel and carModel.Parent then
+        CFG.LatAccel = (carModel:GetAttribute("ArcadeHandling") == false) and CFG.LatAccelSim or CFG.LatAccelArcade
+    end
+    if driving and carRoot and carS and CFG.CornerAdapt then
+        local slip, along = slipState()
+        CFG.CornerScale = adaptCornerScale(CFG.CornerScale, slip, math.abs(lastSteer), along, dt, CFG)
+    end
+    if driving and carRoot and carS then
+        local _, along = slipState()
+        if CFG.StuckFix then
+            local timer, stuck = stallStep(HK.stall, along, lastThrottle > 0.2, dt)
+            HK.stall = timer
+            if stuck and os.clock() >= HK.unstick then
+                HK.unstick = os.clock() + 1.2
+                HK.stall = 0
+            end
+        end
+        if CFG.BrakeAdapt then
+            HK.brake = brakeSample(HK.brake, along, HK.along, lastBrake, lastThrottle, math.abs(lastSteer), dt)
+            HK.along = along
+            if HK.brake and HK.brake > 10 then
+                CFG.BrakeUse = clamp(0.8 * HK.brake, 12, 90)
+            end
+        end
+    else
+        HK.along = nil
+        HK.stall = 0
+    end
+    if driving and carRoot and os.clock() - HK.watchT >= 1 then
+        if HK.calls == HK.watchN and os.clock() - HK.startT > 2 then
+            stopReason = "hook"
+        end
+        HK.watchN = HK.calls
+        HK.watchT = os.clock()
+    end
+    every("crawler", 0.75, crawlerScan)
+    every("mast", 0.25, mastCheck)
+    doorStep()
     every("mapscan", 0.25, scanMapBoxes)
     every("knocks", 0.5, function()
         scanKnocks()
@@ -1498,6 +1823,31 @@ Route:CreateButton({
 })
 sliderOf(Route, "Top speed", { 20, 250 }, 5, "TopSpeed", " st/s")
 sliderOf(Route, "Corner grip", { 10, 60 }, 1, "LatAccel", " st/s2")
+toggleOf(Route, "Adapt corner speed", "CornerAdapt", nil, "creeps the corner speed up while the car holds the line and backs off when it slides")
+sliderOf(Route, "Feedforward steer", { 0, 2 }, 0.05, "FFGain", "")
+toggleOf(Route, "Crawler dodge", "CrawlerDodge", nil, "steers away from the crawler's pit cracks and the crawler itself")
+toggleOf(Route, "Auto door (crawler QTE)", "AutoDoor", function(On)
+    if not On then
+        releaseDoor()
+    end
+end, "answers each door prompt once and holds the door while it pulls")
+toggleOf(Route, "Mast avoid", "MastAvoid", nil, "treats a fallen mast as a block across the whole road")
+Route:CreateStatus({
+    Name = "Crawler ahead",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        return string.format("%d within 200 st", crawlerNear)
+    end,
+})
+Route:CreateStatus({
+    Name = "Corner scale",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        return string.format("%.2f  (grip %d st/s2)", CFG.CornerScale, math.floor(CFG.LatAccel * CFG.CornerScale))
+    end,
+})
 sliderOf(Route, "Brake decel", { 20, 80 }, 1, "BrakeDecel", " st/s2")
 sliderOf(Route, "Crawl speed", { 5, 60 }, 1, "CrawlSpeed", " st/s")
 sliderOf(Route, "Look ahead", { 10, 120 }, 1, "LookAhead", " st")
@@ -1505,6 +1855,12 @@ sliderOf(Route, "Steer gain", { 1, 8 }, 0.1, "SteerGain")
 sliderOf(Route, "Lane offset", { -8, 8 }, 0.5, "LaneOffset", " st")
 sliderOf(Route, "Stop gap", { 2, 20 }, 1, "StopGap", " st")
 sliderOf(Route, "Clearance", { 0, 5 }, 0.25, "Clearance", " st")
+sliderOf(Route, "Lateral speed", { 4, 25 }, 0.5, "LatSpeed", " st/s")
+sliderOf(Route, "Ramp speed", { 30, 80 }, 1, "RampSpeed", " st/s")
+toggleOf(Route, "Config wrecks and barricades", "CfgObst", nil, "the wrecks, barricades and roadblocks listed in the map config")
+toggleOf(Route, "Adaptive braking", "BrakeAdapt", nil, "measures the car's real braking and plans with it")
+toggleOf(Route, "Stall fix", "StuckFix", nil, "wiggles the wheel for a moment when the car stays stuck")
+sliderOf(Route, "Steer rate", { 1, 8 }, 0.1, "SteerRate", " /s")
 
 local Live = DriveTab:CreateGroupbox({ Name = "Live", Side = "Right" })
 Live:CreateStatus({
@@ -1581,6 +1937,40 @@ Live:CreateStatus({
     end,
 })
 
+Live:CreateStatus({
+    Name = "Hook calls/s",
+    Style = "Row",
+    UpdateRate = 1,
+    Update = function()
+        local now = os.clock()
+        local rate = (HK.calls - HK.rateN) / math.max(0.25, now - HK.rateT)
+        HK.rateN = HK.calls
+        HK.rateT = now
+        return string.format("%d", math.floor(rate + 0.5))
+    end,
+})
+Live:CreateStatus({
+    Name = "Braking used",
+    Style = "Row",
+    UpdateRate = 0.5,
+    Update = function()
+        if CFG.BrakeUse then
+            return string.format("%d st/s2 (measured)", math.floor(CFG.BrakeUse))
+        end
+        return string.format("%d st/s2 (slider)", math.floor(CFG.BrakeDecel))
+    end,
+})
+Live:CreateStatus({
+    Name = "Stall fix",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if HK.unstick > os.clock() then
+            return "<Warning>wiggling</Warning>"
+        end
+        return "<Success>ok</Success>"
+    end,
+})
 local AssistTab = Window:CreateTab({ Name = "Assist", Icon = "shield" })
 local Phys = AssistTab:CreateGroupbox({ Name = "Physics", Side = "Left" })
 toggleOf(Phys, "Anti tumble", "AntiTumble", nil, "upright the car when it lies on its side")
@@ -1762,6 +2152,7 @@ SetTab:CreateConfigManager({ Side = "Left" })
 SetTab:CreateThemeManager({ Side = "Right" })
 
 Window:OnUnload(function()
+    releaseDoor()
     for _, c in ipairs(CONN) do
         c:Disconnect()
     end
