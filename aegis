@@ -1,0 +1,155 @@
+-- MTC_Script.lua
+-- Assumptions: inject as LocalScript in PlayerGui or StarterCharacterScripts
+-- NoRecoil: hooks Recoil.OnShot -> zeroes injectRotation
+-- NoSpread: hooks CameraKernel Spread.Step -> returns aimSpreadScale = 0
+-- RPM: patches fireDelayMs in resolved gun config cache (client-side prediction only;
+--      server enforces its own fireDelayMs so actual server RPM won't change — this
+--      only removes client-side fire rate gating so prediction fires as fast as you click)
+-- ESP/Aimbot: He said UI handles that, skipped
+
+local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local lp = Players.LocalPlayer
+
+-- ─────────────────────────────────────────────
+-- CONFIG (wire to your UI)
+-- ─────────────────────────────────────────────
+local cfg = {
+    noRecoil   = true,
+    noSpread   = true,
+    fastRPM    = false,  -- risky: desync w/ server prediction
+}
+
+-- ─────────────────────────────────────────────
+-- HOOK HELPERS
+-- ─────────────────────────────────────────────
+local function hookMethod(tbl, name, fn)
+    local orig = tbl[name]
+    tbl[name] = function(...)
+        return fn(orig, ...)
+    end
+    return orig
+end
+
+-- ─────────────────────────────────────────────
+-- NO RECOIL
+-- CameraInput.injectRotation is what Recoil.lua calls to push
+-- pitch/yaw into the camera each frame. Zero it out.
+-- ─────────────────────────────────────────────
+local function patchRecoil()
+    local ok, CameraInput = pcall(function()
+        return require(RS.Client.Core.PlayerModule.CameraModule.CameraInput)
+    end)
+    if not ok then warn("[V] CameraInput not found:", CameraInput) return end
+
+    hookMethod(CameraInput, "injectRotation", function(orig, delta)
+        if cfg.noRecoil then
+            -- swallow the injection entirely
+            return
+        end
+        return orig(delta)
+    end)
+end
+
+-- ─────────────────────────────────────────────
+-- NO SPREAD
+-- CameraKernel.Spread.OnShot increments aimSpreadScale.
+-- Hook it so the state's aimSpreadScale stays 0.
+-- ─────────────────────────────────────────────
+local function patchSpread()
+    local ok, CameraKernel = pcall(function()
+        return require(RS.Shared.Math.CameraKernel)
+    end)
+    if not ok then warn("[V] CameraKernel not found:", CameraKernel) return end
+
+    local Spread = CameraKernel.Spread
+    if not Spread then warn("[V] Spread module missing from CameraKernel") return end
+
+    hookMethod(Spread, "OnShot", function(orig, state, ...)
+        if cfg.noSpread then
+            -- don't increment spread on shot
+            return
+        end
+        return orig(state, ...)
+    end)
+
+    hookMethod(Spread, "Step", function(orig, state, ...)
+        local result = orig(state, ...)
+        if cfg.noSpread and state then
+            state.aimSpreadScale = 0
+        end
+        return result
+    end)
+end
+
+-- ─────────────────────────────────────────────
+-- FAST RPM (client prediction side)
+-- GunBase reads cfg.fireDelayMs from the resolved config.
+-- We patch the Config resolver so it returns fireDelayMs = 1
+-- for the local player's active weapon.
+-- NOTE: server validates shots with its own fireDelayMs,
+-- so this won't let you actually fire faster server-side —
+-- it only removes the client gate so clicks aren't dropped.
+-- ─────────────────────────────────────────────
+local function patchRPM()
+    local ok, GunConfig = pcall(function()
+        return require(RS.Shared.Features.Gun.Config)
+    end)
+    if not ok then warn("[V] Gun.Config not found:", GunConfig) return end
+
+    -- The resolver has a :GetIn(layer, itemId, loadoutCode) method
+    -- that returns the final merged config table (which includes .fireDelayMs).
+    -- We wrap it and patch the returned table.
+    local resolver = GunConfig.newResolver and GunConfig.newResolver()
+    if not resolver then warn("[V] Gun.Config.newResolver not found") return end
+
+    hookMethod(resolver, "GetIn", function(orig, self, layer, itemId, loadoutCode)
+        local result = orig(self, layer, itemId, loadoutCode)
+        if cfg.fastRPM and result and result.fireDelayMs then
+            result = table.clone(result)
+            result.fireDelayMs = 1
+        end
+        return result
+    end)
+end
+
+-- ─────────────────────────────────────────────
+-- INIT — wait for character + modules to load
+-- ─────────────────────────────────────────────
+local function init()
+    -- modules are require-cached so safe to call multiple times
+    task.delay(2, function()  -- give game scripts a head start
+        patchRecoil()
+        patchSpread()
+        if cfg.fastRPM then patchRPM() end
+        print("[V] MTC patches active")
+    end)
+end
+
+if lp.Character then
+    init()
+else
+    lp.CharacterAdded:Once(init)
+end
+
+-- ─────────────────────────────────────────────
+-- HOTKEYS (while you wire up the UI)
+-- INSERT  = toggle noRecoil
+-- DELETE  = toggle noSpread
+-- END     = toggle fastRPM
+-- ─────────────────────────────────────────────
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.Insert then
+        cfg.noRecoil = not cfg.noRecoil
+        print("[V] noRecoil:", cfg.noRecoil)
+    elseif input.KeyCode == Enum.KeyCode.Delete then
+        cfg.noSpread = not cfg.noSpread
+        print("[V] noSpread:", cfg.noSpread)
+    elseif input.KeyCode == Enum.KeyCode.End then
+        cfg.fastRPM = not cfg.fastRPM
+        print("[V] fastRPM:", cfg.fastRPM)
+    end
+end)
