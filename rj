@@ -1,4 +1,15 @@
--- Tokaihub v7. MTC client helper, executor only.
+-- Tokaihub v13. MTC client helper, executor only.
+-- v13: the teleport runs from a queue, inside a hook on CarInput.Read, in the physics step. the finish is crossed by the game's own lineStep.
+-- v12: teleport run (each checkpoint in turn, then the finish line through LineCross) and next-checkpoint jump, in the Assist tab.
+-- the Server mile status shows what the server counted, so a jump the server rejects shows up as a number that does not move.
+-- v11: every tag shows what it is, its live distance from the car in studs, its side, and for a road marker the time to it.
+-- monsters show their State when the game gives one. new route markers: avalanche spots and pads, read from the world config.
+-- v10: a knock model that is a body (wreck, van) is a solid thing, a cone stays soft, the sweep starts 10 studs behind the car,
+-- and the status shows the solid thing in the lane the car will take.
+-- v9: every collidable part ahead is found by a sweep (not a list), cars and monsters are tracked every frame with their
+-- velocity, obstacles are met at the time the car reaches them, and the car follows a slower thing ahead instead of stopping.
+-- v8: obstacles have three kinds. solid (wrecks, other cars, monsters) is avoided and crept past, pits stop the car, and
+-- fences (roadblock styles) are never stopped for: the car takes them at PassSpeed, because the game wants them hit.
 -- v7: a hook health check (stops with a message if CarInput is not called), braking measured from the car, the steering
 -- command rate-limited, a stall wiggle, and a guard against moving backwards. telemetry in the Drive tab.
 -- v6: the map config's Wrecks, Barricades and Roadblocks are obstacles, jump ramps (Jumps.Lateral and Length) never block
@@ -33,6 +44,7 @@ local ChaseCfg = require(Shared.Config.Chase)
 local IntruderCfg = require(Shared.Config.Intruder)
 local RallyCfg = require(Shared.Config.Rally)
 local SetPiecesCfg = require(Shared.Config.SetPieces)
+local AreasCfg = require(Shared.Config.Areas)
 local Remotes = require(Shared.Remotes)
 
 local Road = RoadPath.build(WorldCfg)
@@ -50,7 +62,7 @@ local CFG = {
     LaneOffset = 0,               -- + is right of the driving direction
     ArriveDist = 10,
     StopGap = 8,                  -- studs kept from a blocking obstacle
-    CrawlSpeed = 20,              -- st/s floor when every lane is blocked, so the car never stops dead in a jam
+    CrawlSpeed = 30,              -- st/s floor when every lane is blocked, so the car never stops dead in a jam
     CarHalf = CarCfg.ChassisSize[1] / 2,
     CornerScale = 1.0,            -- adapted at runtime to the grip the car really has
     CornerAdapt = true,
@@ -60,9 +72,11 @@ local CFG = {
     Wheelbase = CarCfg.ChassisSize[3] * 0.65,  -- estimate, not read from the car
     PaceSteerMax = 0.35,
     CrawlerDodge = true,
-    LatSpeed = 10,                -- studs/s the car can move sideways when it changes lane
+    LatSpeed = 12,                -- studs/s the car can move sideways when it changes lane
     RampSpeed = 42,               -- keep at least this speed to take a jump (the chassis needs 35 to launch)
     CfgObst = true,
+    PassSpeed = 100,              -- the most speed kept when a fence must be hit
+    CarBlock = true,              -- other cars, dead or stopped, are obstacles
     SteerRate = 4.0,              -- the most the wheel command may change per second
     BrakeAdapt = true,            -- measure the car's real braking and plan with it
     StuckFix = true,              -- wiggle the wheel for a moment when the car stays stuck               -- the Wrecks, Barricades and Roadblocks listed in the map config          -- steer away from crawler pit cracks and the crawler body
@@ -137,6 +151,7 @@ local MAP_AHEAD = 330
 -- BEGIN LOGIC
 local W_KNOCK, W_CHASM, W_WATCH, W_MON, W_BOX = 40, 400, 60, 120, 80
 local W_CRAWL, W_MAST = 150, 200
+local W_CAR, W_FENCE = 120, 10
 local PROFILE_D = { 12, 25, 40, 60, 85, 115, 150, 200, 260 }
 
 local function clamp(x, a, b)
@@ -205,111 +220,157 @@ local function adaptCornerScale(scale, slipDeg, steerAbs, along, dt, cfg)
     return clamp(scale, 0.9, 1.6)
 end
 
+-- a moving thing's velocity, smoothed against the last one seen
+local function smoothVel(old, new, k)
+    if old == nil then
+        return new
+    end
+    return old + (new - old) * k
+end
+
+-- when the car's front reaches an obstacle: the gap now, the time it takes, and where the obstacle is then.
+-- nil when the car is not closing on it
+local function meetInfo(sCar, vplan, o, cfg, roadHalf)
+    local gap = math.max(0, o.s - sCar - cfg.CarHalfLen)
+    local closing = vplan - (o.vs or 0)
+    local tm = 0
+    if gap > 0 then
+        if closing <= 0.5 then
+            return nil
+        end
+        tm = math.min(4, gap / closing)
+    end
+    local latAt = clamp((o.lat or 0) + (o.vl or 0) * tm, -roadHalf - 4, roadHalf + 4)
+    return gap, tm, latAt
+end
+
 local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, obst, prevLane)
     local pos = root.Position
     local look = flat(root.CFrame.LookVector)
     if look.Magnitude < 0.01 then
-        return 0, 0, 0, "no heading", prevLane, nil, 0
+        return 0, 0, 0, "no heading", prevLane, nil, 0, nil
     end
     local fwd = look.Unit
     local v = flat(root.AssemblyLinearVelocity)
-    local target, vT, lane, gapBest
-    local ff = 0
+    local brakeDecel = cfg.BrakeUse or cfg.BrakeDecel
+    local target, vT, lane = nil, 0, prevLane
+    local solidGap, solidVs, fenceGap, ff = nil, 0, nil, 0
+    local solidKind = nil
 
     if dest then
         local toD = flat(dest - pos)
         if toD.Magnitude < cfg.ArriveDist then
-            return 0, 1, 0, "arrived", prevLane, nil, 0
+            return 0, 1, 0, "arrived", prevLane, nil, 0, nil
         end
         if v.Magnitude > 3 then
             fwd = orient(fwd, v.Unit)
         end
         target = dest
         vT = cfg.TopSpeed
-        lane = prevLane
     else
         local sCar, latNow = rp.project(road, pos.X, pos.Z)
         if sCar >= finishS - 2 then
-            return 0, 1, 0, "finish", prevLane, nil, 0
+            return 0, 1, 0, "finish", prevLane, nil, 0, nil
         end
         local _, _, _, rdx, rdz = rp.pointAt(road, sCar, 0)
         fwd = orient(fwd, Vector3.new(rdx, 0, rdz))
         local vf = math.max(0, v:Dot(fwd))
+        -- the speed the car is about to be at: a stopped car still plans to move, so obstacles ahead are met at 40 st/s
+        local vplan = math.max(vf, 40)
         local horizon = clamp(40 + vf * 1.2, 45, 260)
         local maxLat = math.max(0, roadHalf - cfg.CarHalf - cfg.EdgeMargin)
         local base = prevLane or cfg.LaneOffset
 
-        -- only the obstacles that can meet the car within the horizon
+        -- what meets the car within the horizon, with the time and place of the meeting. ramps never block
         local near, ramps = {}, {}
         for i = 1, #obst do
             local o = obst[i]
-            local ds0 = o.s - sCar
-            local ds1 = (o.sEnd or o.s) - sCar
             if o.ramp then
+                local ds0 = o.s - sCar
                 if ds0 > 0 and ds0 < 80 then
                     table.insert(ramps, o)
                 end
-            elseif ds1 > -cfg.CarHalfLen and ds0 < horizon then
-                table.insert(near, o)
-            end
-        end
-
-        local function evalLane(l)
-            local cost = math.abs(l - cfg.LaneOffset) * cfg.CenterW + math.abs(l - base) * cfg.HysteresisW
-            local gap, stopGap = nil, nil
-            for i = 1, #near do
-                local o = near[i]
+            else
                 local ds0 = o.s - sCar
-                if math.abs(l - o.lat) < o.hw + cfg.CarHalf + cfg.Clearance then
-                    cost = cost + o.w * (0.4 + (1 - clamp(ds0 / horizon, 0, 1)))
-                    local g = math.max(0, ds0 - cfg.CarHalfLen)
-                    if gap == nil or g < gap then
-                        gap = g
-                    end
-                    if o.stop and (stopGap == nil or g < stopGap) then
-                        stopGap = g
+                local ds1 = (o.sEnd or o.s) - sCar
+                if ds1 > -cfg.CarHalfLen and ds0 < horizon then
+                    local gap, tm, latAt = meetInfo(sCar, vplan, o, cfg, roadHalf)
+                    if gap then
+                        table.insert(near, { o = o, gap = gap, latAt = latAt, vs = o.vs or 0 })
                     end
                 end
             end
-            return cost, gap, stopGap
         end
 
-        local bestCost, gapA, stopA = evalLane(cfg.LaneOffset)
+        -- a lane's cost, and the nearest meeting of each kind: a solid thing (with its speed), a pit (stop) and a fence
+        local function evalLane(l)
+            local cost = math.abs(l - cfg.LaneOffset) * cfg.CenterW + math.abs(l - base) * cfg.HysteresisW
+            local gS, gVs, gStop, gF, gK = nil, 0, nil, nil, nil
+            for i = 1, #near do
+                local n = near[i]
+                local o = n.o
+                if math.abs(l - n.latAt) < o.hw + cfg.CarHalf + cfg.Clearance then
+                    cost = cost + o.w * (0.4 + (1 - clamp(n.gap / horizon, 0, 1)))
+                    if o.soft then
+                        -- a cone: its cost only, the car knocks it over
+                    elseif o.fence then
+                        if gF == nil or n.gap < gF then
+                            gF = n.gap
+                        end
+                    else
+                        if gS == nil or n.gap < gS then
+                            gS = n.gap
+                            gVs = n.vs
+                            gK = n.o.kind
+                        end
+                        if o.stop and (gStop == nil or n.gap < gStop) then
+                            gStop = n.gap
+                        end
+                    end
+                end
+            end
+            return cost, gS, gStop, gF, gVs, gK
+        end
+
+        local bestCost, gS0, gStop0, gF0, gV0, gK0 = evalLane(cfg.LaneOffset)
         lane = cfg.LaneOffset
-        gapBest = gapA
-        local stopBest = stopA
+        local gStop = gStop0
+        solidGap, solidVs, fenceGap, solidKind = gS0, gV0, gF0, gK0
         for k = -maxLat, maxLat, 0.5 do
-            local c, g, sg = evalLane(k)
+            local c, gS1, gStop1, gF1, gV1, gK1 = evalLane(k)
             if c < bestCost then
                 bestCost = c
                 lane = k
-                gapBest = g
-                stopBest = sg
+                solidGap, solidVs, gStop, fenceGap, solidKind = gS1, gV1, gStop1, gF1, gK1
             end
         end
 
         local aheadS = clamp(sCar + cfg.LookAhead + vf * 0.45, 0, roadEnd)
         local tx, ty, tz = rp.pointAt(road, aheadS, lane)
         target = Vector3.new(tx, ty, tz)
-
         ff = steerFeedforward(road, rp, sCar, cfg)
+
         vT = math.min(cfg.TopSpeed, speedAllowed(sCar, road, rp, cfg, roadEnd))
-        -- the chosen lane is still blocked: pits stop the car, anything else is taken at crawl speed
-        if stopBest then
-            vT = math.min(vT, math.sqrt(math.max(0, 2 * (cfg.BrakeUse or cfg.BrakeDecel) * (stopBest - cfg.StopGap))))
-        elseif gapBest then
-            vT = math.min(vT, math.max(cfg.CrawlSpeed, math.sqrt(math.max(0, 2 * (cfg.BrakeUse or cfg.BrakeDecel) * (gapBest - cfg.StopGap)))))
+        -- a pit in the lane stops the car. a solid thing ahead is followed at its own speed plus what the brakes allow,
+        -- and a static one is crept past. a fence is never stopped for, only capped at PassSpeed
+        if gStop then
+            vT = math.min(vT, math.sqrt(math.max(0, 2 * brakeDecel * (gStop - cfg.StopGap))))
+        elseif solidGap then
+            local follow = solidVs + math.sqrt(math.max(0, 2 * brakeDecel * (solidGap - cfg.StopGap)))
+            vT = math.min(vT, math.max(cfg.CrawlSpeed, follow))
+        elseif fenceGap then
+            vT = math.min(vT, cfg.PassSpeed)
         end
-        -- a lane change takes dl / LatSpeed seconds, so the car must be slow enough to make it before the blocker it leaves
+        -- a lane change takes dl / LatSpeed seconds: leave the lane early enough to miss a solid thing in it
         local dl = math.abs(lane - latNow)
         if dl > 0.5 then
-            local _, gapCur = evalLane(latNow)
-            if gapCur then
-                vT = math.min(vT, math.max(cfg.CrawlSpeed, gapCur * cfg.LatSpeed / dl))
+            local _, gCur = evalLane(latNow)
+            if gCur then
+                vT = math.min(vT, math.max(cfg.CrawlSpeed, gCur * cfg.LatSpeed / dl))
             end
         end
         -- a jump on the lane is taken at speed, so the car leaves the ground
-        if not gapBest then
+        if not solidGap and not gStop then
             for _, r in ipairs(ramps) do
                 if math.abs(lane - r.lat) < r.hw + cfg.CarHalf then
                     vT = math.max(vT, math.min(cfg.RampSpeed, cfg.TopSpeed))
@@ -344,7 +405,7 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
     if speed < -1.5 then
         throttle, brake = 0, 1
     end
-    return throttle, brake, steer, "drive", lane, gapBest, vT
+    return throttle, brake, steer, "drive", lane, solidGap, vT, fenceGap, solidKind
 end
 
 -- RoadKeep.steer replacement: the same zeroing the game does when RoadKeep is not in use
@@ -396,7 +457,14 @@ local function boxAccept(sSpan, latSpan, yTop, yBot, ySpan)
     if sSpan > 40 or latSpan > 90 then
         return false
     end
-    if yBot > 3.4 or yTop < 1.0 or ySpan < 0.8 then
+    if yBot > 3.4 then
+        return false
+    end
+    local carSized = sSpan >= 3.5 and sSpan <= 15 and latSpan >= 3.5 and latSpan <= 9
+    if carSized and ySpan >= 0.3 then
+        return true
+    end
+    if yTop < 1.0 or ySpan < 0.8 then
         return false
     end
     if latSpan > 20 and yTop < 3.0 and sSpan > 6 then
@@ -496,7 +564,7 @@ local lightSaved = nil
 local ribbonParts = {}
 local ribbonFolder = nil
 local markerFolder = nil
-local MARK = { cp = {}, fin = {}, haz = {} }
+local MARK = { cp = {}, fin = {}, haz = {}, av = {}, pad = {}, items = {} }
 local markersBuilt = false
 local CONN = {}
 local nextAt = {}
@@ -505,14 +573,14 @@ local nextAt = {}
 local cfgObst = {}
 for _, row in ipairs(WorldCfg.Wrecks or {}) do
     local s0, lat0 = row[1], row[2]
-    table.insert(cfgObst, { s = s0 - 6.5, sEnd = s0 + 6.5, lat = lat0, hw = 3.4, w = W_BOX, stop = false, kind = "wreck" })
+    table.insert(cfgObst, { s = s0 - 6.5, sEnd = s0 + 6.5, lat = lat0, hw = 3.4, w = W_CAR, stop = false, kind = "wreck" })
 end
 for _, row in ipairs(WorldCfg.Barricades or {}) do
     local s0, lat0 = row[1], row[2]
     table.insert(cfgObst, { s = s0 - 4, sEnd = s0 + 4, lat = lat0, hw = 3.2, w = W_BOX, stop = false, kind = "barricade" })
 end
 for _, row in ipairs(WorldCfg.Roadblocks or {}) do
-    table.insert(cfgObst, { s = row[1] - 3, sEnd = row[1] + 3, lat = 0, hw = 4, w = W_BOX, stop = false, kind = "roadblock" })
+    table.insert(cfgObst, { s = row[1] - 3, sEnd = row[1] + 3, lat = 0, hw = 4, w = W_FENCE, stop = false, fence = true, kind = "roadblock" })
 end
 for _, c in ipairs(WorldCfg.Chasms or {}) do
     if c.radius then
@@ -645,7 +713,7 @@ local function scanKnocks()
                 p = m:GetPivot().Position
             end
             local s, lat = RoadPath.project(Road, p.X, p.Z)
-            table.insert(knockCache, { s = s, sEnd = s, lat = lat, hw = KNOCK_HW, w = W_KNOCK, stop = false, kind = "knock" })
+            table.insert(knockCache, { s = s, sEnd = s, lat = lat, hw = KNOCK_HW, w = W_KNOCK, stop = false, soft = true, kind = "knock" })
         end
     end
 end
@@ -708,47 +776,59 @@ local function boxFor(inst)
     if not boxAccept(sMax - sMin, latMax - latMin, yMax - roadY, yMin - roadY, yMax - yMin) then
         return nil
     end
-    return { s = sMin, sEnd = sMax, lat = (latMin + latMax) / 2, hw = (latMax - latMin) / 2, w = W_BOX, stop = false, kind = inst.Name }
+    local fence = AreasCfg.RoadblockStyles[inst.Name] == true
+    local dS, dL = sMax - sMin, latMax - latMin
+    local carSized = dS >= 3.5 and dS <= 15 and dL >= 3.5 and dL <= 9
+    local w = fence and W_FENCE or (carSized and W_CAR or W_BOX)
+    return { s = sMin, sEnd = sMax, lat = (latMin + latMax) / 2, hw = dL / 2, w = w, stop = false, fence = fence, kind = inst.Name, sLen = dS, lLen = dL, top = yMax - roadY }
 end
 
+-- every collidable part ahead, found by a sweep of boxes along the road (not by a list of names).
+-- parts of one model are one object, and boxFor keeps only the ones the car can hit
 local function scanMapBoxes()
     mapBoxes = {}
     boxesAhead = 0
-    local map = workspace:FindFirstChild("Map")
-    if not map or not carS then
+    if not (carS and carModel) then
         return
     end
-    local function consider(inst)
-        if inst:GetAttribute("Knock") then
-            return
-        end
-        local pos
-        if inst:IsA("Model") then
-            pos = inst:GetPivot().Position
-        elseif inst:IsA("BasePart") then
-            pos = inst.Position
-        else
-            return
-        end
-        local s = RoadPath.project(Road, pos.X, pos.Z)
-        if s < carS - 40 or s > carS + MAP_AHEAD then
-            return
-        end
-        local b = boxFor(inst)
-        if b then
-            table.insert(mapBoxes, b)
-            if b.s > carS and b.s < carS + 200 then
-                boxesAhead = boxesAhead + 1
-            end
-        end
+    local params = OverlapParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
+    local ex = { carModel }
+    if markerFolder then
+        table.insert(ex, markerFolder)
     end
-    for _, child in ipairs(map:GetChildren()) do
-        if child:IsA("Folder") then
-            for _, sub in ipairs(child:GetChildren()) do
-                consider(sub)
+    if ribbonFolder then
+        table.insert(ex, ribbonFolder)
+    end
+    params.FilterDescendantsInstances = ex
+    local mf = monstersFolder()
+    local seen, count = {}, 0
+    for k = 0, 3 do
+        local sC = clamp(carS - 10 + k * 80 + 45, 0, ROAD_END)
+        local cx, cy, cz, dx, dz = RoadPath.pointAt(Road, sC, 0)
+        local at = Vector3.new(cx, cy + 6, cz)
+        local cf = CFrame.lookAt(at, at + Vector3.new(dx, 0, dz))
+        local parts = workspace:GetPartBoundsInBox(cf, Vector3.new(2 * ROAD_HALF + 10, 14, 90), params)
+        for _, part in ipairs(parts) do
+            local key = part:FindFirstAncestorOfClass("Model") or part
+            if not seen[key] and count < 400 then
+                seen[key] = true
+                count = count + 1
+                local skip = (mf ~= nil and key:IsDescendantOf(mf)) or key:GetAttribute("Knocked") or key.Name == "Crawler"
+                    or key.Name == "CrawlerPit" or key:FindFirstChild("DriverSeat", true) ~= nil
+                if not skip then
+                    local b = boxFor(key)
+                    if b and key:GetAttribute("Knock") and not (b.ramp or b.fence or ((b.top or 0) >= 2.0 and ((b.sLen or 0) >= 3.0 or (b.lLen or 0) >= 3.0))) then
+                        b = nil -- a cone: the knockdown module already treats it as soft
+                    end
+                    if b then
+                        table.insert(mapBoxes, b)
+                        if b.s > carS and b.s < carS + 200 then
+                            boxesAhead = boxesAhead + 1
+                        end
+                    end
+                end
             end
-        else
-            consider(child)
         end
     end
 end
@@ -779,23 +859,93 @@ local function refreshWatchObst()
 end
 
 -- static chasms, knock cones, set piece boxes, planned watchers and live monsters
+local otherCars, otherCarModels, monHist = {}, {}, {}
 local crawlerObst, crawlerNear, mastObst = {}, 0, {}
+
+-- footprint of a model in the road frame: its extent along the road and across it
+local function footprintOf(inst)
+    local cf, size = inst:GetBoundingBox()
+    local sMin, sMax = math.huge, -math.huge
+    local latMin, latMax = math.huge, -math.huge
+    for i = 0, 7 do
+        local ox = ((i % 2 == 0) and -0.5 or 0.5) * size.X
+        local oy = ((math.floor(i / 2) % 2 == 0) and -0.5 or 0.5) * size.Y
+        local oz = ((math.floor(i / 4) % 2 == 0) and -0.5 or 0.5) * size.Z
+        local p = (cf * CFrame.new(ox, oy, oz)).Position
+        local s, lat = RoadPath.project(Road, p.X, p.Z)
+        if s < sMin then
+            sMin = s
+        end
+        if s > sMax then
+            sMax = s
+        end
+        if lat < latMin then
+            latMin = lat
+        end
+        if lat > latMax then
+            latMax = lat
+        end
+    end
+    return sMin, sMax, latMin, latMax
+end
+
+-- every car on the map (dead, stopped, or driven by someone else), found every 2 seconds
+local function discoverCars()
+    otherCarModels = {}
+    if not CFG.CarBlock then
+        return
+    end
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("Model") and d ~= carModel and d:FindFirstChild("Chassis") and d:FindFirstChild("DriverSeat", true) then
+            table.insert(otherCarModels, d)
+        end
+    end
+end
+
+-- each car's position and velocity now, from its chassis: a moving car is where it is, not where it was
+local function refreshOtherCars()
+    otherCars = {}
+    if not (CFG.CarBlock and carS and carModel) then
+        return
+    end
+    for _, d in ipairs(otherCarModels) do
+        local chassis = d.Parent and d:FindFirstChild("Chassis")
+        if chassis and chassis:IsA("BasePart") and d ~= carModel then
+            local sC = RoadPath.project(Road, chassis.Position.X, chassis.Position.Z)
+            local _, _, _, dx, dz = RoadPath.pointAt(Road, clamp(sC, 0, ROAD_END), 0)
+            local dir = Vector3.new(dx, 0, dz)
+            local vel = flat(chassis.AssemblyLinearVelocity)
+            local sMin, sMax, latMin, latMax = footprintOf(d)
+            if sMax - sMin <= 30 and latMax - latMin <= 16 and sMax > carS - 40 and sMin < carS + MAP_AHEAD then
+                table.insert(otherCars, {
+                    s = sMin, sEnd = sMax, lat = (latMin + latMax) / 2, hw = (latMax - latMin) / 2,
+                    w = W_CAR, stop = false, vs = vel:Dot(dir), vl = vel:Dot(dir:Cross(Vector3.yAxis)), kind = "car",
+                })
+            end
+        end
+    end
+end
+
 local doorState = { lastId = 0, pending = nil, pendingAt = 0, held = false }
 
 local function buildObstacles()
+    refreshOtherCars()
     local out = {}
+    for _, o in ipairs(chasmObst) do
+        table.insert(out, o)
+    end
     if CFG.CfgObst then
         for _, o in ipairs(cfgObst) do
             table.insert(out, o)
         end
     end
-    for _, o in ipairs(chasmObst) do
-        table.insert(out, o)
-    end
     for _, o in ipairs(knockCache) do
         table.insert(out, o)
     end
     for _, o in ipairs(mapBoxes) do
+        table.insert(out, o)
+    end
+    for _, o in ipairs(otherCars) do
         table.insert(out, o)
     end
     for _, o in ipairs(crawlerObst) do
@@ -808,13 +958,29 @@ local function buildObstacles()
         table.insert(out, o)
     end
     local folder = monstersFolder()
+    local now = os.clock()
+    local seenNow = {}
     if folder then
         for _, m in ipairs(folder:GetChildren()) do
             if m:IsA("Model") then
                 local p = m:GetPivot().Position
                 local s, lat = RoadPath.project(Road, p.X, p.Z)
-                table.insert(out, { s = s, sEnd = s, lat = lat, hw = MONSTER_HW[m.Name] or 3.5, w = W_MON, stop = false, kind = m.Name })
+                local vs, vl = 0, 0
+                local h = monHist[m]
+                if h and now > h.t and now - h.t < 0.6 then
+                    local dt = now - h.t
+                    vs = smoothVel(h.vs, (s - h.s) / dt, 0.5)
+                    vl = smoothVel(h.vl, (lat - h.lat) / dt, 0.5)
+                end
+                monHist[m] = { s = s, lat = lat, t = now, vs = vs, vl = vl }
+                seenNow[m] = true
+                table.insert(out, { s = s, sEnd = s, lat = lat, hw = MONSTER_HW[m.Name] or 3.5, w = W_MON, stop = false, vs = vs, vl = vl, kind = m.Name })
             end
+        end
+    end
+    for m in pairs(monHist) do
+        if not seenNow[m] then
+            monHist[m] = nil
         end
     end
     return out
@@ -935,16 +1101,19 @@ end
 local HK = { calls = 0, lastT = os.clock(), dt = 0.02, steer = 0, unstick = 0, startT = 0, watchT = 0, watchN = 0, brake = nil, along = nil, stall = 0, rateN = 0, rateT = os.clock() }
 
 local function computeAssist(st)
+    HK.solid, HK.solidGap = nil, nil
     if carRoot == nil or carRoot.Parent == nil then
         return nil
     end
     if driving then
-        local t, b, steer, reason, lane, gap, vt = planDrive(carRoot, dest, Road, RoadPath, CFG, FINISH_S, ROAD_END, ROAD_HALF, obstNow, prevLane)
+        local t, b, steer, reason, lane, gap, vt, fenceAt, solidKind = planDrive(carRoot, dest, Road, RoadPath, CFG, FINISH_S, ROAD_END, ROAD_HALF, obstNow, prevLane)
+        HK.solid, HK.solidGap = solidKind, gap
         if lane ~= nil then
             prevLane = lane
         end
         lastHit = gap
         lastVT = vt
+        HK.fence = fenceAt
         if reason ~= "drive" then
             stopReason = reason
         end
@@ -984,6 +1153,14 @@ local function hookRead(ci)
         HK.dt = clamp(tNow - HK.lastT, 0.002, 0.1)
         HK.lastT = tNow
         local st = origRead(p86)
+        local q = HK.tpQueue
+        if q and q[1] then
+            local okJ, errJ = pcall(HK.tpStep)
+            if not okJ then
+                HK.tpErr = tostring(errJ)
+                warn("[tokaihub] jump: " .. HK.tpErr)
+            end
+        end
         if type(st) ~= "table" then
             return st
         end
@@ -1065,7 +1242,8 @@ local function espFor(model, name, color, range)
     })
 end
 
--- route markers: ESP objects on invisible anchored parts, placed by the same road the car follows
+-- route markers: ESP objects on invisible anchored parts, placed by the same road the car follows.
+-- their tags are rewritten by MARK.update, so each one shows its distance and side from the car
 local function buildMarkers()
     if markersBuilt then
         return
@@ -1097,21 +1275,129 @@ local function buildMarkers()
         })
         obj:Hide()
         table.insert(MARK[group], obj)
+        MARK.items[obj] = { name = label, s = s, pos = part.Position }
     end
 
     for i, s in ipairs(WorldCfg.Checkpoints or {}) do
-        mark("cp", s, 0, "CP" .. i .. "  s " .. math.floor(s), Color3.fromRGB(90, 200, 255))
+        mark("cp", s, 0, "checkpoint " .. i, Color3.fromRGB(90, 200, 255))
     end
-    mark("fin", FINISH_S, 0, "FINISH  s " .. math.floor(FINISH_S), Color3.fromRGB(120, 255, 120))
+    mark("fin", FINISH_S, 0, "finish", Color3.fromRGB(120, 255, 120))
     for _, w in ipairs(WorldCfg.Wrecks or {}) do
-        mark("haz", w[1], w[2], "wreck  s " .. math.floor(w[1]), Color3.fromRGB(255, 90, 90))
+        mark("haz", w[1], w[2], "wreck", Color3.fromRGB(255, 90, 90))
     end
     for _, b in ipairs(WorldCfg.Barricades or {}) do
-        mark("haz", b[1], b[2], "barricade  s " .. math.floor(b[1]), Color3.fromRGB(255, 140, 60))
+        mark("haz", b[1], b[2], "barricade", Color3.fromRGB(255, 140, 60))
     end
     for _, r in ipairs(WorldCfg.Roadblocks or {}) do
-        mark("haz", r[1], 0, tostring(r[2]) .. "  s " .. math.floor(r[1]), Color3.fromRGB(255, 90, 90))
+        mark("haz", r[1], 0, "roadblock " .. tostring(r[2]), Color3.fromRGB(255, 90, 90))
     end
+    local avSpots = WorldCfg.Avalanches and WorldCfg.Avalanches.Spots or {}
+    for _, a in ipairs(avSpots) do
+        local side = (a[2] or 1) < 0 and -1 or 1
+        mark("av", a[1], side * (ROAD_HALF + 4), "avalanche from " .. (side < 0 and "left" or "right"), Color3.fromRGB(190, 230, 255))
+    end
+    for _, pad in ipairs(WorldCfg.Pads or {}) do
+        if typeof(pad.fromS) == "number" and typeof(pad.toS) == "number" then
+            mark("pad", (pad.fromS + pad.toS) / 2, 0, "pad " .. tostring(pad.name or "?"), Color3.fromRGB(255, 230, 120))
+        end
+    end
+end
+
+-- live tags: the label of every marker, monster, car and planned watcher, four times a second.
+-- each shows what it is, its distance from the car in studs and its side; a road marker also shows the time to reach it
+MARK.update = function()
+    if not (carRoot and carRoot.Parent and carS) then
+        return
+    end
+    local cp = carRoot.Position
+    local look = carRoot.CFrame.LookVector
+    local spd = carRoot.AssemblyLinearVelocity.Magnitude
+    local function tag(name, pos, sRoad, extra)
+        local dv = pos - cp
+        local side
+        if sRoad then
+            local ds = sRoad - carS
+            if math.abs(ds) < 12 then
+                side = "here"
+            elseif ds > 0 then
+                side = "ahead"
+            else
+                side = "behind"
+            end
+            if ds > 12 then
+                extra = math.floor(ds / math.max(spd, 5) + 0.5) .. " s to it"
+            end
+        else
+            side = dv:Dot(look) >= 0 and "ahead" or "behind"
+        end
+        local text = name .. "  " .. math.floor(dv.Magnitude + 0.5) .. " st " .. side
+        if extra then
+            text = text .. "  " .. extra
+        end
+        return text
+    end
+    for obj, it in pairs(MARK.items) do
+        if not obj.Deleted then
+            obj.CurrentSettings.Name = tag(it.name, it.pos, it.s)
+        end
+    end
+    for m, obj in pairs(monsterEsp) do
+        if m.Parent and not obj.Deleted then
+            local st = m:GetAttribute("State")
+            local label = st and (m.Name .. "  " .. tostring(st)) or m.Name
+            obj.CurrentSettings.Name = tag(label, m:GetPivot().Position, nil)
+        end
+    end
+    for d, obj in pairs(carEsp) do
+        local chassis = d.Parent and d:FindFirstChild("Chassis")
+        if chassis and not obj.Deleted then
+            local kmh = math.floor(chassis.AssemblyLinearVelocity.Magnitude + 0.5)
+            obj.CurrentSettings.Name = tag("car " .. tostring(d:GetAttribute("CarId") or d.Name), chassis.Position, nil, kmh .. " st/s")
+        end
+    end
+    for _, entry in pairs(watchMarkers) do
+        if entry.obj and not entry.obj.Deleted then
+            entry.obj.CurrentSettings.Name = tag("watcher " .. tostring(entry.kind or "?") .. " (planned)", entry.part.Position, entry.s)
+        end
+    end
+end
+
+-- the next route marker ahead, and the nearest monster, worded the same way as their tags
+MARK.next = function()
+    if not carS then
+        return "<Muted>no car</Muted>"
+    end
+    local best, bestDs = nil, math.huge
+    for obj, it in pairs(MARK.items) do
+        local ds = it.s - carS
+        if not obj.Deleted and ds > 0 and ds < bestDs then
+            best, bestDs = it, ds
+        end
+    end
+    if not best then
+        return "<Muted>none ahead</Muted>"
+    end
+    return string.format("%s  %d st ahead", best.name, math.floor(bestDs + 0.5))
+end
+
+MARK.nearest = function()
+    if not (carRoot and carRoot.Parent) then
+        return "<Muted>no car</Muted>"
+    end
+    local bestD, bestLabel = math.huge, nil
+    for m, obj in pairs(monsterEsp) do
+        if m.Parent and not obj.Deleted then
+            local d = (m:GetPivot().Position - carRoot.Position).Magnitude
+            if d < bestD then
+                bestD = d
+                bestLabel = obj.CurrentSettings.Name
+            end
+        end
+    end
+    if not bestLabel then
+        return "<Success>none</Success>"
+    end
+    return "<Warning>" .. bestLabel .. "</Warning>"
 end
 
 local function showGroup(group, on)
@@ -1163,7 +1449,7 @@ local function updateWatchMarkers()
                 MaxDistance = CFG.WatcherAhead + 200,
                 Arrow = { Enabled = true, Color = Color3.fromRGB(255, 220, 90), CenterOffset = 300, Size = 12 },
             })
-            watchMarkers[i] = { part = part, obj = obj }
+            watchMarkers[i] = { part = part, obj = obj, s = w.s, kind = w.kind }
         elseif entry and not inRange then
             entry.obj:Destroy()
             entry.part:Destroy()
@@ -1629,7 +1915,12 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
         local pos = carRoot.Position
         carS, carLat = RoadPath.project(Road, pos.X, pos.Z)
         if driving or CFG.SteerAssist then
-            obstNow = buildObstacles()
+            local okO, resO = pcall(buildObstacles)
+            if okO then
+                obstNow = resO
+            else
+                warn("[tokaihub] obstacles: " .. tostring(resO))
+            end
         end
         local ok, err = pcall(guards, dt, carModel, carRoot)
         if not ok then
@@ -1679,6 +1970,7 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
         HK.watchN = HK.calls
         HK.watchT = os.clock()
     end
+    every("carsFind", 2, discoverCars)
     every("crawler", 0.75, crawlerScan)
     every("mast", 0.25, mastCheck)
     doorStep()
@@ -1699,6 +1991,7 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
     every("watchmarks", 0.5, updateWatchMarkers)
     every("cars", 1, updateCarEsp)
     every("monsters", 1, updateMonsterEsp)
+    every("tags", 0.25, MARK.update)
     every("ambush", 0.5, ambushCheck)
     every("crank", 0.1, crankStep)
     every("burn", 0.1, burnStep)
@@ -1861,6 +2154,8 @@ toggleOf(Route, "Config wrecks and barricades", "CfgObst", nil, "the wrecks, bar
 toggleOf(Route, "Adaptive braking", "BrakeAdapt", nil, "measures the car's real braking and plans with it")
 toggleOf(Route, "Stall fix", "StuckFix", nil, "wiggles the wheel for a moment when the car stays stuck")
 sliderOf(Route, "Steer rate", { 1, 8 }, 0.1, "SteerRate", " /s")
+sliderOf(Route, "Pass speed (fence)", { 40, 160 }, 5, "PassSpeed", " st/s")
+toggleOf(Route, "Other cars block", "CarBlock", nil, "other cars, dead or stopped, are obstacles")
 
 local Live = DriveTab:CreateGroupbox({ Name = "Live", Side = "Right" })
 Live:CreateStatus({
@@ -1971,7 +2266,191 @@ Live:CreateStatus({
         return "<Success>ok</Success>"
     end,
 })
+Live:CreateStatus({
+    Name = "Fence ahead",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if not HK.fence then
+            return "<Success>clear</Success>"
+        end
+        return string.format("<Muted>%d st, hit at %d st/s</Muted>", math.floor(HK.fence), math.floor(CFG.PassSpeed))
+    end,
+})
+Live:CreateStatus({
+    Name = "Solid ahead",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if not HK.solid then
+            return "<Success>clear</Success>"
+        end
+        return string.format("<Warning>%s, %d st</Warning>", tostring(HK.solid), math.floor(HK.solidGap or 0))
+    end,
+})
+Live:CreateStatus({
+    Name = "Next marker",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        return MARK.next()
+    end,
+})
+Live:CreateStatus({
+    Name = "Nearest monster",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        return MARK.nearest()
+    end,
+})
+Live:CreateStatus({
+    Name = "Server mile",
+    Style = "Row",
+    UpdateRate = 0.5,
+    Update = function()
+        local rc = getRunClient()
+        local m = rc and rc.get("Checkpoint")
+        if m == nil then
+            return "<Muted>no run</Muted>"
+        end
+        return string.format("%d / %d", math.floor(tonumber(m) or 0), #(WorldCfg.Checkpoints or {}))
+    end,
+})
+Live:CreateStatus({
+    Name = "Hook jumps",
+    Style = "Row",
+    UpdateRate = 0.25,
+    Update = function()
+        if HK.tpErr then
+            return "<Warning>" .. HK.tpErr .. "</Warning>"
+        end
+        return string.format("%d done, %d left", HK.tpDone, #HK.tpQueue)
+    end,
+})
+Live:CreateStatus({
+    Name = "Other cars seen",
+    Style = "Row",
+    UpdateRate = 0.5,
+    Update = function()
+        return string.format("%d", #otherCars)
+    end,
+})
 local AssistTab = Window:CreateTab({ Name = "Assist", Icon = "shield" })
+-- BEGIN TELEPORT
+-- the car is moved by a hook on CarInput.Read: the wrapper runs the next job of HK.tpQueue inside the physics step, after the
+-- original Read and before the car moves. a job is a placement a few studs past a point, at the car's height above the road,
+-- along the road, keeping its forward speed. ImpactDetector ignores a jump longer than Detector.TeleportDistance, so it is not a crash.
+-- the finish is not sent by hand: two jumps, just before and past FinishS, make the game's own lineStep send LineCross.
+-- the server decides whether the progress counts: if Server mile does not move, the server did not take the jump
+HK.tpDelay = 1
+HK.tpQueue = {}
+HK.tpNext = 0
+HK.tpDone = 0
+HK.tpReady = function()
+    local rc = getRunClient()
+    if not rc or rc.state() ~= "Driving" or (rc.riding and rc.riding()) then
+        return nil
+    end
+    return rc
+end
+HK.teleportCar = function(s, lat, ahead)
+    local root, model = carRoot, carModel
+    if not (root and model and model.Parent and root.Parent and carS) then
+        return false
+    end
+    local fwd = flat(root.CFrame.LookVector)
+    if fwd.Magnitude < 0.01 then
+        return false
+    end
+    fwd = fwd.Unit
+    local speed = math.max(0, flat(root.AssemblyLinearVelocity):Dot(fwd))
+    local sNow, latNow = RoadPath.project(Road, root.Position.X, root.Position.Z)
+    local _, yNow = RoadPath.pointAt(Road, sNow, latNow)
+    local lift = root.Position.Y - yNow
+    local x, y, z, dx, dz = RoadPath.pointAt(Road, clamp(s + (ahead or 0), 0, ROAD_END), lat or 0)
+    local heading = Vector3.new(dx, 0, dz)
+    if heading.Magnitude < 0.01 then
+        heading = fwd
+    end
+    heading = heading.Unit
+    local at = Vector3.new(x, y + lift, z)
+    local goal = CFrame.lookAt(at, at + heading)
+    model:PivotTo((goal * root.CFrame:Inverse()) * model:GetPivot())
+    root.AssemblyLinearVelocity = heading * speed
+    return true
+end
+-- called by the hook every physics step while the queue has a job: runs the first job once its hold time is over.
+-- if the car is no longer in a run, the queue is dropped
+HK.tpStep = function()
+    local q = HK.tpQueue
+    if not q[1] or os.clock() < HK.tpNext then
+        return
+    end
+    local job = q[1]
+    if not HK.tpReady() or not HK.teleportCar(job.s, 0, job.ahead) then
+        HK.tpQueue = {}
+        return
+    end
+    table.remove(q, 1)
+    HK.tpDone = HK.tpDone + 1
+    HK.tpNext = os.clock() + (job.hold or 0)
+end
+HK.teleportRun = function()
+    if not HK.tpReady() then
+        Window:Notify({ Title = "Tokaihub", Content = "not driving, start a run first", Type = "Warning", Duration = 3 })
+        return
+    end
+    local q = {}
+    for _, s in ipairs(WorldCfg.Checkpoints or {}) do
+        table.insert(q, { s = s, ahead = 6, hold = HK.tpDelay })
+    end
+    table.insert(q, { s = FINISH_S - 40, ahead = 0, hold = 0 })
+    table.insert(q, { s = FINISH_S, ahead = 6, hold = 0 })
+    HK.tpQueue = q
+    HK.tpNext = 0
+end
+HK.teleportNext = function()
+    if not HK.tpReady() or not carS then
+        return
+    end
+    local target = FINISH_S
+    for _, s in ipairs(WorldCfg.Checkpoints or {}) do
+        if s > carS + 5 then
+            target = s
+            break
+        end
+    end
+    HK.tpQueue = { { s = target, ahead = 6, hold = 0 } }
+    HK.tpNext = 0
+end
+-- END TELEPORT
+HK.tpBox = AssistTab:CreateGroupbox({ Name = "Teleport run", Side = "Right" })
+HK.tpBox:CreateSlider({
+    Name = "Delay between points",
+    Range = { 0.2, 5 },
+    Increment = 0.1,
+    CurrentValue = HK.tpDelay,
+    Suffix = " s",
+    Flag = "TK_TpDelay",
+    Callback = function(v)
+        HK.tpDelay = v
+    end,
+})
+HK.tpBox:CreateButton({
+    Name = "Teleport run",
+    Desc = "each checkpoint in turn, then the finish line",
+    Callback = function()
+        HK.teleportRun()
+    end,
+})
+HK.tpBox:CreateButton({
+    Name = "Next checkpoint",
+    Desc = "one jump to the next point ahead of the car",
+    Callback = function()
+        HK.teleportNext()
+    end,
+})
 local Phys = AssistTab:CreateGroupbox({ Name = "Physics", Side = "Left" })
 toggleOf(Phys, "Anti tumble", "AntiTumble", nil, "upright the car when it lies on its side")
 toggleOf(Phys, "Impact guard", "ImpactGuard", nil, "puts back most of the speed a crash takes")
@@ -2138,6 +2617,24 @@ MarkBox:CreateToggle({
     CurrentValue = false,
     Callback = function(On)
         showGroup("haz", On)
+    end,
+})
+MarkBox:CreateToggle({
+    Name = "Avalanches",
+    Desc = "avalanche spots from the config, with the side they come from",
+    Flag = "TK_ESP_Avalanches",
+    CurrentValue = false,
+    Callback = function(On)
+        showGroup("av", On)
+    end,
+})
+MarkBox:CreateToggle({
+    Name = "Pads",
+    Desc = "pads from the config, marked in the middle of their stretch",
+    Flag = "TK_ESP_Pads",
+    CurrentValue = false,
+    Callback = function(On)
+        showGroup("pad", On)
     end,
 })
 local CarBox = ObjTab:CreateGroupbox({ Name = "Vehicles", Side = "Right" })
