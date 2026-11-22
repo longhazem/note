@@ -1,4 +1,9 @@
--- Tokaihub v13. MTC client helper, executor only.
+-- Tokaihub v15. MTC client helper, executor only.
+-- v15: the library's config addon (addons/Config.luau) is loaded after the library, so the Configs tab, the autoload and the
+-- share codes exist again. Every saved control has a Flag, so the config holds the driver and the ESP settings.
+-- v14: the driver checks a lane change along its path (a solid thing it would meet while moving over is costly), steers with a Stanley
+-- law (heading error plus the sideways error), stops for a solid thing instead of creeping into it, caps fence hits at 55 st/s,
+-- and keeps the measured braking under the car's own. the UI uses the new library's names (Default, Placeholder, its Configs tab).
 -- v13: the teleport runs from a queue, inside a hook on CarInput.Read, in the physics step. the finish is crossed by the game's own lineStep.
 -- v12: teleport run (each checkpoint in turn, then the finish line through LineCross) and next-checkpoint jump, in the Assist tab.
 -- the Server mile status shows what the server counted, so a jump the server rejects shows up as a number that does not move.
@@ -24,6 +29,9 @@
 -- not in the dump: a crawler monster and a door QTE. 'Crawl' is the water speed cap (Config.Water.Crawl).
 
 local HawkTokaiLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/Source.luau"))()
+-- the config addon: the Configs tab, autoload and share codes. It adds its methods to the window and tab classes,
+-- so it is loaded once, after the library and before the window is created. It has no return value this script needs
+loadstring(game:HttpGet("https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/addons/Config.luau"))()(HawkTokaiLib)
 local ESP = loadstring(game:HttpGet("https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/ESP.luau"))()(HawkTokaiLib)
 
 local Players = game:GetService("Players")
@@ -64,7 +72,7 @@ local CFG = {
     StopGap = 8,                  -- studs kept from a blocking obstacle
     CrawlSpeed = 30,              -- st/s floor when every lane is blocked, so the car never stops dead in a jam
     CarHalf = CarCfg.ChassisSize[1] / 2,
-    CornerScale = 1.0,            -- adapted at runtime to the grip the car really has
+    CornerScale = 0.9,            -- adapted at runtime to the grip the car really has (0.85 to 1.6)
     CornerAdapt = true,
     SlipHi = 6,                   -- degrees of sideslip above which the scale comes down (DriftAssist starts near 9)
     SlipLo = 2.5,                 -- degrees of sideslip below which the scale creeps up
@@ -75,7 +83,8 @@ local CFG = {
     LatSpeed = 12,                -- studs/s the car can move sideways when it changes lane
     RampSpeed = 42,               -- keep at least this speed to take a jump (the chassis needs 35 to launch)
     CfgObst = true,
-    PassSpeed = 100,              -- the most speed kept when a fence must be hit
+    PassSpeed = 55,               -- the most speed kept when a fence must be hit (above ~36 a hit can tumble the car)
+    StanleyK = 2.0,               -- steering: the sideways error gain (heading error plus atan(k e / v))
     CarBlock = true,              -- other cars, dead or stopped, are obstacles
     SteerRate = 4.0,              -- the most the wheel command may change per second
     BrakeAdapt = true,            -- measure the car's real braking and plan with it
@@ -217,7 +226,7 @@ local function adaptCornerScale(scale, slipDeg, steerAbs, along, dt, cfg)
     elseif slipDeg < cfg.SlipLo then
         scale = scale + 0.25 * dt
     end
-    return clamp(scale, 0.9, 1.6)
+    return clamp(scale, 0.85, 1.6)
 end
 
 -- a moving thing's velocity, smoothed against the last one seen
@@ -248,32 +257,42 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
     local pos = root.Position
     local look = flat(root.CFrame.LookVector)
     if look.Magnitude < 0.01 then
-        return 0, 0, 0, "no heading", prevLane, nil, 0, nil
+        return 0, 0, 0, "no heading", prevLane, nil, 0, nil, nil
     end
     local fwd = look.Unit
     local v = flat(root.AssemblyLinearVelocity)
     local brakeDecel = cfg.BrakeUse or cfg.BrakeDecel
-    local target, vT, lane = nil, 0, prevLane
-    local solidGap, solidVs, fenceGap, ff = nil, 0, nil, 0
-    local solidKind = nil
+    local stanleyK = cfg.StanleyK or 1.6
+    local vT, lane = 0, prevLane
+    local solidGap, solidVs, fenceGap, solidKind = nil, 0, nil, nil
+    local steerOut = 0
 
     if dest then
         local toD = flat(dest - pos)
         if toD.Magnitude < cfg.ArriveDist then
-            return 0, 1, 0, "arrived", prevLane, nil, 0, nil
+            return 0, 1, 0, "arrived", prevLane, nil, 0, nil, nil
         end
         if v.Magnitude > 3 then
             fwd = orient(fwd, v.Unit)
         end
-        target = dest
-        vT = cfg.TopSpeed
+        local dist = toD.Magnitude
+        local dir = toD / dist
+        local right = fwd:Cross(Vector3.yAxis)
+        local front = dir:Dot(fwd)
+        local side = dir:Dot(right)
+        steerOut = clamp(math.atan2(side, front) * cfg.SteerGain, -1, 1)
+        vT = math.min(cfg.TopSpeed, math.max(3, dist * 0.6))
+        if front < -0.6 then
+            vT = math.min(vT, 6)
+        end
     else
         local sCar, latNow = rp.project(road, pos.X, pos.Z)
         if sCar >= finishS - 2 then
-            return 0, 1, 0, "finish", prevLane, nil, 0, nil
+            return 0, 1, 0, "finish", prevLane, nil, 0, nil, nil
         end
         local _, _, _, rdx, rdz = rp.pointAt(road, sCar, 0)
-        fwd = orient(fwd, Vector3.new(rdx, 0, rdz))
+        local roadFwd = Vector3.new(rdx, 0, rdz)
+        fwd = orient(fwd, roadFwd)
         local vf = math.max(0, v:Dot(fwd))
         -- the speed the car is about to be at: a stopped car still plans to move, so obstacles ahead are met at 40 st/s
         local vplan = math.max(vf, 40)
@@ -302,10 +321,12 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
             end
         end
 
-        -- a lane's cost, and the nearest meeting of each kind: a solid thing (with its speed), a pit (stop) and a fence
+        -- a lane's cost, and the nearest meeting of each kind. a lane change is checked along its whole path:
+        -- a solid thing the car would cross while it moves over, and reaches before the move is done, makes the lane costly
         local function evalLane(l)
             local cost = math.abs(l - cfg.LaneOffset) * cfg.CenterW + math.abs(l - base) * cfg.HysteresisW
-            local gS, gVs, gStop, gF, gK = nil, 0, nil, nil, nil
+            local gS, gVs, gKind, gStop, gF = nil, 0, nil, nil, nil
+            local dl = math.abs(l - latNow)
             for i = 1, #near do
                 local n = near[i]
                 local o = n.o
@@ -321,15 +342,24 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
                         if gS == nil or n.gap < gS then
                             gS = n.gap
                             gVs = n.vs
-                            gK = n.o.kind
+                            gKind = o.kind
                         end
                         if o.stop and (gStop == nil or n.gap < gStop) then
                             gStop = n.gap
                         end
                     end
                 end
+                if dl > 0.5 and not o.soft and not o.fence then
+                    -- where the car is sideways when its front reaches the thing: if that is inside the thing's band, the lane is costly
+                    local tObj = n.gap / math.max(vf, 3)
+                    local moved = math.min(dl, cfg.LatSpeed * tObj)
+                    local latWhen = latNow + (l > latNow and moved or -moved)
+                    if math.abs(latWhen - n.latAt) < o.hw + cfg.CarHalf + cfg.Clearance then
+                        cost = cost + 500
+                    end
+                end
             end
-            return cost, gS, gStop, gF, gVs, gK
+            return cost, gS, gStop, gF, gVs, gKind
         end
 
         local bestCost, gS0, gStop0, gF0, gV0, gK0 = evalLane(cfg.LaneOffset)
@@ -345,28 +375,34 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
             end
         end
 
-        local aheadS = clamp(sCar + cfg.LookAhead + vf * 0.45, 0, roadEnd)
-        local tx, ty, tz = rp.pointAt(road, aheadS, lane)
-        target = Vector3.new(tx, ty, tz)
-        ff = steerFeedforward(road, rp, sCar, cfg)
+        -- steering, Stanley style: the heading error to the road, plus the sideways error to the chosen lane.
+        -- positive steer is right. the feedforward takes the road's bend, so the car does not lag in a corner
+        local rightCar = fwd:Cross(Vector3.yAxis)
+        local psi = math.atan2(roadFwd:Dot(rightCar), roadFwd:Dot(fwd))
+        local crossErr = lane - latNow
+        local delta = psi + math.atan(stanleyK * crossErr / (vf + 5))
+        steerOut = clamp(delta / math.rad(34) + steerFeedforward(road, rp, sCar, cfg), -1, 1)
 
         vT = math.min(cfg.TopSpeed, speedAllowed(sCar, road, rp, cfg, roadEnd))
-        -- a pit in the lane stops the car. a solid thing ahead is followed at its own speed plus what the brakes allow,
-        -- and a static one is crept past. a fence is never stopped for, only capped at PassSpeed
+        -- a pit in the lane stops the car. a solid thing ahead is braked for: the car stops before it when it cannot go round,
+        -- there is no creep into it. a fence is never stopped for, only capped at PassSpeed
         if gStop then
             vT = math.min(vT, math.sqrt(math.max(0, 2 * brakeDecel * (gStop - cfg.StopGap))))
         elseif solidGap then
-            local follow = solidVs + math.sqrt(math.max(0, 2 * brakeDecel * (solidGap - cfg.StopGap)))
-            vT = math.min(vT, math.max(cfg.CrawlSpeed, follow))
+            vT = math.min(vT, solidVs + math.sqrt(math.max(0, 2 * brakeDecel * (solidGap - cfg.StopGap))))
         elseif fenceGap then
             vT = math.min(vT, cfg.PassSpeed)
         end
-        -- a lane change takes dl / LatSpeed seconds: leave the lane early enough to miss a solid thing in it
+        -- a lane change needs dl / LatSpeed seconds: slow down enough to leave the danger before the solid thing
         local dl = math.abs(lane - latNow)
         if dl > 0.5 then
             local _, gCur = evalLane(latNow)
             if gCur then
-                vT = math.min(vT, math.max(cfg.CrawlSpeed, gCur * cfg.LatSpeed / dl))
+                local reach = gCur * cfg.LatSpeed / dl
+                if gCur > 6 then
+                    reach = math.max(reach, 4)
+                end
+                vT = math.min(vT, reach)
             end
         end
         -- a jump on the lane is taken at speed, so the car leaves the ground
@@ -377,21 +413,6 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
                 end
             end
         end
-    end
-
-    local toT = flat(target - pos)
-    local dist = toT.Magnitude
-    local dir = dist > 0.01 and toT / dist or fwd
-    local right = fwd:Cross(Vector3.yAxis)
-    local front = dir:Dot(fwd)
-    local side = dir:Dot(right)
-    local steer = clamp(math.atan2(side, front) * cfg.SteerGain + ff, -1, 1)
-
-    if front < -0.6 then
-        vT = math.min(vT, 6)
-    end
-    if dest then
-        vT = math.min(vT, math.max(3, dist * 0.6))
     end
 
     local speed = v:Dot(fwd)
@@ -405,7 +426,7 @@ local function planDrive(root, dest, road, rp, cfg, finishS, roadEnd, roadHalf, 
     if speed < -1.5 then
         throttle, brake = 0, 1
     end
-    return throttle, brake, steer, "drive", lane, solidGap, vT, fenceGap, solidKind
+    return throttle, brake, steerOut, "drive", lane, solidGap, vT, fenceGap, solidKind
 end
 
 -- RoadKeep.steer replacement: the same zeroing the game does when RoadKeep is not in use
@@ -1956,7 +1977,7 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
             HK.brake = brakeSample(HK.brake, along, HK.along, lastBrake, lastThrottle, math.abs(lastSteer), dt)
             HK.along = along
             if HK.brake and HK.brake > 10 then
-                CFG.BrakeUse = clamp(0.8 * HK.brake, 12, 90)
+                CFG.BrakeUse = clamp(0.8 * HK.brake, 12, CFG.BrakeDecel)   -- never more than the car's own braking, a bad reading must not plan late braking
             end
         end
     else
@@ -2030,7 +2051,7 @@ Window = HawkTokaiLib:CreateWindow({
     Name = "Tokaihub",
     LoadingSubtitle = "Tokaihub",
     ToggleUIKeybind = "RightControl",
-    ConfigurationSaving = { Enabled = true, FolderName = "Tokaihub" },
+    ConfigurationSaving = { FolderName = "Tokaihub" },
 })
 
 local function sliderOf(group, name, range, inc, key, suffix)
@@ -2052,7 +2073,7 @@ local function toggleOf(group, name, key, onChange, desc)
         Name = name,
         Desc = desc,
         Flag = "TK_" .. key,
-        CurrentValue = CFG[key] == true,
+        Default = CFG[key] == true,
         Callback = function(On)
             CFG[key] = On
             if onChange then
@@ -2071,7 +2092,7 @@ DriveToggle = Route:CreateToggle({
     Name = "Auto drive",
     Desc = "follows the road and goes around set pieces, cones, monsters and pits. with a point set, goes there",
     Flag = "TK_AutoDrive",
-    CurrentValue = false,
+    Default = false,
     Callback = function(On)
         if On then
             if not setDrive(true) and DriveToggle then
@@ -2574,9 +2595,9 @@ VoteBox:CreateDropdown({
 })
 VoteBox:CreateInput({
     Name = "Script URL",
-    PlaceholderText = "raw link of this file",
+    Placeholder = "raw link of this file",
     Flag = "TK_ScriptUrl",
-    CurrentValue = "",
+    Default = "",
     Callback = function(text)
         CFG.ScriptUrl = tostring(text or "")
     end,
@@ -2597,7 +2618,7 @@ local MarkBox = ObjTab:CreateGroupbox({ Name = "Route markers", Side = "Left" })
 MarkBox:CreateToggle({
     Name = "Checkpoints",
     Flag = "TK_ESP_Checkpoints",
-    CurrentValue = false,
+    Default = false,
     Callback = function(On)
         showGroup("cp", On)
     end,
@@ -2605,7 +2626,7 @@ MarkBox:CreateToggle({
 MarkBox:CreateToggle({
     Name = "Finish line",
     Flag = "TK_ESP_Finish",
-    CurrentValue = false,
+    Default = false,
     Callback = function(On)
         showGroup("fin", On)
     end,
@@ -2614,7 +2635,7 @@ MarkBox:CreateToggle({
     Name = "Hazards",
     Desc = "wrecks, barricades, roadblocks from the config",
     Flag = "TK_ESP_Hazards",
-    CurrentValue = false,
+    Default = false,
     Callback = function(On)
         showGroup("haz", On)
     end,
@@ -2623,7 +2644,7 @@ MarkBox:CreateToggle({
     Name = "Avalanches",
     Desc = "avalanche spots from the config, with the side they come from",
     Flag = "TK_ESP_Avalanches",
-    CurrentValue = false,
+    Default = false,
     Callback = function(On)
         showGroup("av", On)
     end,
@@ -2632,7 +2653,7 @@ MarkBox:CreateToggle({
     Name = "Pads",
     Desc = "pads from the config, marked in the middle of their stretch",
     Flag = "TK_ESP_Pads",
-    CurrentValue = false,
+    Default = false,
     Callback = function(On)
         showGroup("pad", On)
     end,
@@ -2645,7 +2666,7 @@ toggleOf(CarBox, "Other cars", "CarESP", function(On)
 end, "highlight, box, tracer and name for other cars")
 
 local SetTab = Window:CreateTab({ Name = "Settings", Icon = "settings" })
-SetTab:CreateConfigManager({ Side = "Left" })
+SetTab:CreateConfigManager({ Name = "Configs", Side = "Left" })
 SetTab:CreateThemeManager({ Side = "Right" })
 
 Window:OnUnload(function()
