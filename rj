@@ -1,4 +1,10 @@
--- Tokaihub v15. MTC client helper, executor only.
+-- Tokaihub v18. MTC client helper, executor only.
+-- v18: Auto farm. one toggle and a mode dropdown: teleport (a hold of 5 to 8 s at each checkpoint) or fly (the car bobs at each
+-- checkpoint). after the finish, or a catch, the map starts again, and the farm carries on.
+-- v17: a fence costs a knock hit of at most 6 st/s, so it is taken at full speed (PassSpeed 140, was 55, which slowed the car for every
+-- roadblock). fences cost 40 (was 10), so a clear lane near a fence is taken. corner slip thresholds 9 and 4.5 degrees (the drift assist starts at 9).
+-- v16: checked against the newest library (adda5aa): the names the script calls are all there, the config addon and the ESP
+-- module keep their functions. a startup check names any library function this script needs that a later update removed.
 -- v15: the library's config addon (addons/Config.luau) is loaded after the library, so the Configs tab, the autoload and the
 -- share codes exist again. Every saved control has a Flag, so the config holds the driver and the ESP settings.
 -- v14: the driver checks a lane change along its path (a solid thing it would meet while moving over is costly), steers with a Stanley
@@ -74,8 +80,8 @@ local CFG = {
     CarHalf = CarCfg.ChassisSize[1] / 2,
     CornerScale = 0.9,            -- adapted at runtime to the grip the car really has (0.85 to 1.6)
     CornerAdapt = true,
-    SlipHi = 6,                   -- degrees of sideslip above which the scale comes down (DriftAssist starts near 9)
-    SlipLo = 2.5,                 -- degrees of sideslip below which the scale creeps up
+    SlipHi = 9,                   -- degrees of sideslip above which the scale comes down (DriftAssist starts near 9)
+    SlipLo = 4.5,                 -- degrees of sideslip below which the scale creeps up
     FFGain = 1.0,                 -- steering feedforward from the road's curvature
     Wheelbase = CarCfg.ChassisSize[3] * 0.65,  -- estimate, not read from the car
     PaceSteerMax = 0.35,
@@ -83,7 +89,7 @@ local CFG = {
     LatSpeed = 12,                -- studs/s the car can move sideways when it changes lane
     RampSpeed = 42,               -- keep at least this speed to take a jump (the chassis needs 35 to launch)
     CfgObst = true,
-    PassSpeed = 55,               -- the most speed kept when a fence must be hit (above ~36 a hit can tumble the car)
+    PassSpeed = 140,              -- the most speed kept at a fence: a knock hit costs at most 6 st/s (Knockdown MaxLoss), so full speed
     StanleyK = 2.0,               -- steering: the sideways error gain (heading error plus atan(k e / v))
     CarBlock = true,              -- other cars, dead or stopped, are obstacles
     SteerRate = 4.0,              -- the most the wheel command may change per second
@@ -160,7 +166,7 @@ local MAP_AHEAD = 330
 -- BEGIN LOGIC
 local W_KNOCK, W_CHASM, W_WATCH, W_MON, W_BOX = 40, 400, 60, 120, 80
 local W_CRAWL, W_MAST = 150, 200
-local W_CAR, W_FENCE = 120, 10
+local W_CAR, W_FENCE = 120, 40
 local PROFILE_D = { 12, 25, 40, 60, 85, 115, 150, 200, 260 }
 
 local function clamp(x, a, b)
@@ -1175,7 +1181,7 @@ local function hookRead(ci)
         HK.lastT = tNow
         local st = origRead(p86)
         local q = HK.tpQueue
-        if q and q[1] then
+        if (q and q[1]) or HK.tpHold or (HK.fly and HK.fly.on) then
             local okJ, errJ = pcall(HK.tpStep)
             if not okJ then
                 HK.tpErr = tostring(errJ)
@@ -2013,6 +2019,11 @@ table.insert(CONN, RunService.Heartbeat:Connect(function(dt)
     every("cars", 1, updateCarEsp)
     every("monsters", 1, updateMonsterEsp)
     every("tags", 0.25, MARK.update)
+    every("farm", 0.25, function()
+        if HK.farmTick then
+            HK.farmTick()
+        end
+    end)
     every("ambush", 0.5, ambushCheck)
     every("crank", 0.1, crankStep)
     every("burn", 0.1, burnStep)
@@ -2350,6 +2361,15 @@ Live:CreateStatus({
     end,
 })
 Live:CreateStatus({
+    Name = "Auto farm",
+    Style = "Row",
+    UpdateRate = 0.5,
+    Update = function()
+        local f = HK.farm
+        return string.format("%s, %d runs, %s", f.on and "<Success>on</Success>" or "<Muted>off</Muted>", f.runs, f.mode == 2 and "fly" or "teleport")
+    end,
+})
+Live:CreateStatus({
     Name = "Other cars seen",
     Style = "Row",
     UpdateRate = 0.5,
@@ -2368,6 +2388,11 @@ HK.tpDelay = 1
 HK.tpQueue = {}
 HK.tpNext = 0
 HK.tpDone = 0
+HK.tpHold = nil        -- true while the car waits at a jump's point
+HK.tpFreeze = nil      -- the chassis pose the car is held at
+HK.tpPlaced = nil      -- the chassis pose the last jump placed the car at
+HK.fly = { on = false } -- the flying car: on, s (road position), lift, t (last step time)
+HK.flySpeed = 140      -- studs per second along the road
 HK.tpReady = function()
     local rc = getRunClient()
     if not rc or rc.state() ~= "Driving" or (rc.riding and rc.riding()) then
@@ -2399,11 +2424,75 @@ HK.teleportCar = function(s, lat, ahead)
     local goal = CFrame.lookAt(at, at + heading)
     model:PivotTo((goal * root.CFrame:Inverse()) * model:GetPivot())
     root.AssemblyLinearVelocity = heading * speed
+    HK.tpPlaced = goal
     return true
 end
--- called by the hook every physics step while the queue has a job: runs the first job once its hold time is over.
+-- the hold: the car is kept at the pose it was placed at, with no speed, until the hold time is over
+HK.holdStep = function()
+    local root, model = carRoot, carModel
+    if not (root and model and model.Parent and HK.tpFreeze) then
+        return
+    end
+    model:PivotTo((HK.tpFreeze * root.CFrame:Inverse()) * model:GetPivot())
+    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+end
+
+-- the height of the flying car at road position s: it bobs up and down while it is within 18 studs of a checkpoint,
+-- so the checkpoint is passed at a height where it registers and is not missed
+HK.flyLift = function(s, base)
+    local lift = base
+    for _, cp in ipairs(WorldCfg.Checkpoints or {}) do
+        local d = s - cp
+        if d > -18 and d < 18 then
+            local tIn = (d + 18) / math.max(HK.flySpeed, 1)
+            lift = lift + 3.5 * math.sin(2 * math.pi * 1.5 * tIn)
+        end
+    end
+    return lift
+end
+
+-- one physics step of the flying car: it moves along the road centre and keeps its heading, with no drop
+HK.flyStep = function()
+    local f = HK.fly
+    local root, model = carRoot, carModel
+    if not (root and model and model.Parent and carS) then
+        return
+    end
+    local now = os.clock()
+    local dt = math.min(0.05, now - (f.t or now))
+    f.t = now
+    f.s = math.min(FINISH_S + 10, (f.s or carS) + HK.flySpeed * dt)
+    local x, y, z, dx, dz = RoadPath.pointAt(Road, f.s, 0)
+    local heading = Vector3.new(dx, 0, dz)
+    if heading.Magnitude < 0.01 then
+        return
+    end
+    heading = heading.Unit
+    local at = Vector3.new(x, y + HK.flyLift(f.s, f.lift or 6), z)
+    local goal = CFrame.lookAt(at, at + heading)
+    model:PivotTo((goal * root.CFrame:Inverse()) * model:GetPivot())
+    root.AssemblyLinearVelocity = heading * HK.flySpeed
+    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    if f.s >= FINISH_S + 8 then
+        f.on = false
+    end
+end
+
+-- called by the hook every physics step: flies, holds, or runs the next job of the queue once its hold is over.
 -- if the car is no longer in a run, the queue is dropped
 HK.tpStep = function()
+    if HK.fly.on then
+        HK.flyStep()
+        return
+    end
+    if HK.tpHold then
+        if os.clock() < HK.tpNext then
+            HK.holdStep()
+            return
+        end
+        HK.tpHold = nil
+    end
     local q = HK.tpQueue
     if not q[1] or os.clock() < HK.tpNext then
         return
@@ -2416,7 +2505,79 @@ HK.tpStep = function()
     table.remove(q, 1)
     HK.tpDone = HK.tpDone + 1
     HK.tpNext = os.clock() + (job.hold or 0)
+    if (job.hold or 0) > 0 then
+        HK.tpHold = true
+        HK.tpFreeze = HK.tpPlaced
+    end
 end
+
+-- the farm. mode 1 jumps to each checkpoint and holds there 5 to 8 seconds, then the finish; mode 2 flies the road.
+-- either way the finish is crossed by the game's own lineStep, and a finished or caught run is started again
+HK.farm = { on = false, mode = 1, run = nil, counted = nil, endAt = nil, runs = 0 }
+HK.farmBegin = function()
+    local f = HK.farm
+    if f.mode == 2 then
+        HK.tpQueue = {}
+        HK.tpHold = nil
+        HK.fly = { on = true, s = carS or 0, lift = 6, t = nil }
+        return
+    end
+    local q = {}
+    for _, cp in ipairs(WorldCfg.Checkpoints or {}) do
+        table.insert(q, { s = cp, ahead = 6, hold = 5 + 3 * math.random() })
+    end
+    table.insert(q, { s = FINISH_S - 40, ahead = 0, hold = 0 })
+    table.insert(q, { s = FINISH_S, ahead = 6, hold = 0 })
+    HK.fly = { on = false }
+    HK.tpHold = nil
+    HK.tpQueue = q
+    HK.tpNext = 0
+end
+HK.farmTick = function()
+    local f = HK.farm
+    if not f.on then
+        return
+    end
+    local rc = getRunClient()
+    if not rc then
+        return
+    end
+    local st = rc.state()
+    local now = os.clock()
+    if st == "Driving" then
+        local rid = rc.get("StartedAt")
+        if rid ~= f.run then
+            f.run = rid
+            f.endAt = nil
+            HK.farmBegin()
+        end
+        return
+    end
+    if st == "Finished" and f.counted ~= f.run then
+        f.counted = f.run
+        f.runs = f.runs + 1
+    end
+    if not f.endAt then
+        f.endAt = now + (st == "Finished" and 4 or 2)
+    end
+    if now >= f.endAt then
+        f.endAt = nil
+        f.run = nil
+        rc.requestStart(false)
+    end
+end
+HK.farmSet = function(on)
+    local f = HK.farm
+    f.on = on and true or false
+    f.run = nil
+    f.endAt = nil
+    if not f.on then
+        HK.tpQueue = {}
+        HK.tpHold = nil
+        HK.fly = { on = false }
+    end
+end
+
 HK.teleportRun = function()
     if not HK.tpReady() then
         Window:Notify({ Title = "Tokaihub", Content = "not driving, start a run first", Type = "Warning", Duration = 3 })
@@ -2695,4 +2856,57 @@ if CFG.ScriptUrl ~= "" then
     queueNextMap()
 end
 
+-- the Auto farm group: one toggle, one dropdown with the two modes
+HK.farmBox = AssistTab:CreateGroupbox({ Name = "Auto farm", Side = "Left" })
+HK.farmBox:CreateToggle({
+    Name = "Auto farm",
+    Desc = "runs the route on loop: a jump or a flight, then the finish, then the map starts again",
+    CurrentValue = false,
+    Flag = "TK_AutoFarm",
+    Callback = function(On)
+        HK.farmSet(On)
+    end,
+})
+HK.farmBox:CreateDropdown({
+    Name = "Mode",
+    Options = { "Teleport: hold 5-8 s", "Fly: bob at checkpoints" },
+    CurrentOption = { "Teleport: hold 5-8 s" },
+    Flag = "TK_FarmMode",
+    Callback = function(v)
+        local pick = type(v) == "table" and v[1] or v
+        local mode = (type(pick) == "string" and string.find(pick, "Fly")) and 2 or 1
+        if mode ~= HK.farm.mode then
+            HK.farm.mode = mode
+            HK.farm.run = nil
+        end
+    end,
+})
+
+-- a startup check of the library names this script calls. a UI update that removes one of them shows a notice with
+-- the names, instead of a feature that silently does nothing. the check is a function, so it adds no locals to the chunk
+;(function()
+    local missing = {}
+    local function need(obj, label, names)
+        if obj == nil then
+            table.insert(missing, label .. " (object missing)")
+            return
+        end
+        for _, n in ipairs(names) do
+            if type(obj[n]) ~= "function" then
+                table.insert(missing, label .. ":" .. n)
+            end
+        end
+    end
+    need(HawkTokaiLib, "Library", { "CreateWindow" })
+    need(Window, "Window", { "CreateTab", "Notify", "BindToggle", "OnUnload", "LoadAutoload" })
+    need(SetTab, "Tab", { "CreateConfigManager", "CreateThemeManager" })
+    need(Live, "Groupbox", { "CreateStatus" })
+    need(ESP, "ESP", { "Add", "Clear" })
+    if #missing > 0 then
+        warn("[tokaihub] the UI library lacks: " .. table.concat(missing, ", "))
+        if type(Window.Notify) == "function" then
+            Window:Notify({ Title = "Tokaihub", Content = "the UI library lacks: " .. table.concat(missing, ", "), Type = "Error", Duration = 12 })
+        end
+    end
+end)()
 Window:LoadAutoload()
